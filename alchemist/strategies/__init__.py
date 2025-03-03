@@ -1,0 +1,2 @@
+from alchemist.strategies.moving_average_strategy.moving_average_strategy import MovingAverageStrategy
+from alchemist.strategies.moving_average_crossover_strategy.moving_average_crossover_strategy import MovingAverageCrossoverStrategy
