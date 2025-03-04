@@ -1,8 +1,41 @@
 # Alchemist - A Ray-based High-Performance Automated Trading System
 
-## Introduction
+## **What is Alchemist?**
 
-Alchemist is a high-performance automated trading system built on [Ray](https://www.ray.io/) that supports distributed processing for strategies and gateways. It is designed for advanced algorithmic trading, offering seamless integration with data sources and real-time order management.
+**Alchemist** is a high-performance, distributed **automated trading system** designed to seamlessly transition **quantitative research into fully automated algorithmic trading strategies**.
+
+Built on **Ray**, Alchemist provides a scalable infrastructure for strategy execution, real-time order management, and seamless integration with market data and broker connections. Whether you’re a **quantitative researcher, algorithmic trader, or hedge fund**, Alchemist helps you **deploy, manage, and scale trading strategies efficiently**.
+
+## **Why Alchemist?**
+
+🚀 **Fast and Scalable** – Built with **Ray** to handle large-scale trading strategies across multiple processes and nodes.
+
+🔌 **Seamless Integration** – Connects easily to market data providers, brokers, and exchanges.
+
+📈 **Backtesting & Live Trading** – Develop strategies, backtest them, and switch to live trading **without rewriting code**.
+
+⚡ **Real-Time Order Management** – Handles execution, risk management, and portfolio exposure dynamically.
+
+🔧 **Customizable Strategy Framework** – A modular system that allows users to develop and optimize their own strategies.
+
+Alchemist is **part of a broader quantitative trading ecosystem**, providing a structured way to move from **strategy research** to **live trading** with minimal friction.
+
+## **Why Do You Need Alchemist?**
+
+### **Problem: Gap from Research to Execution**
+
+Quantitative traders often struggle with the transition from **research to live deployment** due to:
+
+- **Scalability Issues** – Traditional execution frameworks cannot handle large-scale strategies efficiently.
+- **Infrastructure Complexity** – Research environments are often disconnected from live market execution.
+- **Computational Bottlenecks** – High-performance backtesting and execution require **parallelized, distributed computing**.
+- **Integration Challenges** – Many systems lack easy connectivity with brokers, exchanges, and real-time market data.
+
+### **Solution**
+
+Alchemist **eliminates these roadblocks** by providing a fully integrated, high-performance framework that **connects research, backtesting, and execution in one system**.
+
+Whether you’re working on **statistical arbitrage, market-making, or machine learning-based trading**, Alchemist ensures your strategies can transition **from development to live execution seamlessly**
 
 ---
 
@@ -81,7 +114,10 @@ serve run run_strategies:management_service
 
 ---
 
-## Developer
+## Developer Guide
+
+Please visit the [full documentation](https://boulder-submarine-0ae.notion.site/Alchemist-A-Ray-based-High-Performance-Automated-Trading-System-1ace87b87fa4803cb9ade11517148d65?pvs=4) for detailed information on setup, configuration, and advanced usage.
+
 
 ### Running tests
 
@@ -92,3 +128,21 @@ poetry run pytest --cov=alchemist --cov-report=html
 # Run tests with coverage report and generate report in console
 poetry run pytest --cov=alchemist --cov-report=term
 ```
+
+
+## Code Attribution and Origin
+
+Alchemist is an independent, high-performance automated trading system built using Ray. While some architectural concepts were inspired by previous open-source projects I was involved in, this system has been built from the ground up with a redesigned architecture.
+
+This project is not affiliated with or derived from any specific open-source repository, and any similarities reflect common design patterns in algorithmic trading systems.
+
+
+## Third-Party Code Attribution
+
+This project includes code adapted from an open-source project licensed under **Apache License 2.0**:
+
+- The file **`zeromq.py`** is adapted from [PFund](https://github.com/PFund-Software-Ltd/pfund), an open-source trading system.
+- Modifications have been made to fit the architecture of **Alchemist**.
+- The original **Apache 2.0 license notice is retained in `zeromq.py`** in accordance with open-source licensing requirements.
+
+Alchemist is **not affiliated with or endorsed by the authors of Pfund**. Any concerns regarding code attribution are welcome, and I am committed to maintaining transparency and compliance with open-source licensing.
