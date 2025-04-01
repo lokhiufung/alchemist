@@ -107,11 +107,15 @@ strategies:
       n_replicas: 1
 ```
 
-## 3. Run the Automated Trading System using Ray Serve
+### 3. Run the Automated Trading System using Ray Serve
 ```bash
 serve run run_strategies:management_service
 ```
 
+## Version of TWS
+```text
+latest 10.35.1e 20250324
+```
 ---
 
 ## Developer Guide

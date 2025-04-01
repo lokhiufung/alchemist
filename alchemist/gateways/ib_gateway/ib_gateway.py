@@ -367,7 +367,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
     # Methods from EWrapper
     #####
     # TODO
-    def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson=''):
+    def error(self, reqId: TickerId, errorCode: int, errorString: str):
         """
         Handles errors received from IB's TWS.
 
@@ -379,8 +379,8 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
             errorString (str): The error message.
             advancedOrderRejectJson (str, optional): Additional error details in JSON format.
         """
-        self._logger.error(f'Error from TWS {reqId=} {errorCode=} {errorString=} {advancedOrderRejectJson=}')
-        super().error(reqId, errorCode, errorString, advancedOrderRejectJson=advancedOrderRejectJson)
+        self._logger.error(f'Error from TWS {reqId=} {errorCode=} {errorString=}')
+        super().error(reqId, errorCode, errorString)
 
     def nextValidId(self, orderId: int):
         """
