@@ -50,7 +50,8 @@ import datetime
 import numpy as np
 import ray
 
-from ibapi.wrapper import Decimal, TickerId
+from decimal import Decimal
+from ibapi.wrapper import TickerId
 from ibapi.contract import Contract
 from ibapi.wrapper import *
 # from ibapi.ticktype import TickTypeEnum
