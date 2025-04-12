@@ -367,7 +367,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
     # Methods from EWrapper
     #####
     # TODO
-    def error(self, reqId: TickerId, errorCode: int, errorString: str):
+    def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson: str):
         """
         Handles errors received from IB's TWS.
 

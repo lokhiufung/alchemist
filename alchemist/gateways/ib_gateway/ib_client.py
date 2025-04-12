@@ -117,7 +117,7 @@ class IBClient(EClient):
             kwargs.get('useRTH', False),
             []  # for IB internal use only
         )
-        self._logger.debug(f'{self.NAME} requested (req_id={self._request_id}) {product.pdt} real time bar ({bar_size=})')
+        self._logger.debug(f'{self.NAME} requested (req_id={self._request_id}) {product.pdt} real time bar)')
         self._update_request_id_and_corresponding_product(product)
 
 
