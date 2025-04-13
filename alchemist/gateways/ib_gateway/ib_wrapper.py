@@ -8,6 +8,7 @@ from collections import defaultdict
 import numpy as np
 # NOTE: do NOT write `from external.ibapi.wrapper import *`
 # it will lead to a different __name__ for the logger = logging.getLogger(__name__) in external/ibapi/wrapper.py
+from decimal import Decimal
 from ibapi.wrapper import *
 from ibapi.ticktype import TickTypeEnum
 

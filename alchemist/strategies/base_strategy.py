@@ -426,7 +426,7 @@ class BaseStrategy(ABC):
     def on_bar_update(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume):
         pass
 
-    def on_order_status_update(self, gateway, order_udpate):
+    def on_order_status_update(self, gateway, order_update):
         pass
 
     def next(self):

@@ -29,7 +29,7 @@ class BaseGateway(ABC):
             reconnect_interval (int, optional): _description_. Defaults to 5.
         """
         self.name = self.NAME
-        self.convertor: Convertor = self.convertor if self.CONVERTOR is not None else None
+        self.convertor: Convertor = self.CONVERTOR
         # self.subscriptions = subscriptions
         self.subscriptions = [subscription.upper() for subscription in subscriptions]  # for later
         # validate the DataSubscriptionEnum
