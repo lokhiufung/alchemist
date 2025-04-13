@@ -366,8 +366,10 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
 
     # Methods from EWrapper
     #####
+    # missing 1 required positional argument: 'advancedOrderRejectJson'
+    # this happens sometime but not always, wired. leave a default value for now for safety
     # TODO
-    def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson: str):
+    def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson: str=''):  
         """
         Handles errors received from IB's TWS.
 

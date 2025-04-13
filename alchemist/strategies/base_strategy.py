@@ -126,9 +126,9 @@ class BaseStrategy(ABC):
                 data = self.datas[index]
                 update = updates_dict[index][i]
                 if 't' in data.freq:
-                    data.update_from_tick(update['ts'], update['data']['price'], update['data']['size'])
+                    data.on_tick_update(update['ts'], update['data']['price'], update['data']['size'])
                 elif 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
-                    data.update_from_bar(update['ts'], update['data']['open'], update['data']['high'], update['data']['low'], update['data']['close'], update['data']['volume'])
+                    data.on_bar_update(update['ts'], update['data']['open'], update['data']['high'], update['data']['low'], update['data']['close'], update['data']['volume'])
                 else:
                     raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
 
