@@ -98,6 +98,8 @@ class BaseGateway(ABC):
                                 )
                                 self._zmq.send(*zmq_msg)
                                 self._logger.error(f'Order placement failed {order_dict=}')
+                        else:
+                            self._logger.debug(f'Order from other gateway {gateway=}. Current gateway {self.NAME=}. Just ignore the it.')
             except Exception as e:
                 self._logger.error(f"Error in gateway {self.NAME}: {e}")
                 self._logger.error(traceback.format_exc())  # Log the full traceback

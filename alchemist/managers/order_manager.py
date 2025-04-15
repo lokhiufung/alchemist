@@ -225,6 +225,9 @@ class OrderManager:
                 return self.on_filled(oid, price=update['last_filled_price'], size=update['last_filled_size'])
             elif status_update == 'PARTIAL_FILLED':
                 return self.on_partial_filled(oid, price=update['last_filled_price'], size=update['last_filled_size'])
+            elif status_update == 'INTERNAL_REJECTED':
+                order = self.get_order(oid=oid)
+                return self.on_internal_rejected(order, reason=update.get('reason', 'Probably due to rejection by the gateway'))
         else:
             self.logger.error(f'order {oid=} not found: {update=}.')
     
@@ -420,7 +423,7 @@ class OrderManager:
         Returns:
             List[str]: A list containing the 'INTERNAL_REJECTED' status update.
         """
-        print(f'on_internal_rejected {reason=}')
+        # print(f'on_internal_rejected {reason=}')
         order_status_updates = []
         order.on_internal_rejected(reason=reason)
         order_status_updates.append('INTERNAL_REJECTED')
@@ -429,6 +432,9 @@ class OrderManager:
             order.oid,
             currency=order.product.base_currency,
         )
+        # remove the order from the submitted_orders if internally rejected by the gateway
+        if order.oid in self.submitted_orders:
+            del self.submitted_orders[order.oid]
         return order_status_updates
     
     def on_filled(self, oid: str, price: float, size: float):
