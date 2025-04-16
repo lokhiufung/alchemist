@@ -49,7 +49,7 @@ class BaseGateway(ABC):
         self._reconnect_interval = reconnect_interval
 
         # use eoid as keys
-        self.sumbitted_orders: typing.Dict[str, dict] = {}
+        self.submitted_orders: typing.Dict[str, dict] = {}
 
         # for logging
         self._logger = get_logger(self.NAME.lower(), console_logger_lv='info', file_logger_lv='debug')
@@ -86,7 +86,7 @@ class BaseGateway(ABC):
                         if gateway == self.NAME:
                             try:
                                 self.place_order(order_dict)
-                            except:
+                            except Exception as err:
                                 zmq_msg = self.create_order_update_message(
                                     ts=time.time(),
                                     gateway=self.NAME,
@@ -97,7 +97,7 @@ class BaseGateway(ABC):
                                     status='INTERNAL_REJECTED',
                                 )
                                 self._zmq.send(*zmq_msg)
-                                self._logger.error(f'Order placement failed {order_dict=}')
+                                self._logger.error(f'Order placement failed {order_dict=} {err=}')
                         else:
                             self._logger.debug(f'Order from other gateway {gateway=}. Current gateway {self.NAME=}. Just ignore the it.')
             except Exception as e:
@@ -191,8 +191,8 @@ class BaseGateway(ABC):
         return standardized_messages.create_order_update_message(ts, gateway, strategy, exch, pdt, oid, status, average_filled_price, last_filled_price, last_filled_size, amend_price, amend_size)
     
     @staticmethod
-    def create_place_order_message(ts, gateway, exch, product, oid, side, price, size, order_type):
-        return standardized_messages.create_place_order_message(ts, gateway, exch, product, oid, side, price, size, order_type)
+    def create_place_order_message(ts, gateway, exch, product, oid, side, price, size, order_type, time_in_force):
+        return standardized_messages.create_place_order_message(ts, gateway, exch, product, oid, side, price, size, order_type, time_in_force)
 
     @staticmethod
     def create_balance_update_message(ts, gateway, balance_dict):

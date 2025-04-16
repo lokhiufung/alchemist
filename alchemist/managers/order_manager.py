@@ -185,6 +185,7 @@ class OrderManager:
                 price=order.price,
                 size=order.size,
                 order_type=order.order_type,
+                time_in_force=order.time_in_force
             )
             try:
                 self.zmq.send(*zmq_msg)

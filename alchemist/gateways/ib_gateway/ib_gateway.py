@@ -552,8 +552,8 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
         # Create a message for ZeroMQ
         ts = time.time()
         eoid = orderId
-        order_dict = self.sumbitted_orders.get(eoid, None)
-        self._logger.debug(f'orderStatus {self.sumbitted_orders=}')
+        order_dict = self.submitted_orders.get(eoid, None)
+        self._logger.debug(f'orderStatus {self.submitted_orders=}')
         if order_dict is not None:
             oid = order_dict['data']['oid']
             if status == 'Submitted':
@@ -569,6 +569,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                         status='PARTIAL_FILLED',
                         average_filled_price=float(avgFillPrice),
                         last_filled_price=float(lastFillPrice),
+                        last_filled_size=float(filled),
                     )
                     self._zmq.send(*zmq_msg)
                 else:
@@ -583,8 +584,8 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                         status='OPENED',
                     )
                     self._zmq.send(*zmq_msg)
-                    # remove from submitted orders
-                    del self.sumbitted_orders[eoid]
+                    # # remove from submitted orders
+                    # del self.submitted_orders[eoid]
             elif status == 'Cancelled':
                 zmq_msg = self.create_order_update_message(
                     ts,
@@ -597,7 +598,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                 )
                 self._zmq.send(*zmq_msg)
                 # remove from submitted orders
-                del self.sumbitted_orders[eoid]
+                del self.submitted_orders[eoid]
             elif status == 'Filled':
                 zmq_msg = self.create_order_update_message(
                     ts,
@@ -609,10 +610,11 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                     status='FILLED',
                     average_filled_price=float(avgFillPrice),
                     last_filled_price=float(lastFillPrice),
+                    last_filled_size=float(filled),
                 )
                 self._zmq.send(*zmq_msg)
                 # remove from submitted orders
-                del self.sumbitted_orders[eoid]
+                del self.submitted_orders[eoid]
         super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
     #####
 
@@ -694,8 +696,8 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
             product = StockProduct(
                 name=product_dict['name'],
                 base_currency=product_dict['base_currency'],
-                # exch=product_dict['exch'],
-                exch='SMART',  # TEMP: only use SMART routing
+                # exch=product_dict['exch'],  # TODO: may need to pass the exchange from the order in the future. I configured the exchange wrongly (a NYSE stock with NASDAQ exchange). I cannot update my positions due to the wrong exchange.
+                exch='SMART',  # TEMP: only use SMART routing  
             )
             # convert to ib contract
             contract = self.convert_to_ib_contract(product)
@@ -709,11 +711,11 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
             # Place the order through IB's API
             self.placeOrder(self._next_order_id, contract, order)
             order_dict['data']['eoid'] = self._next_order_id  # add the eoid to the order_dict
-            self.sumbitted_orders[self._next_order_id] = order_dict
+            self.submitted_orders[self._next_order_id] = order_dict
             self._next_order_id += 1 # REMINDER: to make sure the next order id is unique
             # self._request_id += 1  # each symbol takes 1 unique request id
             ####
-        self._logger.info(f'place_order {self.sumbitted_orders=}')
+        self._logger.info(f'place_order {self.submitted_orders=}')
         
     def cancel_o(self, orderId):
         """

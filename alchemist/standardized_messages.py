@@ -80,7 +80,7 @@ def create_order_update_message(ts, gateway, strategy, exch, pdt, oid, status, a
     ))
 
 
-def create_place_order_message(ts: int, gateway: str, strategy: str, product: BaseProduct, oid: str, side: int, price: float, size: float, order_type: str):
+def create_place_order_message(ts: int, gateway: str, strategy: str, product: BaseProduct, oid: str, side: int, price: float, size: float, order_type: str, time_in_force: str = None):
     order_dict =  {
         'ts': ts,
         'data': {
@@ -91,6 +91,7 @@ def create_place_order_message(ts: int, gateway: str, strategy: str, product: Ba
             'price': price,
             'size': size,
             'order_type': order_type,
+            'time_in_force': time_in_force,
         }
     }
     return (2, 2, (
