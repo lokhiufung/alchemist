@@ -519,8 +519,8 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
         position_update = create_position_update(
             product.name,
             side,
-            size=float(position),
-            last_price=None,
+            size=abs(float(position)),  # alway positive
+            last_price=float(marketPrice),
             average_price=float(averageCost),
             unrealized_pnl=float(unrealizedPNL),
             realized_pnl=float(realizedPNL),

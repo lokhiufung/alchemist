@@ -125,6 +125,8 @@ class BaseStrategy(ABC):
             for index in updates_dict:
                 data = self.datas[index]
                 update = updates_dict[index][i]
+                if update is None:
+                    continue
                 if 't' in data.freq:
                     data.on_tick_update(update['ts'], update['data']['price'], update['data']['size'])
                 elif 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
@@ -373,7 +375,7 @@ class BaseStrategy(ABC):
                     else:
                         self.buy(gateway, product, position.last_price, position.size)
 
-    def close(self, gateway: int, product: BaseProduct):
+    def close(self, gateway: int, product: BaseProduct, price=None):
         """
         Close all positions for a single product.
 
@@ -382,6 +384,11 @@ class BaseStrategy(ABC):
         """
         # Retrieve the current position for the specified product
         position: Position = self.pm.get_position(product)
+        if price is None:
+            if position.last_price is not None:
+                price = position.last_price
+            else:
+                raise ValueError(f"Price is None and position.last_price is None for {product=}")
         
         if position:
             # Determine the side of the position and place the corresponding order to close it
@@ -389,7 +396,7 @@ class BaseStrategy(ABC):
                 self.sell(
                     gateway=gateway,
                     product=product,
-                    price=position.last_price,
+                    price=price,
                     size=position.size,
                     order_type='MARKET',  # Assuming OrderTypeEnum is properly defined
                     time_in_force='GTC'   # Assuming TimeInForceEnum is properly defined
@@ -400,7 +407,7 @@ class BaseStrategy(ABC):
                 self.buy(
                     gateway=gateway,
                     product=product,
-                    price=position.last_price,
+                    price=price,
                     size=position.size,
                     order_type='MARKET',
                     time_in_force='GTC'

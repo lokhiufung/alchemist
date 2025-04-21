@@ -133,6 +133,10 @@ poetry run pytest --cov=alchemist --cov-report=html
 poetry run pytest --cov=alchemist --cov-report=term
 ```
 
+## Interactive Brokers
+### Volume Is Scaled by 100 for U.S. Stocks
+For U.S. equities, IB reports the exchange volume divided by 100. So if 3 410 shares traded in that 5s window, IB sends 34.10. [source](https://ibridgepy.com/ib-api-knowledge-base/#step1-2-1)
+
 
 ## Code Attribution and Origin
 
