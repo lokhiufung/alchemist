@@ -134,8 +134,13 @@ poetry run pytest --cov=alchemist --cov-report=term
 ```
 
 ## Interactive Brokers
-### Volume Is Scaled by 100 for U.S. Stocks
+
+### Volume is scaled by 100 for U.S. stocks
 For U.S. equities, IB reports the exchange volume divided by 100. So if 3 410 shares traded in that 5s window, IB sends 34.10. [source](https://ibridgepy.com/ib-api-knowledge-base/#step1-2-1)
+
+### `averagePrice` field includes the commission fee in `updatePortfolio`
+The TWS “Avg Price” field (which maps to the API’s averageCost) is defined as:
+“Average price is calculated by dividing your cost (execution price + commission) by the quantity of your position.”
 
 
 ## Code Attribution and Origin
