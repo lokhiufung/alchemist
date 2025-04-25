@@ -13,6 +13,8 @@ sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 pytest==8.3.4
 pytest-cov==6.0.0
+# for telegram bot
+python-telegram-bot==13.15
 
 # Dev dependencies
 sphinx==8.0.2
