@@ -76,8 +76,9 @@ class Order:
         self.status = 'AMEND_SUBMITTED'
         
     def __repr__(self):
+        sided_size = self.size * self.side
         return f'{self.product.name}|{self.oid}|{self.eoid}|' \
-               f'{self.order_type}|{self.time_in_force}|{self.status}|{self.size}@{self.price}|' \
+               f'{self.order_type}|{self.time_in_force}|{self.status}|{sided_size}@{self.price}|' \
                f'filled={self.filled_size}@{self.average_filled_price}|' \
                f'last={self.last_traded_size}@{self.last_traded_price}|' \
                f'amend={self.amend_size}@{self.amend_price}|' \
