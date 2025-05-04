@@ -128,9 +128,9 @@ Please visit the [full documentation](https://boulder-submarine-0ae.notion.site/
 ```bash
 pytest tests
 # Run tests with coverage report and generate report in html
-poetry run pytest --cov=alchemist --cov-report=html
+pytest --cov=alchemist --cov-report=html
 # Run tests with coverage report and generate report in console
-poetry run pytest --cov=alchemist --cov-report=term
+pytest --cov=alchemist --cov-report=term
 ```
 
 ## Interactive Brokers

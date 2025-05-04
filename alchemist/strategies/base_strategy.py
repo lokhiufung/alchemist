@@ -333,7 +333,7 @@ class BaseStrategy(ABC):
     def get_submitted_orders(self):
         return self.om.submitted_orders
     
-    def buy(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC'):
+    def buy(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC', reason=''):
         # validation
         OrderTypeEnum.validate(order_type)
         TimeInForceEnum.validate(time_in_force)
@@ -346,11 +346,12 @@ class BaseStrategy(ABC):
             size=size,
             order_type=order_type,
             product=product,
-            time_in_force=time_in_force
+            time_in_force=time_in_force,
+            reason=reason,
         )
         return self.place_order(order)
     
-    def sell(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC'):
+    def sell(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC', reason=''):
         # validation
         OrderTypeEnum.validate(order_type)
         TimeInForceEnum.validate(time_in_force)
@@ -363,7 +364,9 @@ class BaseStrategy(ABC):
             size=size,
             order_type=order_type,
             product=product,
-            time_in_force=time_in_force)
+            time_in_force=time_in_force,
+            reason=reason,
+        )
         return self.place_order(order)
     
     def close_all(self, gateway, product):
@@ -375,7 +378,7 @@ class BaseStrategy(ABC):
                     else:
                         self.buy(gateway, product, position.last_price, position.size)
 
-    def close(self, gateway: int, product: BaseProduct, price=None):
+    def close(self, gateway: int, product: BaseProduct, price=None, reason=''):
         """
         Close all positions for a single product.
 
@@ -399,7 +402,8 @@ class BaseStrategy(ABC):
                     price=price,
                     size=position.size,
                     order_type='MARKET',  # Assuming OrderTypeEnum is properly defined
-                    time_in_force='GTC'   # Assuming TimeInForceEnum is properly defined
+                    time_in_force='GTC',   # Assuming TimeInForceEnum is properly defined
+                    reason=reason,
                 )
                 self._logger.info(f"Closed long position for {product=}")
             
@@ -410,7 +414,8 @@ class BaseStrategy(ABC):
                     price=price,
                     size=position.size,
                     order_type='MARKET',
-                    time_in_force='GTC'
+                    time_in_force='GTC',
+                    reason=reason
                 )
                 self._logger.info(f"Closed short position for {product=}")
             

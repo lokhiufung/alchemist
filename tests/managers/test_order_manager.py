@@ -246,7 +246,7 @@ def test_maximum_order_size(order_manager, mock_zmq, mock_portfolio_manager):
         strategy="mock_strategy",
         product=BaseProduct(exch="NYSE", name="AAPL", base_currency="USD"),
         oid="order_large",
-        side="buy",
+        side=1,
         price=1e6,  # Large price
         size=1e4,   # Large size
         order_type="market",
@@ -279,7 +279,7 @@ def test_duplicate_order_ids(order_manager, sample_order, mock_zmq):
         strategy="mock_strategy",
         product=BaseProduct(exch="NYSE", name="AAPL", base_currency="USD"),
         oid="order123",  # Same OID as sample_order
-        side="sell",
+        side=-1,
         price=105.0,
         size=5,
         order_type="limit",
@@ -310,7 +310,7 @@ def test_concurrent_order_placements(order_manager, mock_zmq, mock_portfolio_man
             strategy="mock_strategy",
             product=BaseProduct(exch="NYSE", name="AAPL", base_currency="USD"),
             oid=f"order_concurrent_{i}",
-            side="buy" if i % 2 == 0 else "sell",
+            side=1 if i % 2 == 0 else -1,
             price=100.0 + i,
             size=10 + i,
             order_type="market",
@@ -342,7 +342,7 @@ def test_place_limit_order(order_manager, mock_zmq, mock_portfolio_manager):
         strategy="mock_strategy",
         product=BaseProduct(exch="NYSE", name="AAPL", base_currency="USD"),
         oid="order_limit",
-        side="buy",
+        side=1,
         price=95.0,  # Limit price below current market price
         size=10,
         order_type="limit",
@@ -410,7 +410,7 @@ def test_invalid_order_attributes(order_manager, mock_zmq, mock_portfolio_manage
             strategy="mock_strategy",
             product=BaseProduct(exch="NYSE", name="AAPL", base_currency="USD"),
             oid="order_invalid_price",
-            side="hold",  # Invalid price
+            side=1,  # Invalid price
             price=-100.0,
             size=10,
             order_type="LIMIT",

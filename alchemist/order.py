@@ -3,7 +3,7 @@ import uuid
 from alchemist.products.base_product import BaseProduct
 
 class Order:
-    def __init__(self, gateway: str, strategy: str, side: int, price: float, size: float, order_type: str, product: BaseProduct, info: str=None, oid: str=None, time_in_force: str='GTC'):
+    def __init__(self, gateway: str, strategy: str, side: int, price: float, size: float, order_type: str, product: BaseProduct, info: str=None, oid: str=None, time_in_force: str='GTC', reason=''):
         self.oid = oid if oid is not None else str(uuid.uuid4())
         self.gateway = gateway
         self.strategy = strategy  # TODO: this is only the temperaroy solution for the
@@ -26,7 +26,7 @@ class Order:
 
         self.eoid: str = None
         self.is_reduce_only = False
-        self.reason = ''
+        self.reason = reason
 
     @property
     def remaining_size(self):
@@ -58,11 +58,13 @@ class Order:
 
     def on_rejected(self, reason=''):
         self.status = 'REJECTED'
-        self.reason = reason
+        if len(reason) > 0:
+            self.reason = ','.join([self.reason, reason])
     
     def on_internal_rejected(self, reason=''):
         self.status = 'INTERNALLY_REJECTED'
-        self.reason = reason
+        if len(reason) > 0:
+            self.reason = ','.join([self.reason, reason])
 
     def on_closed(self):
         self.status = 'CLOSED'
