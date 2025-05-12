@@ -142,6 +142,10 @@ For U.S. equities, IB reports the exchange volume divided by 100. So if 3 41
 The TWS “Avg Price” field (which maps to the API’s averageCost) is defined as:
 “Average price is calculated by dividing your cost (execution price + commission) by the quantity of your position.”
 
+### `realtimeBars` is only available in `5s`
+Trader Workstation provides only 5 secs bars for real time. Therefore, the LOWEST resolution in `IBGateway` is `5s`.
+That means if you want to trade exactly `1m` bars, you need to configure **2 data cards** - 1 for `5s` bars and the other for `1m` bars. Otherwise, `next` will be called for every `5s` bar. (`next` will be called only at syncronization of `5s` and `1m` bars. Hence every `1m`.)
+
 
 ## Code Attribution and Origin
 
