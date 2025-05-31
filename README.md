@@ -146,6 +146,9 @@ The TWS “Avg Price” field (which maps to the API’s averageCost) is define
 Trader Workstation provides only 5 secs bars for real time. Therefore, the LOWEST resolution in `IBGateway` is `5s`.
 That means if you want to trade exactly `1m` bars, you need to configure **2 data cards** - 1 for `5s` bars and the other for `1m` bars. Otherwise, `next` will be called for every `5s` bar. (`next` will be called only at syncronization of `5s` and `1m` bars. Hence every `1m`.)
 
+### Simultaneously logging into `paper` and `live` account is not allowed
+[Reference](https://support.quantrocket.com/t/error-code-162-tws-session-is-connected-from-a-different-ip-address/595)
+
 
 ## Code Attribution and Origin
 
