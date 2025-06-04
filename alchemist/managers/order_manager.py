@@ -161,7 +161,7 @@ class OrderManager:
         else:
             return {'passed': False, 'reason': f'size must be larger than 0: {order.size=}'}
         
-    def place_order(self, order: Order):
+    def place_order(self, order: Order) -> Order:
         """
         Validates and places an order by sending it via ZeroMQ to the appropriate gateway.
 
@@ -194,6 +194,8 @@ class OrderManager:
                 self.on_internal_rejected(order, reason=f'Error happend when sending messages in zeromq: {zmq_msg=}')        
         else:
             self.on_internal_rejected(order, reason=validation_result['reason'])
+        
+        return order
 
     def on_order_status_update(self, gateway: str, order_update: dict):
         """

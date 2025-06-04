@@ -327,13 +327,13 @@ class BaseStrategy(ABC):
     def get_position(self, product: BaseProduct):
         return self.pm.get_position(product)
     
-    def place_order(self, order: Order):
+    def place_order(self, order: Order) -> Order:
         return self.order_manager.place_order(order)
 
     def get_submitted_orders(self):
         return self.om.submitted_orders
     
-    def buy(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC', reason=''):
+    def buy(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC', reason='') -> Order:
         # validation
         OrderTypeEnum.validate(order_type)
         TimeInForceEnum.validate(time_in_force)
@@ -351,7 +351,7 @@ class BaseStrategy(ABC):
         )
         return self.place_order(order)
     
-    def sell(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC', reason=''):
+    def sell(self, gateway, product, price, size, order_type='MARKET', time_in_force='GTC', reason='') -> Order:
         # validation
         OrderTypeEnum.validate(order_type)
         TimeInForceEnum.validate(time_in_force)
