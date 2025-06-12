@@ -146,6 +146,7 @@ def create_position_update(pdt, side, size, last_price, average_price, realized_
     }
 
 # order messages
+@DeprecationWarning
 def create_order_message(ts, gateway, strategy, oid, exch, pdt, price, size, order_type):
     order_dict = {
         'oid': oid,
@@ -155,8 +156,8 @@ def create_order_message(ts, gateway, strategy, oid, exch, pdt, price, size, ord
         'size': size,
         'order_type': order_type,
     }
-    return (2, 2, {
+    return (2, 2, (
         strategy,
         gateway,
         order_dict
-    })
+    ))
