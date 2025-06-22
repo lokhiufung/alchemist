@@ -69,6 +69,7 @@ class DataManager:
         """
         self.max_len = self.MAX_LEN
         self.data_cards = data_cards
+
         self.datas = {}
         self.resamplers = {}
         self.logger = get_logger('dm', console_logger_lv='info', file_logger_lv='debug')
@@ -244,6 +245,20 @@ class DataManager:
         #             price=price,
         #             size=size,
         #         )
+
+    def check_highest_resolution(self, ts, indexes) -> bool:
+        ### TODO: implement this method, only allow calling next when the all highest resolution data are ready
+        """
+        1. get the normalized value of the ts (in seconds)
+        2. get the normalized value of the highest frequency (in seconds)
+        3. check the (1) mod (2) == 0
+        4. if not, return `False`, otherwise return `True`
+
+        """
+        highest_freq: Frequency = self.datas[indexes[0]].frequency
+        normalized_ts = ts.timestamp()  # convert to seconds
+        normalized_highest_freq = highest_freq.normalized_value
+        return normalized_ts % normalized_highest_freq == 0
 
     def check_sync(self, indexes) -> bool:
         """

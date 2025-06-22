@@ -64,7 +64,7 @@ class BaseStrategy(ABC):
         self.data_manager = self.dm = DataManager(data_cards=data_cards)
         self.datas = self.data_manager.datas
         # TEMP: automatically create a list of indexes that require synchronization 
-        self.sync_data_indexes = self.auto_get_sync_indexes()
+        self.highest_resolution_data_indexes = self.auto_get_highest_resolution_indexes()
 
         if data_pipeline_kwargs is not None and isinstance(data_pipeline, str):
             self.data_pipeline = getattr(import_module('alchemist.data_pipelines'), data_pipeline)(**data_pipeline_kwargs)
@@ -76,7 +76,7 @@ class BaseStrategy(ABC):
     def get_params(self):
         return self.params
 
-    def auto_get_sync_indexes(self):
+    def auto_get_highest_resolution_indexes(self):
         highest_resolution = min([data_card.frequency for data_card in self.data_cards])
         sync_data_cards = [data_card for data_card in self.data_cards if data_card.frequency == highest_resolution]
         return [
@@ -471,7 +471,7 @@ class BaseStrategy(ABC):
     def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume):
         self.dm.on_bar_update(gateway, exch, pdt, freq, ts, open_, high, low, close, volume)
         self.on_bar_update(gateway, exch, freq, pdt, ts=ts, open_=open_, high=high, low=low, close=close, volume=volume)
-        if self.dm.check_sync(indexes=self.sync_data_indexes):  # TODO
+        if self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, indexes=self.highest_resolution_data_indexes):
             # check if the corresponding data cards are synced i.e having the same ts
             self.next()
 
