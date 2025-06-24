@@ -483,5 +483,47 @@ class BaseStrategy(ABC):
 
     def get_signals(self) -> dict:
         return {}
+    
+    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str):
+        start_time = time.time()
 
+        data_pipeline.start()
+        self._logger.info(f'Start backtesting strategy={self.name} {self.data_pipeline=}...')
+        # 1. cache the updates to dict first
+        updates_dict = {}
+        for data_card in self.data_cards:
+            index = self.dm.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, data_card.aggregation)
+            if 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq:
+                updates = self.data_pipeline.historical_bars(data_card.product, freq=data_card.freq, start=start_date, end=end_date)
+                updates_dict[index] = updates
+                # for update in updates:
+                #     self.datas[index].update_from_bar(update['ts'], update['data']['open'], update['data']['high'], update['data']['low'], update['data']['close'], update['data']['volume'])
+            else:
+                raise ValueError(f'Backtesting does not support {data_card.freq=}')
+        # 2. pad the updates to the same length
+        max_updates_len = max([len(updates) for updates in updates_dict.values()])
+        for index, updates in updates_dict.items():
+            updates_dict[index] = updates + [None] * (max_updates_len - len(updates))
+        # 3. push the updates to the data
+        for i in range(max_updates_len):
+            for index in updates_dict:
+                exch, pdt, _, _ = self.dm.factor_data_index(index)
+                data = self.datas[index]
+                update = updates_dict[index][i]
+                if update is None:
+                    continue
+                if 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
+                    # gateway, exch, pdt, bar = info
+                    update['ts'] = datetime.fromtimestamp(update['ts'])
+                    freq = update['resolution']  # TODO: need to change the standardized messages
+                    gateway = 'xx_gateway' # TODO
+                    exch = 'xx_exchange' # TODO
+                    
+                    self._on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'])
+                else:
+                    raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
 
+        self._logger.info(f'Finished backtesting strategy={self.name} {self.data_pipeline=}...')
+        self.data_pipeline.stop()
+        end_time = time.time()
+        self._logger.debug(f'Backtesting time: {(end_time - start_time) / 60:.2f} minutes')
