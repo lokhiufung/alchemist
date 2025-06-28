@@ -6,14 +6,12 @@ from trading_data.datalake_client import DatalakeClient
 from trading_data.common.date_ranges import get_dates
 
 from alchemist.products.base_product import BaseProduct
-from alchemist.data_card import DataCard
 from alchemist.data_pipelines.base_data_pipeline import BaseDataPipeline
 from alchemist import standardized_messages
 
 
 class DataPipeline(BaseDataPipeline):
-    def __init__(self, data_cards: typing.List[DataCard], data_source):
-        self.data_cards = data_cards
+    def __init__(self, data_source):
         self.data_source = data_source
         self.dl_client = DatalakeClient()
 
@@ -33,7 +31,8 @@ class DataPipeline(BaseDataPipeline):
         # 2. normalize the data into stardardized updates
         updates = []
         for row in df.itertuples():
-            ts = row.index
+            # Set ts to be a Unix timestamp in seconds
+            ts = int(row.Index.timestamp())  # second timestamp
             msg = standardized_messages.create_bar_message(
                 ts=ts,
                 gateway='xx_gateway',  # TODO
@@ -55,12 +54,12 @@ class DataPipeline(BaseDataPipeline):
     def end(self):
         pass
 
-    def load_data(self, pdt: str, pdt_type: str, start_date: str, end_date: str, data_source: str) -> pd.DataFrame:
+    def load_data(self, pdt: str, pdt_type: str, start_date: str, end_date: str) -> pd.DataFrame:
         dates = get_dates(start_date, end_date)
         dfs = []
         for date in dates:
             try:
-                df = self.dl_client.get_table(data_source, pdt, ver_name='min_bar', set_index=True, date=date, asset_type=pdt_type)
+                df = self.dl_client.get_table(self.data_source, pdt, ver_name='min_bar', date=date, asset_type=pdt_type)
                 dfs.append(df)
             except:
                 continue  # TODO can log the message for INFO
