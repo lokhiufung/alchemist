@@ -8,6 +8,7 @@ from alchemist import standardized_messages
 class BacktestManager(OrderManager):
     def __init__(self, pm: PortfolioManager):
         self.pm = pm
+        super().__init__(zmq=None, portfolio_manager=pm)
 
     def place_order(self, order):
         """
@@ -16,7 +17,7 @@ class BacktestManager(OrderManager):
         validation_result = self._validate_order(order)
         if validation_result['passed']:
             self.on_submitted(order)
-            self.on_opened(order)  # immediately opened
+            self.on_opened(oid=order.oid)  # immediately opened
         else:
             self.on_internal_rejected(order, reason=validation_result['reason'])
 
@@ -24,7 +25,12 @@ class BacktestManager(OrderManager):
         """
         Take care of order filling and position updates on historical bar update
         """
-        for oid, order in self.open_orders.items():
+        # make a copy of the open_orders
+        ###
+        open_orders = self.open_orders.copy()
+        ###
+
+        for oid, order in open_orders.items():
             # 1. match orders with simple logic
             if order.order_type == 'MARKET':
                 filled_price = open_
@@ -46,7 +52,7 @@ class BacktestManager(OrderManager):
                 amend_price=None,
                 amend_size=None,
             )
-            order_update['ts'] = datetime.fromtimestamp(order_update['ts'])
+            # order_update['ts'] = datetime.fromtimestamp(order_update['ts'])
             order_statuses = self.on_order_status_update(
                 gateway=gateway,
                 order_update=order_update

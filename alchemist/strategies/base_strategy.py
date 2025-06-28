@@ -332,7 +332,7 @@ class BaseStrategy(ABC):
     
     def place_order(self, order: Order) -> Order:
         if self._is_backtesting:
-            return self.backtest_manager.om.place_order(order)
+            return self.backtest_manager.place_order(order)
         return self.order_manager.place_order(order)
 
     def get_submitted_orders(self):
