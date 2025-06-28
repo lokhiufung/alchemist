@@ -52,6 +52,9 @@ class BaseStrategy(ABC):
         self._zmq_recv_ports = zmq_recv_ports
         # running thread
         self._is_running = False
+        # backtesting flag
+        self._is_backtesting = False
+        self.backtest_manager = None
 
         self.monitor_actor = monitor_actor
 
@@ -328,6 +331,8 @@ class BaseStrategy(ABC):
         return self.pm.get_position(product)
     
     def place_order(self, order: Order) -> Order:
+        if self._is_backtesting:
+            return self.backtest_manager.om.place_order(order)
         return self.order_manager.place_order(order)
 
     def get_submitted_orders(self):
@@ -485,6 +490,12 @@ class BaseStrategy(ABC):
         return {}
     
     def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str):
+        from alchemist.managers.backtest_manager import BacktestManager
+
+        # turn on the backtesting flag
+        self._is_backtesting = True
+        self.backtest_manager = BacktestManager(pm=self.pm)
+
         start_time = time.time()
 
         data_pipeline.start()
@@ -520,9 +531,12 @@ class BaseStrategy(ABC):
                     exch = 'xx_exchange' # TODO
                     
                     self._on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'])
+                    # 4. simulate the order filling, balance updates, and position updates
+                    # always lag behind the strategy's `_on_bar` by 1 bar
+                    self.backtest_manager.on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'])
                 else:
                     raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
-
+        
         self._logger.info(f'Finished backtesting strategy={self.name} {self.data_pipeline=}...')
         self.data_pipeline.stop()
         end_time = time.time()
