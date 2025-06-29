@@ -494,7 +494,7 @@ class BaseStrategy(ABC):
 
         # turn on the backtesting flag
         self._is_backtesting = True
-        self.backtest_manager = BacktestManager(pm=self.pm)
+        self.backtest_manager = BacktestManager(strategy=self.name, pm=self.pm)
 
         start_time = time.time()
 
