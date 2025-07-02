@@ -23,7 +23,7 @@ class BacktestManager(OrderManager):
             self.on_opened(oid=order.oid)  # immediately opened
         else:
             self.on_internal_rejected(order, reason=validation_result['reason'])
-
+    
     def execute_order(self, gateway, exch, pdt, order: Order, bar: Bar):
         # 1. match orders with simple logic
         if order.order_type == 'MARKET':

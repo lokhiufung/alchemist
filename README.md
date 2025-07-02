@@ -150,6 +150,11 @@ That means if you want to trade exactly `1m` bars, you need to configure **2 dat
 [Reference](https://support.quantrocket.com/t/error-code-162-tws-session-is-connected-from-a-different-ip-address/595)
 
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=lokhiufung/alchemist&type=Date)](https://www.star-history.com/#lokhiufung/alchemist&Date)
+
+
 ## Code Attribution and Origin
 
 Alchemist is an independent, high-performance automated trading system built using Ray. While some architectural concepts were inspired by previous open-source projects I was involved in, this system has been built from the ground up with a redesigned architecture.

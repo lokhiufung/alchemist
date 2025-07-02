@@ -11,13 +11,16 @@ data_cards= [
     DataCard(product, '1m', 'ohlcv', False)    
 ]
 
-strategy_actor = MovingAverageStrategy.remote(
-    name='sma_strategy',
-    zmq_send_port=12345,
-    zmq_recv_ports=[12346],
-    products=[product],
-    data_cards=data_cards,
-)
+strategy_actors = [
+    MovingAverageStrategy.remote(
+        name='sma_strategy',
+        zmq_send_port=12345,
+        zmq_recv_ports=[12346],
+        products=[product],
+        data_cards=data_cards,
+    )
+    for _ in range(1)
+]
 
 data_pipeline = DataPipeline(
     data_source='ib'
@@ -33,10 +36,10 @@ data_pipeline = DataPipeline(
 #     end='2025-05-01'
 # )
 
-ray.get(strategy_actor.start_backtesting.remote(
+ray.get([strategy_actor.start_backtesting.remote(
     data_pipeline=data_pipeline,
     start_date='2025-02-01',
     end_date='2025-05-01',
     initial_cash=10000.0,
-))
+) for strategy_actor in strategy_actors])
 
