@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pandas as pd
+
 from alchemist.managers.portfolio_manager import PortfolioManager
 from alchemist.managers.order_manager import OrderManager
 from alchemist import standardized_messages
@@ -11,6 +13,8 @@ class BacktestManager(OrderManager):
     def __init__(self, strategy, pm: PortfolioManager):
         self.strategy = strategy
         self.pm = pm
+        self.portfolio_history = []  # list of (ts, portfolio_value)
+        self.transaction_log = []    # list of dicts with transaction details
         super().__init__(zmq=None, portfolio_manager=pm)
 
     def place_order(self, order):
@@ -130,6 +134,16 @@ class BacktestManager(OrderManager):
                 realized_pnl=0.0,
                 unrealized_pnl=(current_price - filled_price) * order.size * order.side
             )
+        self.transaction_log.append({
+            'ts': bar.ts,
+            'oid': order.oid,
+            'product': order.product.name,
+            'side': order.side,
+            'size': order.size,
+            'filled_price': filled_price,
+            'order_type': order.order_type,
+            'status': 'FILLED'
+        })
 
     def on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume):
         """
@@ -148,12 +162,12 @@ class BacktestManager(OrderManager):
                 order=order,
                 bar=Bar(ts=ts, open_=open_, high=high, low=low, close=close, volume=volume),
             )
+        portfolio_value = self.pm.get_portfolio_value(currency='USD')
+        self.portfolio_history.append({'ts': ts, 'portfolio_value': portfolio_value})
             
+    def export_data(self, path_prefix='results'):
+        df_portfolio = pd.DataFrame(self.portfolio_history)
+        df_portfolio.to_csv(f'{path_prefix}_portfolio.csv', index=False)
 
-            
-
-
-
-
-        
-
+        df_transactions = pd.DataFrame(self.transaction_log)
+        df_transactions.to_csv(f'{path_prefix}_transactions.csv', index=False)

@@ -3,8 +3,9 @@ import time
 from datetime import datetime
 import typing
 import traceback
-import re
 from importlib import import_module
+
+import pandas as pd
 
 # from alchemist.orderbook import Orderbook
 from alchemist.managers.order_manager import OrderManager
@@ -37,6 +38,7 @@ class BaseStrategy(ABC):
             max_len=1000,
             params=None,
             monitor_actor: BaseMonitor=None,
+            is_backtesting=False,
         ):
         # assert self.NAME is not None, f'Please initialize the NAME like `xxx_strategy`: {self.NAME}'
         self.name = name
@@ -53,7 +55,7 @@ class BaseStrategy(ABC):
         # running thread
         self._is_running = False
         # backtesting flag
-        self._is_backtesting = False
+        self._is_backtesting = is_backtesting
         self.backtest_manager = None
 
         self.monitor_actor = monitor_actor
@@ -489,11 +491,10 @@ class BaseStrategy(ABC):
     def get_signals(self) -> dict:
         return {}
     
-    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float):
+    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, export_data=False, path_prefix=''):
         from alchemist.managers.backtest_manager import BacktestManager
 
         # turn on the backtesting flag
-        self._is_backtesting = True
         self.backtest_manager = BacktestManager(strategy=self.name, pm=self.pm)
 
         start_time = time.time()
@@ -544,3 +545,12 @@ class BaseStrategy(ABC):
         data_pipeline.stop()
         end_time = time.time()
         self._logger.debug(f'Backtesting time: {(end_time - start_time) / 60:.2f} minutes')
+
+        # write backtesting data
+        if export_data:
+            self.backtest_manager.export_data(path_prefix=path_prefix)
+
+        return {
+            'portfolio_value': pd.DataFrame(self.backtest_manager.portfolio_history),
+            'transaction': pd.DataFrame(self.backtest_manager.transaction_log),
+        }
