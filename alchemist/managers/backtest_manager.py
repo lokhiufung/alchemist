@@ -30,10 +30,10 @@ class BacktestManager(OrderManager):
     
     def execute_order(self, gateway, exch, pdt, order: Order, bar: Bar, on_order_status_update):
         # 1. match orders with simple logic
-        if order.order_type == 'MARKET':
-            filled_price = bar.open
-        else:
-            raise NotImplementedError
+        if order.order_type != 'MARKET':
+            self.logger.warning('Only MARKET order is supported for backtesting. All other orders will be converted to MARKET order.')
+
+        filled_price = bar.open
         
         # if `MARKET` order, fill with the open price
         _, _, (_, _, order_update) = standardized_messages.create_order_update_message(

@@ -494,6 +494,9 @@ class BaseStrategy(ABC):
     def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, n_warmup=0, export_data=False, path_prefix=''):
         from alchemist.managers.backtest_manager import BacktestManager
         
+        if len(self.products) > 1:
+            raise ValueError('Currently backtesting does not support multiple products!')
+
         signals = []
 
         # turn on the backtesting flag
