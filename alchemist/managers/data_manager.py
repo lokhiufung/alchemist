@@ -100,6 +100,10 @@ class DataManager:
         # hash by pdt, exch, freq, aggregation
         return f'{exch}_{pdt}_{freq}_{aggregation}'
     
+    @staticmethod
+    def factor_data_index(index: str) -> typing.Tuple[str, str, str, str]:
+        return index.split('_')
+
     def initialize_resamplers(self):
         """
         Initializes resamplers for each data card.

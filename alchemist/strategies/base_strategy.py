@@ -3,8 +3,9 @@ import time
 from datetime import datetime
 import typing
 import traceback
-import re
 from importlib import import_module
+
+import pandas as pd
 
 # from alchemist.orderbook import Orderbook
 from alchemist.managers.order_manager import OrderManager
@@ -37,6 +38,7 @@ class BaseStrategy(ABC):
             max_len=1000,
             params=None,
             monitor_actor: BaseMonitor=None,
+            is_backtesting=False,
         ):
         # assert self.NAME is not None, f'Please initialize the NAME like `xxx_strategy`: {self.NAME}'
         self.name = name
@@ -52,6 +54,9 @@ class BaseStrategy(ABC):
         self._zmq_recv_ports = zmq_recv_ports
         # running thread
         self._is_running = False
+        # backtesting flag
+        self._is_backtesting = is_backtesting
+        self.backtest_manager = None
 
         self.monitor_actor = monitor_actor
 
@@ -328,6 +333,8 @@ class BaseStrategy(ABC):
         return self.pm.get_position(product)
     
     def place_order(self, order: Order) -> Order:
+        if self._is_backtesting:
+            return self.backtest_manager.place_order(order)
         return self.order_manager.place_order(order)
 
     def get_submitted_orders(self):
@@ -468,10 +475,10 @@ class BaseStrategy(ABC):
     def _on_quote(self):
         self.on_quote_update()
 
-    def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume):
+    def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume, is_warmup=False):
         self.dm.on_bar_update(gateway, exch, pdt, freq, ts, open_, high, low, close, volume)
         self.on_bar_update(gateway, exch, freq, pdt, ts=ts, open_=open_, high=high, low=low, close=close, volume=volume)
-        if self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, indexes=self.highest_resolution_data_indexes):
+        if not is_warmup and self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, indexes=self.highest_resolution_data_indexes):
             # check if the corresponding data cards are synced i.e having the same ts
             self.next()
 
@@ -483,5 +490,93 @@ class BaseStrategy(ABC):
 
     def get_signals(self) -> dict:
         return {}
+    
+    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, n_warmup=0, export_data=False, path_prefix=''):
+        from alchemist.managers.backtest_manager import BacktestManager
+        
+        if len(self.products) > 1:
+            raise ValueError('Currently backtesting does not support multiple products!')
 
+        signals = []
 
+        # turn on the backtesting flag
+        self.backtest_manager = BacktestManager(strategy=self.name, pm=self.pm)
+
+        start_time = time.time()
+
+        # set the initial capital of your account
+        self.update_balance('USD', initial_cash)
+
+        data_pipeline.start()
+        self._logger.info(f'Start backtesting strategy={self.name} {data_pipeline=}...')
+        # 1. cache the updates to dict first
+        updates_dict = {}
+        for data_card in self.data_cards:
+            index = self.dm.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, data_card.aggregation)
+            if 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq:
+                updates = data_pipeline.historical_bars(data_card.product, freq=data_card.freq, start=start_date, end=end_date)
+                updates_dict[index] = updates
+                # for update in updates:
+                #     self.datas[index].update_from_bar(update['ts'], update['data']['open'], update['data']['high'], update['data']['low'], update['data']['close'], update['data']['volume'])
+            else:
+                raise ValueError(f'Backtesting does not support {data_card.freq=}')
+        # 2. pad the updates to the same length
+        max_updates_len = max([len(updates) for updates in updates_dict.values()])
+        for index, updates in updates_dict.items():
+            updates_dict[index] = updates + [None] * (max_updates_len - len(updates))
+        # 3. push the updates to the data
+        for i in range(max_updates_len):
+            for index in updates_dict:
+                exch, pdt, _, _ = self.dm.factor_data_index(index)
+                data = self.datas[index]
+                update = updates_dict[index][i]
+                if update is None:
+                    continue
+                if 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
+                    # gateway, exch, pdt, bar = info
+                    update['ts'] = datetime.fromtimestamp(update['ts'])
+                    self._logger.debug('current_ts={}'.format(update['ts']))
+                    freq = update['resolution']  # TODO: need to change the standardized messages
+                    gateway = 'ib_gateway' # TODO
+                    exch = 'NASDAQ' # TODO
+                    
+                    is_warmup = i < n_warmup
+
+                    self._on_bar(
+                        gateway,
+                        exch,
+                        pdt,
+                        freq, 
+                        ts=update['ts'],
+                        open_=update['data']['open'],
+                        high=update['data']['high'],
+                        low=update['data']['low'],
+                        close=update['data']['close'],
+                        volume=update['data']['volume'],
+                        is_warmup=is_warmup,  # fill the indicators with warmup
+                    )
+                    if not is_warmup:
+                        signals.append(self.get_signals())
+                    # 4. simulate the order filling, balance updates, and position updates
+                    # always lag behind the strategy's `_on_bar` by 1 bar
+                    self.backtest_manager.on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'], on_order_status_update=self.on_order_status_update)
+                else:
+                    raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
+
+        self._logger.info(f'Finished backtesting strategy={self.name} {data_pipeline=}...')
+        data_pipeline.stop()
+        end_time = time.time()
+        self._logger.debug(f'Backtesting time: {(end_time - start_time) / 60:.2f} minutes')
+
+        signals = pd.DataFrame(signals)
+
+        # write backtesting data
+        if export_data:
+            self.backtest_manager.export_data(path_prefix=path_prefix)
+            signals.to_csv(f'{path_prefix}_signals.csv')
+
+        return {
+            'portfolio_value': pd.DataFrame(self.backtest_manager.portfolio_history),
+            'transaction': pd.DataFrame(self.backtest_manager.transaction_log),
+            'signal': signals
+        }

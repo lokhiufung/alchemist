@@ -291,6 +291,7 @@ class OrderManager:
         order_status_updates.append('SUBMITTED')
         self.submitted_orders[order.oid] = order
         self.logger.debug(f'{order=}')
+        # TODO: I dont need to reserve balance if I am reducing my position
         self.portfolio_manager.reserve_balance(
             oid=order.oid,
             currency=order.product.base_currency,
