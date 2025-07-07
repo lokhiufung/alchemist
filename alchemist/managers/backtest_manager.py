@@ -28,7 +28,7 @@ class BacktestManager(OrderManager):
         else:
             self.on_internal_rejected(order, reason=validation_result['reason'])
     
-    def execute_order(self, gateway, exch, pdt, order: Order, bar: Bar):
+    def execute_order(self, gateway, exch, pdt, order: Order, bar: Bar, on_order_status_update):
         # 1. match orders with simple logic
         if order.order_type == 'MARKET':
             filled_price = bar.open
@@ -50,11 +50,15 @@ class BacktestManager(OrderManager):
             amend_price=None,
             amend_size=None,
         )
+
+        on_order_status_update(gateway, order_update)  # TODO: just a quick fix
+
         # order_update['ts'] = datetime.fromtimestamp(order_update['ts'])
         order_statuses = self.on_order_status_update(
             gateway=gateway,
             order_update=order_update
         )
+        
         # 2. update balance accordingly
         product_type = order.product.product_type
         last_balance = self.pm.get_balance(currency='USD')
@@ -145,7 +149,7 @@ class BacktestManager(OrderManager):
             'status': 'FILLED'
         })
 
-    def on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume):
+    def on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume, on_order_status_update):
         """
         Take care of order filling and position updates on historical bar update
         """
@@ -161,6 +165,7 @@ class BacktestManager(OrderManager):
                 pdt=pdt,
                 order=order,
                 bar=Bar(ts=ts, open_=open_, high=high, low=low, close=close, volume=volume),
+                on_order_status_update=on_order_status_update
             )
         portfolio_value = self.pm.get_portfolio_value(currency='USD')
         self.portfolio_history.append({'ts': ts, 'portfolio_value': portfolio_value})

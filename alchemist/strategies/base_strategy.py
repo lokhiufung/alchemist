@@ -475,10 +475,10 @@ class BaseStrategy(ABC):
     def _on_quote(self):
         self.on_quote_update()
 
-    def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume):
+    def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume, is_warmup=False):
         self.dm.on_bar_update(gateway, exch, pdt, freq, ts, open_, high, low, close, volume)
         self.on_bar_update(gateway, exch, freq, pdt, ts=ts, open_=open_, high=high, low=low, close=close, volume=volume)
-        if self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, indexes=self.highest_resolution_data_indexes):
+        if not is_warmup and self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, indexes=self.highest_resolution_data_indexes):
             # check if the corresponding data cards are synced i.e having the same ts
             self.next()
 
@@ -491,8 +491,10 @@ class BaseStrategy(ABC):
     def get_signals(self) -> dict:
         return {}
     
-    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, export_data=False, path_prefix=''):
+    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, n_warmup=0, export_data=False, path_prefix=''):
         from alchemist.managers.backtest_manager import BacktestManager
+        
+        signals = []
 
         # turn on the backtesting flag
         self.backtest_manager = BacktestManager(strategy=self.name, pm=self.pm)
@@ -530,14 +532,31 @@ class BaseStrategy(ABC):
                 if 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
                     # gateway, exch, pdt, bar = info
                     update['ts'] = datetime.fromtimestamp(update['ts'])
+                    self._logger.debug('current_ts={}'.format(update['ts']))
                     freq = update['resolution']  # TODO: need to change the standardized messages
-                    gateway = 'mock_gateway' # TODO
-                    exch = 'CME' # TODO
+                    gateway = 'ib_gateway' # TODO
+                    exch = 'NASDAQ' # TODO
                     
-                    self._on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'])
+                    is_warmup = i < n_warmup
+
+                    self._on_bar(
+                        gateway,
+                        exch,
+                        pdt,
+                        freq, 
+                        ts=update['ts'],
+                        open_=update['data']['open'],
+                        high=update['data']['high'],
+                        low=update['data']['low'],
+                        close=update['data']['close'],
+                        volume=update['data']['volume'],
+                        is_warmup=is_warmup,  # fill the indicators with warmup
+                    )
+                    if not is_warmup:
+                        signals.append(self.get_signals())
                     # 4. simulate the order filling, balance updates, and position updates
                     # always lag behind the strategy's `_on_bar` by 1 bar
-                    self.backtest_manager.on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'])
+                    self.backtest_manager.on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'], on_order_status_update=self.on_order_status_update)
                 else:
                     raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
 
@@ -546,11 +565,15 @@ class BaseStrategy(ABC):
         end_time = time.time()
         self._logger.debug(f'Backtesting time: {(end_time - start_time) / 60:.2f} minutes')
 
+        signals = pd.DataFrame(signals)
+
         # write backtesting data
         if export_data:
             self.backtest_manager.export_data(path_prefix=path_prefix)
+            signals.to_csv(f'{path_prefix}_signals.csv')
 
         return {
             'portfolio_value': pd.DataFrame(self.backtest_manager.portfolio_history),
             'transaction': pd.DataFrame(self.backtest_manager.transaction_log),
+            'signal': signals
         }

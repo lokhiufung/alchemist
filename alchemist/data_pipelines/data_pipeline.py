@@ -1,3 +1,4 @@
+import pytz
 import typing
 
 import pandas as pd
@@ -21,18 +22,23 @@ class DataPipeline(BaseDataPipeline):
         if product.product_type == 'FUTURE':
             pdt_type = 'futures'
         else:
-            pdt_type = product.prodcut_type.lower()
+            pdt_type = product.product_type.lower()
+
         df = self.load_data(
             pdt=product.name,
             pdt_type=pdt_type,
             start_date=start,
             end_date=end,
         )
+        print(f'{start=}')
+        print(f'{end=}')
+        print(df)
         # 2. normalize the data into stardardized updates
         updates = []
         for row in df.itertuples():
             # Set ts to be a Unix timestamp in seconds
-            ts = int(row.Index.timestamp())  # second timestamp
+            eastern = pytz.timezone("US/Eastern")
+            ts = int(eastern.localize(row.Index.to_pydatetime()).timestamp())
             msg = standardized_messages.create_bar_message(
                 ts=ts,
                 gateway='xx_gateway',  # TODO
