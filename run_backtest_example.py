@@ -27,16 +27,6 @@ data_pipeline = DataPipeline(
     data_source='ib'
 )
 
-
-# data_pipeline.start()
-
-# updates = data_pipeline.historical_bars(
-#     product=product,
-#     freq='1m',
-#     start='2025-02-01',
-#     end='2025-05-01'
-# )
-
 result = ray.get([strategy_actor.start_backtesting.remote(
     data_pipeline=data_pipeline,
     start_date='2025-02-01',
