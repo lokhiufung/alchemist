@@ -30,9 +30,6 @@ class DataPipeline(BaseDataPipeline):
             start_date=start,
             end_date=end,
         )
-        print(f'{start=}')
-        print(f'{end=}')
-        print(df)
         # 2. normalize the data into stardardized updates
         updates = []
         for row in df.itertuples():

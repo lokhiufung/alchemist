@@ -538,7 +538,7 @@ class BaseStrategy(ABC):
                     self._logger.debug('current_ts={}'.format(update['ts']))
                     freq = update['resolution']  # TODO: need to change the standardized messages
                     gateway = 'ib_gateway' # TODO
-                    exch = 'NASDAQ' # TODO
+                    exch = self.products[0].exch # TODO
                     
                     is_warmup = i < n_warmup
 

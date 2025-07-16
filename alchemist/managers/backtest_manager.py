@@ -98,14 +98,14 @@ class BacktestManager(OrderManager):
                     size=new_size,
                     last_price=filled_price,
                     avg_price=new_avg_price,
-                    realized_pnl=existing_pos.realized_pnl,
+                    realized_pnl=existing_pos.realized_pnl - 1,
                     unrealized_pnl=(current_price - new_avg_price) * new_size * order.side
                 )
             else:
                 # Reducing or closing position
                 if order.size < existing_pos.size:
                     remaining_size = existing_pos.size - order.size
-                    realized_pnl = (filled_price - existing_pos.avg_price) * order.size * existing_pos.side
+                    realized_pnl = (filled_price - existing_pos.avg_price) * order.size * existing_pos.side - 1
                     self.pm.update_position(
                         product=order.product,
                         side=existing_pos.side,
@@ -125,7 +125,7 @@ class BacktestManager(OrderManager):
                         size=new_size,
                         last_price=filled_price,
                         avg_price=filled_price,
-                        realized_pnl=realized_pnl,
+                        realized_pnl=realized_pnl - 1,
                         unrealized_pnl=(current_price - filled_price) * new_size * order.side
                     )
         else:
@@ -135,7 +135,7 @@ class BacktestManager(OrderManager):
                 size=order.size,
                 last_price=filled_price,
                 avg_price=filled_price,
-                realized_pnl=0.0,
+                realized_pnl=0.0 - 1,
                 unrealized_pnl=(current_price - filled_price) * order.size * order.side
             )
         self.transaction_log.append({
