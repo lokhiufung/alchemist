@@ -65,6 +65,7 @@ class PortfolioManager:
         for exch, positions in self.positions.items():
             for pdt, position in positions.items():
                 if position.product.base_currency == currency:
+                    # REMINDER: for realized_pnl, it should be already updated in the cash balance
                     cash += (position.side * position.size * position.avg_price + position.unrealized_pnl)
         return cash
 

@@ -491,7 +491,7 @@ class BaseStrategy(ABC):
     def get_signals(self) -> dict:
         return {}
     
-    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, n_warmup=0, export_data=False, path_prefix=''):
+    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, commission=None, n_warmup=0, export_data=False, path_prefix=''):
         from alchemist.managers.backtest_manager import BacktestManager
         
         if len(self.products) > 1:
@@ -500,7 +500,7 @@ class BaseStrategy(ABC):
         signals = []
 
         # turn on the backtesting flag
-        self.backtest_manager = BacktestManager(strategy=self.name, pm=self.pm)
+        self.backtest_manager = BacktestManager(strategy=self, pm=self.pm, commission=commission)
 
         start_time = time.time()
 

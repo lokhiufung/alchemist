@@ -10,9 +10,10 @@ from alchemist.order import Order
 
 
 class BacktestManager(OrderManager):
-    def __init__(self, strategy, pm: PortfolioManager):
+    def __init__(self, strategy, pm: PortfolioManager, commission):
         self.strategy = strategy
         self.pm = pm
+        self.commission = commission
         self.portfolio_history = []  # list of (ts, portfolio_value)
         self.transaction_log = []    # list of dicts with transaction details
         super().__init__(zmq=None, portfolio_manager=pm)
@@ -39,7 +40,7 @@ class BacktestManager(OrderManager):
         _, _, (_, _, order_update) = standardized_messages.create_order_update_message(
             ts=bar.ts,
             gateway=gateway,
-            strategy=self.strategy,
+            strategy=self.strategy.name,
             exch=exch,
             pdt=pdt,
             oid=order.oid,
@@ -138,6 +139,9 @@ class BacktestManager(OrderManager):
                 realized_pnl=0.0 - 1,
                 unrealized_pnl=(current_price - filled_price) * order.size * order.side
             )
+        # Apply $1 commission per transaction
+        commission = 1.0
+        self.pm.update_balance(currency='USD', value=self.pm.get_balance('USD') - commission)
         self.transaction_log.append({
             'ts': bar.ts,
             'oid': order.oid,
@@ -146,7 +150,7 @@ class BacktestManager(OrderManager):
             'size': order.size,
             'filled_price': filled_price,
             'order_type': order.order_type,
-            'status': 'FILLED'
+            'status': 'FILLED',
         })
 
     def on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume, on_order_status_update):
@@ -167,6 +171,21 @@ class BacktestManager(OrderManager):
                 bar=Bar(ts=ts, open_=open_, high=high, low=low, close=close, volume=volume),
                 on_order_status_update=on_order_status_update
             )
+
+        # update position unrealized PnL
+        product = self.strategy.get_product(exch, pdt)
+        if self.pm.get_position(product) is not None:
+            position = self.pm.get_position(product)
+            self.pm.update_position(
+                product=product,
+                side=position.side,
+                size=position.size,
+                last_price=close,
+                avg_price=position.avg_price,
+                realized_pnl=position.realized_pnl,
+                unrealized_pnl=(close - position.avg_price) * position.size * position.side
+            )
+
         portfolio_value = self.pm.get_portfolio_value(currency='USD')
         self.portfolio_history.append({'ts': ts, 'portfolio_value': portfolio_value})
             
