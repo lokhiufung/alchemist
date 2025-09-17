@@ -4,6 +4,7 @@ from alchemist.strategies.moving_average_strategy.moving_average_strategy import
 from alchemist.data_pipelines.data_pipeline import DataPipeline
 from alchemist.data_card import DataCard
 from alchemist.products.future_product import FutureProduct
+from alchemist.commission import FutureContractCommission
 
 
 product = FutureProduct('MES', 'USD', 'CME', '2025-06')
@@ -20,7 +21,7 @@ strategy_actors = [
         data_cards=data_cards,
         is_backtesting=True
     )
-    for _ in range(1)
+    for _ in range(2)
 ]
 
 data_pipeline = DataPipeline(
@@ -32,6 +33,13 @@ result = ray.get([strategy_actor.start_backtesting.remote(
     start_date='2025-02-01',
     end_date='2025-05-01',
     initial_cash=10000.0,
+    commission=FutureContractCommission(
+        commission=1,
+        initial_margin=2320,
+        maintainance_margin=2109,
+        multiplier=5,
+        is_margin_percentage=False
+    ),
     export_data=True,
     path_prefix='test',
 ) for strategy_actor in strategy_actors])
