@@ -69,8 +69,11 @@ class BacktestManager(OrderManager):
             ((pos.side == 1 and order.side == -1) or (pos.side == -1 and order.side == 1))
         )
 
-        if product_type == 'futures':
-            margin_required = 0.1 * abs(order.size * filled_price)  # assume 10% initial margin
+        if product_type == 'FUTURE':
+            if self.commission.is_margin_percentage:
+                margin_required = 0.1 * abs(order.size * filled_price)  # assume 10% initial margin
+            else:
+                margin_required = self.commission.initial_margin * abs(order.size)
             if not is_reducing:
                 self.pm.update_balance(currency='USD', value=last_balance - margin_required)
             else:
@@ -99,14 +102,14 @@ class BacktestManager(OrderManager):
                     size=new_size,
                     last_price=filled_price,
                     avg_price=new_avg_price,
-                    realized_pnl=existing_pos.realized_pnl - 1,
+                    realized_pnl=existing_pos.realized_pnl - self.commission.commission,
                     unrealized_pnl=(current_price - new_avg_price) * new_size * order.side
                 )
             else:
                 # Reducing or closing position
                 if order.size < existing_pos.size:
                     remaining_size = existing_pos.size - order.size
-                    realized_pnl = (filled_price - existing_pos.avg_price) * order.size * existing_pos.side - 1
+                    realized_pnl = (filled_price - existing_pos.avg_price) * order.size * existing_pos.side - self.commission.commission
                     self.pm.update_position(
                         product=order.product,
                         side=existing_pos.side,
@@ -118,7 +121,7 @@ class BacktestManager(OrderManager):
                     )
                 else:
                     # Fully closed or reversed
-                    realized_pnl = (filled_price - existing_pos.avg_price) * existing_pos.size * existing_pos.side
+                    realized_pnl = (filled_price - existing_pos.avg_price) * existing_pos.size * existing_pos.side - self.commission.commission
                     new_size = order.size - existing_pos.size
                     self.pm.update_position(
                         product=order.product,
@@ -126,7 +129,7 @@ class BacktestManager(OrderManager):
                         size=new_size,
                         last_price=filled_price,
                         avg_price=filled_price,
-                        realized_pnl=realized_pnl - 1,
+                        realized_pnl=realized_pnl,
                         unrealized_pnl=(current_price - filled_price) * new_size * order.side
                     )
         else:
@@ -136,12 +139,11 @@ class BacktestManager(OrderManager):
                 size=order.size,
                 last_price=filled_price,
                 avg_price=filled_price,
-                realized_pnl=0.0 - 1,
+                realized_pnl=0.0 - self.commission.commission,
                 unrealized_pnl=(current_price - filled_price) * order.size * order.side
             )
-        # Apply $1 commission per transaction
-        commission = 1.0
-        self.pm.update_balance(currency='USD', value=self.pm.get_balance('USD') - commission)
+        # Apply commission per transaction
+        self.pm.update_balance(currency='USD', value=self.pm.get_balance('USD') - self.commission.commission)
         self.transaction_log.append({
             'ts': bar.ts,
             'oid': order.oid,
