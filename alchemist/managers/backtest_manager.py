@@ -34,11 +34,14 @@ class BacktestManager(OrderManager):
         if order.order_type != 'MARKET':
             self.logger.warning('Only MARKET order is supported for backtesting. All other orders will be converted to MARKET order.')
 
-        filled_price = bar.open
+        # REMINDER: for MARKET order, we assume near immediately filling the order at the triggered price
+        filled_price = order.price
+        # add 1 more minute to the bar time
+        filling_time = bar.ts + pd.Timedelta(minutes=1)
         
         # if `MARKET` order, fill with the open price
         _, _, (_, _, order_update) = standardized_messages.create_order_update_message(
-            ts=bar.ts,
+            ts=filling_time,
             gateway=gateway,
             strategy=self.strategy.name,
             exch=exch,
@@ -145,7 +148,7 @@ class BacktestManager(OrderManager):
         # Apply commission per transaction
         self.pm.update_balance(currency='USD', value=self.pm.get_balance('USD') - self.commission.commission)
         self.transaction_log.append({
-            'ts': bar.ts,
+            'ts': filling_time,
             'oid': order.oid,
             'product': order.product.name,
             'side': order.side,
