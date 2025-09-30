@@ -250,7 +250,7 @@ class DataManager:
         #             size=size,
         #         )
 
-    def check_highest_resolution(self, ts, indexes) -> bool:
+    def check_highest_resolution(self, ts, freq, indexes) -> bool:
         ### TODO: implement this method, only allow calling next when the all highest resolution data are ready
         """
         1. get the normalized value of the ts (in seconds)
@@ -259,10 +259,12 @@ class DataManager:
         4. if not, return `False`, otherwise return `True`
 
         """
+        bar_update_freq: Frequency = Frequency(freq=freq)
         highest_freq: Frequency = self.datas[indexes[0]].frequency
         normalized_ts = ts.timestamp()  # convert to seconds
         normalized_highest_freq = highest_freq.normalized_value
-        return normalized_ts % normalized_highest_freq == 0
+        # REMINDER: since the ts received is at `bar open`, for example, update at 10:05:55 represents update from 10:05:55 to 10:06:00, which means we have already had a complete minute bar at the moment we get this update
+        return (normalized_ts + bar_update_freq.normalized_value) % normalized_highest_freq == 0
 
     def check_sync(self, indexes) -> bool:
         """

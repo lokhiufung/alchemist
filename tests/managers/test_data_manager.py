@@ -273,14 +273,19 @@ def test_check_highest_resolution_5s_1m(data_manager, data_card_1m):
         data_card_1m.freq,
         data_card_1m.aggregation
     )
-    
+    freq = '5s'
+
     # test with not 1m ts
     non_integral_ts = datetime(2024, 1, 1, 9, 30, 5)  # Not aligned to 1-minute interval
-    assert not data_manager.check_highest_resolution(ts=non_integral_ts, indexes=[index_product])
+    assert not data_manager.check_highest_resolution(ts=non_integral_ts, freq=freq, indexes=[index_product])
 
     # test with 1m ts
     integral_ts = datetime(2024, 1, 1, 9, 30, 0)  # Aligned to 1-minute interval
-    assert data_manager.check_highest_resolution(ts=integral_ts, indexes=[index_product])
+    assert not data_manager.check_highest_resolution(ts=integral_ts, freq=freq, indexes=[index_product])
+
+    # test with complete 1m bar ts
+    integral_ts = datetime(2024, 1, 1, 9, 29, 55)  # Aligned to 1-minute interval
+    assert data_manager.check_highest_resolution(ts=integral_ts, freq=freq, indexes=[index_product])
 
 
 def test_check_sync_two_1m(data_manager_two_1m, data_card_1m, data_card_1m_product2):

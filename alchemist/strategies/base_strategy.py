@@ -478,7 +478,7 @@ class BaseStrategy(ABC):
     def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume, is_warmup=False):
         self.dm.on_bar_update(gateway, exch, pdt, freq, ts, open_, high, low, close, volume)
         self.on_bar_update(gateway, exch, freq, pdt, ts=ts, open_=open_, high=high, low=low, close=close, volume=volume)
-        if not is_warmup and self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, indexes=self.highest_resolution_data_indexes):
+        if not is_warmup and self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, freq=freq, indexes=self.highest_resolution_data_indexes):
             # check if the corresponding data cards are synced i.e having the same ts
             self.next()
 
