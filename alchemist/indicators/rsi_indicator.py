@@ -11,11 +11,10 @@ class RsiIndicator(BaseIndicator):
         if len(self.data_0) <= self.min_period:
             return
 
-        recent_bars = list(self.data_0)[-(self.min_period + 1):]
         gains = []
         losses = []
 
-        for previous_bar, current_bar in zip(recent_bars[:-1], recent_bars[1:]):
+        for previous_bar, current_bar in zip(self.data_0[-(self.min_period + 1):-1], self.data_0[-(self.min_period + 1) + 1:]):
             delta = current_bar.close - previous_bar.close
             if delta > 0:
                 gains.append(delta)
