@@ -5,7 +5,7 @@ portfolio_manager.py
 This module implements the PortfolioManager class which is responsible for managing account balances,
 positions, and reserved funds within the automated trading system. It provides methods to compute
 the overall portfolio value, track available versus reserved capital, and update positions based on
-trading activity.
+trading activity. Also for RISK MANAGEMENT!!
 
 Key functionalities include:
     - Retrieving the current cash balance and reserved balance for a specific currency.
@@ -204,7 +204,7 @@ class PortfolioManager:
         self.balances[currency] = value
         self.logger.debug(f'balances={self.balances}')
 
-    def create_position(self, product: BaseProduct, side: int, size: float, last_price: float, avg_price: float, realized_pnl: None, unrealized_pnl: None):
+    def create_position(self, product: BaseProduct, side: int, size: float, last_price: float, avg_price: float, realized_pnl: float=None, unrealized_pnl: float=None):
         """
         Creates a new position for a specified product.
 
@@ -224,7 +224,7 @@ class PortfolioManager:
         exch, pdt = product.exch, product.name
         self.positions[exch] = {pdt: Position(product, side, size, last_price, avg_price, realized_pnl, unrealized_pnl)}
         self.logger.debug(f'positions={self.positions}')
-        # return self.positions[exch][pdt]
+        return self.positions[exch][pdt]
     
     def update_position(self, product: BaseProduct, side: int, size: float, last_price: float, avg_price: float, realized_pnl: float, unrealized_pnl: float):
         """
@@ -246,3 +246,8 @@ class PortfolioManager:
         position = self.positions[exch][pdt]
         position.update(side, size, last_price, avg_price, realized_pnl, unrealized_pnl)
         self.logger.debug(f'positions={self.positions}')
+        return position
+
+    def update_position_status(self, product, status):
+        position = self.get_position(product)
+        position.update_status(status)

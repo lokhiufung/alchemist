@@ -37,9 +37,9 @@ class BaseStrategy(ABC):
             data_pipeline_kwargs: dict=None, 
             max_len=1000,
             params=None,
-            trading_periods: typing.List[typing.Tuple[str, str]]=None,
             monitor_actor: BaseMonitor=None,
             is_backtesting=False,
+            trading_periods: typing.List[typing.Tuple[str, str]]=None,
         ):
         # assert self.NAME is not None, f'Please initialize the NAME like `xxx_strategy`: {self.NAME}'
         self.name = name
@@ -81,6 +81,9 @@ class BaseStrategy(ABC):
         self._logger = get_logger(self.name.lower(), console_logger_lv='debug', file_logger_lv='debug')
 
         self._logger.debug(f'{self.params=}')
+
+        # useful flags
+        self.num_orders = 0
     
     def get_params(self):
         return self.params
@@ -294,6 +297,7 @@ class BaseStrategy(ABC):
                     order_update['ts'] = datetime.fromtimestamp(order_update['ts'])
                     order = self.om.open_orders.get(oid) or self.om.submitted_orders.get(oid)
                     order_statuses = self.om.on_order_status_update(gateway, order_update)
+                    self._on_order_status_update(gateway, order_update)
                     self.on_order_status_update(gateway, order_update)
                     if self.monitor_actor is not None:
                         if order:
@@ -362,10 +366,25 @@ class BaseStrategy(ABC):
     def get_position(self, product: BaseProduct):
         return self.pm.get_position(product)
     
-    def place_order(self, order: Order) -> Order:
+    def place_order(self, order: Order, action: str='BET') -> Order:
+        # action: 'BET', 'PARTIALLY_BET', 'CLOSE', 'PARTIALLY_CLOSE'
+        position = self.pm.get_position(order.product)
+        if position is None:
+            self.pm.create_position(
+                order.product,
+                side=order.side,
+                size=0,
+                last_price=0.0,
+                avg_price=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+            )
+            self.pm.update_position_status(order.product, 'IDLE')  # this line is only for security. May not need it
         if self._is_backtesting:
-            return self.backtest_manager.place_order(order)
-        return self.order_manager.place_order(order)
+            order = self.backtest_manager.place_order(order)
+        else:
+            order = self.order_manager.place_order(order)
+        return order
 
     def get_submitted_orders(self):
         return self.om.submitted_orders
@@ -486,9 +505,18 @@ class BaseStrategy(ABC):
 
     ####
     # for internal update, i.e order book, portfolio, ...etc
-    def _on_order_status_update(self):
-        # update om accordingly
-        pass
+    def _on_order_status_update(self, gateway, order_update):
+        # updat the position status here
+        product = self.get_product(order_update['data']['exch'], order_update['data']['pdt'])
+        position = self.pm.get_position(product)
+        if position is not None:
+            if order_update['data']['status'] in ['CLOSED', 'CANCELED', 'REJECTED']:
+                position.update_status('IDLE')
+            elif order_update['data']['status'] in ['FILLED']:
+                if position.status == 'PENDING_BETTING':
+                    position.update_status('BETTED')
+                elif position.status == 'PENDING_CLOSING':
+                    position.update_status('IDLE')
 
     def update_balance(self, currency, value):
         # process balance updates
@@ -510,12 +538,26 @@ class BaseStrategy(ABC):
         self.on_bar_update(gateway, exch, freq, pdt, ts=ts, open_=open_, high=high, low=low, close=close, volume=volume)
         if (
             not is_warmup and
-            # self.is_trading_period(ts) and
             self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and
             self.dm.check_highest_resolution(ts=ts, freq=freq, indexes=self.highest_resolution_data_indexes)
         ):
             # check if the corresponding data cards are synced i.e having the same ts
-            self.next()
+            if self.is_trading_period(ts):
+                self.next()
+            else:
+                # outside your target trading periods
+                # TODO: for now always automatically close all positions when outside trading periods
+                for product in self.products:
+                    position = self.pm.get_position(product=product)
+                    # 1. exit existing position if any
+                    if position is not None and position.status != 'PENDING_CLOSING' and position.size > 0:
+                        current_close = self.data[-1].close
+                        self.close(
+                            gateway='ib_gateway',
+                            product=self.product,
+                            price=current_close,
+                            reason='close position outside the trading periods'
+                        )
 
     def shutdown(self):
         self._is_running = False
