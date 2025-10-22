@@ -79,13 +79,27 @@ class OrderManager:
             self._check_enough_balance(order),
             self._check_duplicated_oid(order),
             self._check_valid_price(order),
-            self._check_valid_size(order)
+            self._check_valid_size(order),
+            self._check_if_pending_betting_or_closing(order),
+            self._check_if_over_betting(order),
         ]
         for result in condition_filters:
             if not result['passed']:
                 return result
         return {'passed': True, 'reason': ''}
-            
+    
+    def _check_if_pending_betting_or_closing(self, order):
+        position = self.portfolio_manager.get_position(product=order.product)
+        if position.status in ['PEDNING_BETTING', 'PENDING_CLOSING']:
+            return {'passed': False, 'reason': 'Pending betting or pending closing or betted'}
+        return {'passed': True, 'reason': ''}
+
+    def _check_if_over_betting(self, order):
+        position = self.portfolio_manager.get_position(product=order.product)
+        if position is not None and position.size > 0 and position.side == order.side and position.status == 'BETTED':
+            return {'passed': False, 'reason': 'Over betting'}
+        return {'passed': True, 'reason': ''}
+    
     def _check_enough_balance(self, order: Order) -> dict:
         """
         Checks if the order has sufficient available balance in the portfolio.
@@ -297,6 +311,11 @@ class OrderManager:
             currency=order.product.base_currency,
             value=order.price * order.size, # TODO: not quite correct
         )
+        position = self.portfolio_manager.get_position(product=order.product)
+        if position.side != order.side:
+            self.portfolio_manager.update_position_status(order.product, 'PENDING_CLOSING')
+        else:
+            self.portfolio_manager.update_position_status(order.product, 'PENDING_BETTING')
         return order_status_updates
 
     def on_amend_submitted(self, oid: str) -> typing.List[str]:
@@ -412,6 +431,7 @@ class OrderManager:
                 oid,
                 currency=order.product.base_currency,
             )
+            self.portfolio_manager.update_position_status(order.product, 'IDLE')
         return order_status_updates
 
     def on_internal_rejected(self, order: Order, reason: str=''):
@@ -436,6 +456,7 @@ class OrderManager:
             order.oid,
             currency=order.product.base_currency,
         )
+        self.portfolio_manager.update_position_status(status='IDLE')
         # remove the order from the submitted_orders if internally rejected by the gateway
         if order.oid in self.submitted_orders:
             del self.submitted_orders[order.oid]
@@ -478,6 +499,11 @@ class OrderManager:
             order.oid,
             currency=order.product.base_currency,
         )
+        position = self.portfolio_manager.get_position(product=order.product)
+        if position.status == 'PEDNING_BETTING':
+            self.portfolio_manager.update_position_status(order.product, 'BETTED')
+        elif position.status == 'PENDING_CLOSING':
+            self.portfolio_manager.update_position_status(order.product, 'IDLE')
         return order_status_updates
 
     def on_partial_filled(self, oid: str, price: float, size: float):
