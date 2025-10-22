@@ -37,6 +37,7 @@ class BaseStrategy(ABC):
             data_pipeline_kwargs: dict=None, 
             max_len=1000,
             params=None,
+            trading_periods: typing.List[typing.Tuple[str, str]]=None,
             monitor_actor: BaseMonitor=None,
             is_backtesting=False,
         ):
@@ -46,6 +47,9 @@ class BaseStrategy(ABC):
         self.data_cards = data_cards
         self.max_len = max_len  # the maximum length of the datas
         self.params = self.PARAMS
+        self.trading_periods = trading_periods
+        if trading_periods is not None:
+            self.trading_periods = self._load_trading_periods_from_str(trading_periods=trading_periods)
         if params is not None and isinstance(params, dict):
             self.params = {**self.params, **params}
         # for zmq
@@ -80,6 +84,32 @@ class BaseStrategy(ABC):
     
     def get_params(self):
         return self.params
+
+    def _load_trading_periods_from_str(self, trading_periods: typing.List[typing.Tuple[str, str]]) -> typing.List[typing.Tuple[datetime.time, datetime.time]]:
+        trading_periods_dt = []
+        for trading_period in trading_periods:
+            start_str, end_str = trading_period
+            start_time = datetime.strptime(start_str, '%H:%M').time()
+            end_time = datetime.strptime(end_str, '%H:%M').time()
+            trading_periods_dt.append((start_time, end_time))
+        return trading_periods_dt
+        
+    # filtering methods for time dependent trading logic
+    def is_trading_period(self, ts: datetime) -> bool:
+        """
+        Check if the given timestamp is within the trading period.
+
+        :param ts: The timestamp to check.
+        :return: True if within trading period, False otherwise.
+        """
+        if self.trading_periods is not None:
+            for period in self.trading_periods:
+                start_time, end_time = period
+                if start_time <= ts.time() <= end_time:
+                    return True
+            # not in any trading period
+            return False
+        return True
 
     def auto_get_highest_resolution_indexes(self):
         highest_resolution = min([data_card.frequency for data_card in self.data_cards])
@@ -478,7 +508,12 @@ class BaseStrategy(ABC):
     def _on_bar(self, gateway, exch, pdt, freq, ts, open_, high, low, close, volume, is_warmup=False):
         self.dm.on_bar_update(gateway, exch, pdt, freq, ts, open_, high, low, close, volume)
         self.on_bar_update(gateway, exch, freq, pdt, ts=ts, open_=open_, high=high, low=low, close=close, volume=volume)
-        if not is_warmup and self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and self.dm.check_highest_resolution(ts=ts, freq=freq, indexes=self.highest_resolution_data_indexes):
+        if (
+            not is_warmup and
+            # self.is_trading_period(ts) and
+            self.dm.check_sync(indexes=self.highest_resolution_data_indexes) and
+            self.dm.check_highest_resolution(ts=ts, freq=freq, indexes=self.highest_resolution_data_indexes)
+        ):
             # check if the corresponding data cards are synced i.e having the same ts
             self.next()
 
