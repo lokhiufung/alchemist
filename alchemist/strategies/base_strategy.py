@@ -84,6 +84,12 @@ class BaseStrategy(ABC):
 
         # useful flags
         self.num_orders = 0
+
+        # handy references
+        self.product = self.products[0] 
+        data_card = self.data_cards[0]
+        data_card_index = self.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, aggregation=data_card.aggregation)
+        self.data = self.datas[data_card_index]
     
     def get_params(self):
         return self.params
@@ -500,9 +506,61 @@ class BaseStrategy(ABC):
     def next(self):
         # here is your trading logic
         # you can access all indicators, datas with different timeframes (resolution lower than the base timeframe)
-        pass
-    ####
+        signals = self.compute_signals()
 
+        trade_decision = self.should_enter(signals)
+        trade_size = self.compute_size(signals, side=trade_decision)
+        position = self.get_position(self.product)
+
+        if position is None or position.size == 0 and trade_decision != 0 and trade_size > 0:
+            if trade_decision > 0:
+                # TODO: should use an execution algo to handle order placement
+                self.buy(
+                    gateway='ib_gateway',  # TODO: hardcoded for now
+                    product=self.product,
+                    price=self.data[-1].close,  # TODO: just put a placeholder for now
+                    size=trade_size,
+                    order_type='MARKET',
+                    time_in_force='GTC',
+                    reason='enter position ',
+                )
+            elif trade_decision < 0: 
+                self.sell(
+                    gateway='ib_gateway',  # TODO: hardcoded for now
+                    product=self.product,
+                    price=self.data[-1].close,  # TODO: just put a placeholder for now
+                    size=trade_size,
+                    order_type='MARKET',
+                    time_in_force='GTC',
+                    reason='enter position ',
+                )
+        elif position.size > 0:
+            exit_decision = self.should_exit(signals, current_side=position.side)
+            if exit_decision:
+                self.close(
+                    gateway='ib_gateway',  # TODO: hardcoded for now
+                    product=self.product,
+                    price=self.data[-1].close,  # TODO: just put a placeholder for now
+                    reason='exit position ',
+                )
+
+    ####
+    #### high level hooks for strategy logic
+    def compute_signals(self) -> dict[str, float]:
+        return {}
+    
+    def compute_size(self, signals: dict[str, float], side: int) -> float:
+        return 0.0
+    
+    def validate_signal(self, signals) -> bool:
+        return True
+
+    def should_enter(self, signals: dict[str, float]) -> bool:
+        return False
+    
+    def should_exit(self, signals: dict[str, float], current_side: int) -> bool:
+        return True
+    ####
     ####
     # for internal update, i.e order book, portfolio, ...etc
     def _on_order_status_update(self, gateway, order_update):
@@ -565,8 +623,8 @@ class BaseStrategy(ABC):
     def get_open_orders(self) -> dict:
         return self.om.open_orders
 
-    def get_signals(self) -> dict:
-        return {}
+    def get_signals(self):
+        return self.compute_signals()
     
     def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, commission=None, n_warmup=0, export_data=False, path_prefix=''):
         from alchemist.managers.backtest_manager import BacktestManager
