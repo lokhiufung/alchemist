@@ -552,9 +552,6 @@ class BaseStrategy(ABC):
     def compute_size(self, signals: dict[str, float], side: int) -> float:
         return 0.0
     
-    def validate_signal(self, signals) -> bool:
-        return True
-
     def should_enter(self, signals: dict[str, float]) -> bool:
         return False
     
