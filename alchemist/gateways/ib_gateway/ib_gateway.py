@@ -570,6 +570,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                         average_filled_price=float(avgFillPrice),
                         last_filled_price=float(lastFillPrice),
                         last_filled_size=float(filled),
+                        create_ts=order_dict['data']['create_ts'],
                     )
                     self._zmq.send(*zmq_msg)
                 else:
@@ -582,6 +583,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                         pdt=order_dict['data']['product']['name'],
                         oid=oid,
                         status='OPENED',
+                        create_ts=order_dict['data']['create_ts'],
                     )
                     self._zmq.send(*zmq_msg)
                     # # remove from submitted orders
@@ -595,6 +597,7 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                     pdt=order_dict['data']['product']['name'],
                     oid=oid,
                     status='CANCELED',
+                    create_ts=order_dict['data']['create_ts'],
                 )
                 self._zmq.send(*zmq_msg)
                 # remove from submitted orders
@@ -611,6 +614,8 @@ class IbGateway(IBClient, IBWrapper, BaseGateway):
                     average_filled_price=float(avgFillPrice),
                     last_filled_price=float(lastFillPrice),
                     last_filled_size=float(filled),
+                    create_ts=order_dict['data']['create_ts'],
+                    target_price=order_dict['data']['price'],
                 )
                 self._zmq.send(*zmq_msg)
                 # remove from submitted orders

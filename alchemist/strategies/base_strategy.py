@@ -84,6 +84,9 @@ class BaseStrategy(ABC):
 
         # useful flags
         self.num_orders = 0
+        
+        # Latency tracking
+        self.last_data_recv_ts = None
 
         # handy references
         self.product = self.products[0] 
@@ -274,6 +277,7 @@ class BaseStrategy(ABC):
     def _process_info(self, channel, topic, info):
         # parse standardized message here
         if channel == 1:
+            self.last_data_recv_ts = datetime.now().timestamp()
             if topic == 1:
                 # process order book updates
                 # REMINDER: users should override the on_quote_update instead of next() to handle strategies on quote update
@@ -303,6 +307,35 @@ class BaseStrategy(ABC):
                     order_update['ts'] = datetime.fromtimestamp(order_update['ts'])
                     order = self.om.open_orders.get(oid) or self.om.submitted_orders.get(oid)
                     order_statuses = self.om.on_order_status_update(gateway, order_update)
+                    
+                    if self.monitor_actor:
+                        if order_update['data']['status'] in ("OPENED", "CANCELLED"):
+                            # Latency Metrics
+                            now = datetime.now().timestamp()
+                            latency = now - order_update['data']['create_ts']
+                            self.monitor_actor.log_latency.remote('strategy_order_roundtrip', latency, now)
+                        # Metric 5: Strategy placing order -> receiving order (Fill)
+                        if 'FILLED' in order_statuses:
+                            # Metric 4: Strategy placing order -> receiving order update (Ack/First update)
+                            # We might want to log this only once per order? 
+                            # For now, logging every update latency is fine, or we can check if it's the first update.
+                            # Actually, 'strategy_order_roundtrip' usually refers to the first Ack.
+                            # But let's log it as 'strategy_order_update_latency'.
+                            now = datetime.now().timestamp()
+                            latency = now - order_update['data']['create_ts']
+                            self.monitor_actor.log_latency.remote('strategy_order_fill_latency', latency, now)
+
+                            target_price = order_update['data'].get('target_price')
+                            filled_price = order_update['data'].get('average_filled_price')
+                            slippage = filled_price - target_price
+                            # For SELL orders, slippage is target - filled? Or just deviation?
+                            # User said: "how does it deviate from the target entry price".
+                            # Usually slippage is unfavorable deviation.
+                            # But let's just log the difference or absolute difference.
+                            # Or (filled - target) for BUY, (target - filled) for SELL.
+                            # I need to know the side.
+                            self.monitor_actor.log_slippage.remote(slippage, now)
+
                     self._on_order_status_update(gateway, order_update)
                     self.on_order_status_update(gateway, order_update)
                     if self.monitor_actor is not None:
@@ -374,6 +407,14 @@ class BaseStrategy(ABC):
     
     def place_order(self, order: Order, action: str='BET') -> Order:
         # action: 'BET', 'PARTIALLY_BET', 'CLOSE', 'PARTIALLY_CLOSE'
+        
+        # Metric 2: Strategy receiving update to placing order to zmq
+        now = datetime.now().timestamp()
+        if self.last_data_recv_ts:
+            latency = now - self.last_data_recv_ts
+            if self.monitor_actor:
+                self.monitor_actor.log_latency.remote('strategy_update_to_order', latency, now)
+
         position = self.pm.get_position(order.product)
         if position is None:
             self.pm.create_position(

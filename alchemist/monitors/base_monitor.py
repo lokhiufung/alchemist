@@ -119,3 +119,15 @@ class BaseMonitor(ABC):
         :param total_value: The total value of the portfolio, including cash and positions.
         """
         pass
+
+    def log_latency(self, metric_name: str, value: float, ts: datetime = None):
+        """
+        Logs a latency metric.
+        """
+        pass
+
+    def log_slippage(self, value: float, ts: datetime = None):
+        """
+        Logs a slippage metric.
+        """
+        pass

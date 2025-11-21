@@ -59,7 +59,7 @@ def load_gateways(config, products, accounts):
     return gateways
 
 
-def load_strategies(config, products, data_cards):
+def load_strategies(config, products, data_cards, monitor_actor=None):
     """Dynamically load and initialize strategy instances from config."""
     strategies = {}
     for strategy_name, strategy_config in config.items():
@@ -70,12 +70,18 @@ def load_strategies(config, products, data_cards):
             zmq_recv_ports=strategy_config["zmq_recv_ports"],
             products=products,
             data_cards=data_cards,
-            monitor_actor=strategy_config.get("monitor_actor", None)
+            monitor_actor=monitor_actor
         )
     return strategies
 
 
-def create_management_service():
+def create_monitor():
+    from alchemist.monitors.dashboard_monitor import DashboardMonitor
+    return DashboardMonitor.remote()
+
+monitor_actor = create_monitor()
+
+def create_management_service(monitor_actor):
     """Create and return the trade management service."""
     file_path = os.getenv("STRATEGY_CONFIG_FILE_PATH")
 
@@ -86,10 +92,11 @@ def create_management_service():
     data_cards = load_data_cards(config["data_cards"], products)
 
     gateways = load_gateways(config["gateways"], products, accounts)
-    strategies = load_strategies(config["strategies"], products, data_cards)
+
+    strategies = load_strategies(config["strategies"], products, data_cards, monitor_actor)
 
     management_service = TradeManagementService.bind(gateways, strategies)
     return management_service
 
 
-management_service = create_management_service()
+management_service = create_management_service(monitor_actor)

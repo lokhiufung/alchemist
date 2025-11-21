@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from alchemist.products.base_product import BaseProduct
 
@@ -16,6 +17,7 @@ class Order:
         self.status = 'CREATED'
         self.time_in_force = time_in_force
         self.trigger_price = None
+        self.create_ts = datetime.now()
 
         self.filled_size: float = 0.0
         self.last_traded_price: float = None
