@@ -39,6 +39,8 @@ class MockGateway(BaseGateway):
             last_filled_size=None,
             amend_price=None,
             amend_size=None,
+            create_ts=order_dict['data']['create_ts'],
+            target_price=order_dict['data']['price'],
         )
         # 1. reject the order
         self._zmq.send(*zmq_msg)
@@ -57,6 +59,8 @@ class MockGateway(BaseGateway):
             last_filled_size=order_dict['data']['size'],
             amend_price=None,
             amend_size=None,
+            create_ts=order_dict['data']['create_ts'],
+            target_price=order_dict['data']['price'],
         )
         # 1. immediately fill
         self._zmq.send(*zmq_msg)

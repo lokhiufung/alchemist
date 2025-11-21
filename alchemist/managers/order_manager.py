@@ -199,6 +199,7 @@ class OrderManager:
                 price=order.price,
                 size=order.size,
                 order_type=order.order_type,
+                create_ts=order.create_ts.timestamp(),
                 time_in_force=order.time_in_force
             )
             try:
@@ -456,7 +457,7 @@ class OrderManager:
             order.oid,
             currency=order.product.base_currency,
         )
-        self.portfolio_manager.update_position_status(status='IDLE')
+        self.portfolio_manager.update_position_status(product=order.product, status='IDLE')
         # remove the order from the submitted_orders if internally rejected by the gateway
         if order.oid in self.submitted_orders:
             del self.submitted_orders[order.oid]

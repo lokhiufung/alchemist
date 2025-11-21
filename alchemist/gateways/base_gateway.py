@@ -2,6 +2,7 @@ import traceback
 import typing
 from abc import ABC, abstractmethod
 import time
+from datetime import datetime
 
 from alchemist.zeromq import ZeroMQ
 from alchemist import standardized_messages
@@ -83,23 +84,23 @@ class BaseGateway(ABC):
                         self.pong()
                     elif channel == 2 and topic == 2:
                         gateway, strategy, order_dict = info
-                        if gateway == self.NAME:
-                            try:
-                                self.place_order(order_dict)
-                            except Exception as err:
-                                zmq_msg = self.create_order_update_message(
-                                    ts=time.time(),
-                                    gateway=self.NAME,
-                                    strategy=order_dict['data']['strategy'],
-                                    exch=order_dict['data']['product']['exch'],
-                                    pdt=order_dict['data']['product']['name'],
-                                    oid=order_dict['data']['oid'],
-                                    status='INTERNAL_REJECTED',
-                                )
-                                self._zmq.send(*zmq_msg)
-                                self._logger.error(f'Order placement failed {order_dict=} {err=}')
-                        else:
-                            self._logger.debug(f'Order from other gateway {gateway=}. Current gateway {self.NAME=}. Just ignore the it.')
+                    if gateway == self.NAME:
+                        try:
+                            self.place_order(order_dict)
+                        except Exception as err:
+                            zmq_msg = self.create_order_update_message(
+                                ts=time.time(),
+                                gateway=self.NAME,
+                                strategy=order_dict['data']['strategy'],
+                                exch=order_dict['data']['product']['exch'],
+                                pdt=order_dict['data']['product']['name'],
+                                oid=order_dict['data']['oid'],
+                                status='INTERNAL_REJECTED',
+                            )
+                            self._zmq.send(*zmq_msg)
+                            self._logger.error(f'Order placement failed {order_dict=} {err=}')
+                    else:
+                        self._logger.debug(f'Order from other gateway {gateway=}. Current gateway {self.NAME=}. Just ignore the it.')
             except Exception as e:
                 self._logger.error(f"Error in gateway {self.NAME}: {e}")
                 self._logger.error(traceback.format_exc())  # Log the full traceback
@@ -187,8 +188,8 @@ class BaseGateway(ABC):
         return standardized_messages.create_bar_message(ts, gateway, exch, pdt, resolution, open_, high, low, close, volume)
     
     @staticmethod
-    def create_order_update_message(ts, gateway, strategy, exch, pdt, oid, status, average_filled_price=None, last_filled_price=None, last_filled_size=None, amend_price=None, amend_size=None):
-        return standardized_messages.create_order_update_message(ts, gateway, strategy, exch, pdt, oid, status, average_filled_price, last_filled_price, last_filled_size, amend_price, amend_size)
+    def create_order_update_message(ts, gateway, strategy, exch, pdt, oid, status, average_filled_price=None, last_filled_price=None, last_filled_size=None, amend_price=None, amend_size=None, create_ts=None, target_price=None):
+        return standardized_messages.create_order_update_message(ts, gateway, strategy, exch, pdt, oid, status, average_filled_price, last_filled_price, last_filled_size, amend_price, amend_size, create_ts, target_price)
     
     @staticmethod
     def create_place_order_message(ts, gateway, exch, product, oid, side, price, size, order_type, time_in_force):
