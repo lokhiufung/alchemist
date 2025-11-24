@@ -90,7 +90,7 @@ class OrderManager:
     
     def _check_if_pending_betting_or_closing(self, order):
         position = self.portfolio_manager.get_position(product=order.product)
-        if position.status in ['PEDNING_BETTING', 'PENDING_CLOSING']:
+        if position is not None and position.status in ['PEDNING_BETTING', 'PENDING_CLOSING']:
             return {'passed': False, 'reason': 'Pending betting or pending closing or betted'}
         return {'passed': True, 'reason': ''}
 
@@ -313,7 +313,7 @@ class OrderManager:
             value=order.price * order.size, # TODO: not quite correct
         )
         position = self.portfolio_manager.get_position(product=order.product)
-        if position.side != order.side:
+        if position is not None and position.side != order.side:
             self.portfolio_manager.update_position_status(order.product, 'PENDING_CLOSING')
         else:
             self.portfolio_manager.update_position_status(order.product, 'PENDING_BETTING')
@@ -501,6 +501,17 @@ class OrderManager:
             currency=order.product.base_currency,
         )
         position = self.portfolio_manager.get_position(product=order.product)
+        if not position:
+            position = self.portfolio_manager.create_position(
+                product=order.product,
+                side=0,
+                size=0,
+                last_price=0.0,
+                avg_price=0.0,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+            )
+            self.portfolio_manager.update_position_status(order.product, 'PEDNING_BETTING')
         if position.status == 'PEDNING_BETTING':
             self.portfolio_manager.update_position_status(order.product, 'BETTED')
         elif position.status == 'PENDING_CLOSING':

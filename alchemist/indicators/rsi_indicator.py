@@ -13,7 +13,7 @@ class RsiIndicator(BaseIndicator):
 
         gains = []
         losses = []
-
+        
         for previous_bar, current_bar in zip(self.data_0[-(self.min_period + 1):-1], self.data_0[-(self.min_period + 1) + 1:]):
             delta = current_bar.close - previous_bar.close
             if delta > 0:

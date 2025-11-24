@@ -53,6 +53,8 @@ class BacktestManager(OrderManager):
             last_filled_size=order.size,
             amend_price=None,
             amend_size=None,
+            create_ts=filling_time,
+            target_price=order.price,
         )
 
         on_order_status_update(gateway, order_update)  # TODO: just a quick fix

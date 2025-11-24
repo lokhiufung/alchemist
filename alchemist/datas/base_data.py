@@ -1,21 +1,37 @@
 from abc import abstractmethod
 from collections import deque
+from datetime import datetime
 
 from alchemist.datas.common import Tick, Bar
 from alchemist.datas.frequency import Frequency
+from alchemist.data_line import DataLine
 
 
 class BaseData:
+
+    TS_DATA_LINE_NAME = 'ts'
+    DATA_LINES: tuple[str] = None
+
     def __init__(self, max_len: int, freq: str, index=None):
         self.index = index
         self.max_len = max_len
         self.frequency = Frequency(freq=freq)
         self.freq = self.frequency.freq
-        self.data = deque(maxlen=self.max_len)
         self.total_len = 0
-        self.listeners = []
+
+        # create data lines
+        self._initialize_data_lines()
+        
         self.unit, self.resolution = self.frequency.unit, self.frequency.resolution
 
+    def _initialize_data_lines(self):
+        for data_line_name in self.DATA_LINES:
+            if data_line_name == self.TS_DATA_LINE_NAME:
+                data_line = DataLine(name=data_line_name, max_len=self.max_len, require_float=False)
+            else:
+                data_line = DataLine(name=data_line_name, max_len=self.max_len, require_float=True)
+            setattr(self, data_line_name, data_line)
+    
     def _step(self):
         # increase the the total len of the data by 1
         self.total_len += 1
@@ -32,13 +48,6 @@ class BaseData:
     def on_bar_update(self, bar: Bar):
         pass
 
-    def add_listener(self, listener):
-        self.listeners.append(listener)
-
-    def push(self):
-        for listener in self.listeners:
-            listener.push()
-    
     def __str__(self):
         return f"Data(freq='{self.freq}', max_len={self.max_len}, total_len={self.total_len})"
 

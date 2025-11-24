@@ -26,7 +26,8 @@ class BaseIndicator(ABC):
     def _initialize_listeners(self):
         for i, data in enumerate(self.datas):
             setattr(self, f'data_{i}', data)
-            data.add_listener(listener=self)  # TODO: kind of weird
+            # data.add_listener(listener=self)  # TODO: kind of weird
+            data.ts.add_listener(listener=self)
 
     def _initialize_data_lines(self):
         for data_line_name in self.DATA_LINES:
@@ -47,9 +48,9 @@ class BaseIndicator(ABC):
             if len(data) < self.min_period:
                 return False
         # 1. check synchronization by ts
-        ts = self.datas[0].data[-1].ts
+        ts = self.datas[0].ts[-1]
         for data in self.datas:
-            if ts != data.data[-1].ts:
+            if ts != data.ts[-1]:
                 return False
         # 2. check if the datas have ticked
         if self._last_update_ts is None or self._last_update_ts != ts:
@@ -63,11 +64,20 @@ class BaseIndicator(ABC):
         # TODO: ignore cases where there are child indicators
         # for indicator in self.indicators:
         #     indicator.advance()
+        
+        # Capture lengths before next
+        lengths_before = {name: len(getattr(self, name)) for name in self.DATA_LINES}
+        
         self.next()
+        
         # check if all datalines are added a new value
         for data_line_name in self.DATA_LINES:
             data_line = getattr(self, data_line_name)
-            if len(data_line) == self._last_len:
+            if len(data_line) == lengths_before[data_line_name]:
                 # make sure that the length of data_line is as same as the number of time the next() is called
                 data_line.append(float('nan'))
+        
+        # Update last update ts
+        if self.datas:
+             self._last_update_ts = self.datas[0].ts[-1]
     

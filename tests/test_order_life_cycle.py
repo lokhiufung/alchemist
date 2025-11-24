@@ -44,8 +44,9 @@ def test_open_order_update(mock_zmq, portfolio_manager):
     # append the submitted
     om.submitted_orders[order.oid] = order
     
+    ts = time.time()
     _, _, (gateway, strategy, order_update) = create_order_update_message(
-        ts=time.time(),
+        ts=ts,
         gateway=gateway,
         strategy=strategy,
         exch=exch,
@@ -57,6 +58,8 @@ def test_open_order_update(mock_zmq, portfolio_manager):
         last_filled_size=None,
         amend_price=None,
         amend_size=None,
+        create_ts=time.time(),
+        target_price=100.1,
     )
     om.on_order_status_update(gateway, order_update)
 
@@ -88,8 +91,9 @@ def test_filled_order_update_when_opened(mock_zmq, portfolio_manager):
     # append the open_orders
     om.open_orders[order.oid] = order
     
+    ts = time.time()
     _, _, (gateway, strategy, order_update) = create_order_update_message(
-        ts=time.time(),
+        ts=ts,
         gateway=gateway,
         strategy=strategy,
         exch=exch,
@@ -101,6 +105,8 @@ def test_filled_order_update_when_opened(mock_zmq, portfolio_manager):
         last_filled_size=10,
         amend_price=None,
         amend_size=None,
+        create_ts=ts,
+        target_price=100.1,
     )
     om.on_order_status_update(gateway, order_update)
 
@@ -131,6 +137,7 @@ def test_partial_filled_order_update(mock_zmq, portfolio_manager):
     # append the open_orders
     om.open_orders[order.oid] = order
     
+    ts = time.time()
     _, _, (gateway, strategy, order_update) = create_order_update_message(
         ts=time.time(),
         gateway=gateway,
@@ -144,6 +151,8 @@ def test_partial_filled_order_update(mock_zmq, portfolio_manager):
         last_filled_size=5,
         amend_price=None,
         amend_size=None,
+        create_ts=ts,
+        target_price=100.1,
     )
     om.on_order_status_update(gateway, order_update)
 
@@ -176,8 +185,9 @@ def test_cancel_order_update(mock_zmq, portfolio_manager):
     # append the open_orders
     om.open_orders[order.oid] = order
     
+    ts = time.time()
     _, _, (gateway, strategy, order_update) = create_order_update_message(
-        ts=time.time(),
+        ts=ts,
         gateway=gateway,
         strategy=strategy,
         exch=exch,
@@ -189,6 +199,8 @@ def test_cancel_order_update(mock_zmq, portfolio_manager):
         last_filled_size=None,
         amend_price=None,
         amend_size=None,
+        create_ts=ts,
+        target_price=100.1,
     )
     om.on_order_status_update(gateway, order_update)
 
@@ -219,8 +231,9 @@ def test_amend_order_update(mock_zmq, portfolio_manager):
     # append the open_orders
     om.open_orders[order.oid] = order
     
+    ts = time.time()
     _, _, (gateway, strategy, order_update) = create_order_update_message(
-        ts=time.time(),
+        ts=ts,
         gateway=gateway,
         strategy=strategy,
         exch=exch,
@@ -232,6 +245,8 @@ def test_amend_order_update(mock_zmq, portfolio_manager):
         last_filled_size=None,
         amend_price=90.1,
         amend_size=5,
+        create_ts=ts,
+        target_price=90.1,
     )
     om.on_order_status_update(gateway, order_update)
 

@@ -250,4 +250,14 @@ class PortfolioManager:
 
     def update_position_status(self, product, status):
         position = self.get_position(product)
+        if position is None:
+            position = self.create_position(
+                product=product,
+                side=0,
+                size=0,
+                last_price=0,
+                avg_price=0,
+                realized_pnl=0,
+                unrealized_pnl=0
+            )
         position.update_status(status)

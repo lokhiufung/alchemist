@@ -183,8 +183,8 @@ def test_on_bar_update_no_resampling(data_manager, data_card_1m):
     
     # Assert that bar was appended
     bar_data = data_manager.get_data(index)
-    assert len(bar_data.data) == 1, "Bar was not appended correctly."
-    assert bar_data.data[0].close == mock_bar.close, "Bar close price mismatch."
+    assert len(bar_data.open) == 1, "Bar was not appended correctly."
+    assert bar_data.close[0] == mock_bar.close, "Bar close price mismatch."
 
 
 def test_on_bar_update_with_resampling(data_manager, data_card_5m):
@@ -221,12 +221,12 @@ def test_on_bar_update_with_resampling(data_manager, data_card_5m):
         print(data_manager.resamplers[index].current_bar)
 
     bar_data = data_manager.get_data(index)
-    assert len(bar_data.data) == 1, "Resampled bar was not appended correctly."
-    assert bar_data[-1].open == 100.0
-    assert bar_data[-1].high == 109.0
-    assert bar_data[-1].low == 95.0
-    assert bar_data[-1].close == 104.5
-    assert bar_data[-1].volume == 26000
+    assert len(bar_data.open) == 1, "Resampled bar was not appended correctly."
+    assert bar_data.open[-1] == 100.0
+    assert bar_data.high[-1] == 109.0
+    assert bar_data.low[-1] == 95.0
+    assert bar_data.close[-1] == 104.5
+    assert bar_data.volume[-1] == 26000
 
 
 def test_on_tick_update(data_manager, data_card_tick):
