@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1] - 2025-11-24
+
+### Features
+- Added a `DataLine` abstraction so indicators can subscribe to specific data series with push-based updates while tracking per-line lengths.
+- Refactored `BarData` and `TickData` to store each field in dedicated `DataLine`s and return typed `Bar`/`Tick` objects from slices, keeping total counts in sync.
+- Updated indicator plumbing to listen on data timestamps and auto-append output values per tick; aligned `RsiIndicator` with the new data-line model.
+- Hardened order submission by blocking pending/over-betting scenarios and broadened test coverage for data handling and order lifecycles.
+
 ## [1.2.0] - 2025-11-20
 
 ### Features
