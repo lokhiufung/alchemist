@@ -15,7 +15,7 @@ def bar_data(max_len=50, freq='1m'):
 
 @pytest.fixture
 def rsi_indicator(bar_data, min_period=5):
-    return RsiIndicator(bar_data, min_period=min_period)
+    return RsiIndicator(bar_data.close, min_period=min_period, ts_line=bar_data.ts)
 
 
 def _add_closes(bar_data, closes):

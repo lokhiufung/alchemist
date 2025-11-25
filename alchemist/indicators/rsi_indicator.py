@@ -6,16 +6,19 @@ class RsiIndicator(BaseIndicator):
         'rsi',
     )
 
+    def __init__(self, close_line, min_period=14, ts_line=None):
+        super().__init__(close_line, min_period=min_period, ts_line=ts_line)
+        self.close_line = self.data_0
+
     def next(self):
-        # TODO
-        if len(self.data_0) <= self.min_period:
+        if len(self.close_line) <= self.min_period:
             return
 
         gains = []
         losses = []
         
-        for previous_bar, current_bar in zip(self.data_0[-(self.min_period + 1):-1], self.data_0[-(self.min_period + 1) + 1:]):
-            delta = current_bar.close - previous_bar.close
+        for previous, current in zip(self.close_line[-(self.min_period + 1):-1], self.close_line[-(self.min_period + 1) + 1:]):
+            delta = current - previous
             if delta > 0:
                 gains.append(delta)
                 losses.append(0.0)

@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from alchemist.indicators.base_indicator import BaseIndicator
 
 
@@ -11,40 +9,47 @@ class DailyVwapIndicator(BaseIndicator):
         'vwap',
     )
 
-    def __init__(self, data, params):
-        super().__init__(data, min_period=1, params=params)
-        self.cum_volume = 0
-        self.current_date = None
-        self.cum_vol_price = 0
+    def __init__(self, high_line, low_line, close_line, volume_line, ts_line, start_hour=6):
+        super().__init__(
+            high_line,
+            low_line,
+            close_line,
+            volume_line,
+            min_period=1,
+            ts_line=ts_line,
+            update_mode='time',
+            rollover_frequency='1d',
+        )
+        self.high_line = self.data_0
+        self.low_line = self.data_1
+        self.close_line = self.data_2
+        self.volume_line = self.data_3
+        self.start_hour = start_hour
+        self.reset_state()
+
+    def reset_state(self):
+        self.cum_volume = 0.0
+        self.cum_vol_price = 0.0
         self.start_vwap_calculation = False
 
-        self.data = self.datas[0]
-
     def next(self):
-        dt = self.data[0].ts
-        # convert dt to datetime
-        # dt = datetime.fromtimestamp(dt)
-        
-        # Check if we need to reset the cumulative sums at 18:00
-        if dt.hour == self.params['start_hour'] and dt.minute == 0:
-            self.cum_volume = 0
-            self.cum_vol_price = 0
-            self.current_date = dt.date()
+        dt = self.ts_line[-1]
+
+        # start calculating at configured hour
+        if dt.hour == self.start_hour and dt.minute == 0:
+            self.cum_volume = 0.0
+            self.cum_vol_price = 0.0
             self.start_vwap_calculation = True
         
         if self.start_vwap_calculation:
-            # Calculate the typical price
-            typical_price = (self.data[-1].high + self.data[-1].low + self.data[-1].close) / 3
+            typical_price = (self.high_line[-1] + self.low_line[-1] + self.close_line[-1]) / 3
+            vol = self.volume_line[-1]
+            self.cum_volume += vol
+            self.cum_vol_price += typical_price * vol
             
-            # Accumulate the volume and volume-weighted price
-            self.cum_volume += self.data[-1].volume
-            self.cum_vol_price += typical_price * self.data[-1].volume
-            
-            # Calculate VWAP
             if self.cum_volume != 0:
                 self.vwap.append(self.cum_vol_price / self.cum_volume)
             else:
-                self.vwap.append(float('nan'))  # Avoid division by zero
+                self.vwap.append(float('nan'))
         else:
-            self.vwap.append(float('nan'))  # Not calculating VWAP yet
-
+            self.vwap.append(float('nan'))

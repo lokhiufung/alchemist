@@ -89,7 +89,7 @@ def test_on_tick_update(period, ticks, expected_mus, expected_len):
     )
 def test_on_bar_update(period, bars, expected_mus, expected_len):
     datas = [BarData(max_len=10000, freq='1s')]
-    indicator = SmaIndicator(datas[0], min_period=period)
+    indicator = SmaIndicator(datas[0].close, min_period=period, ts_line=datas[0].ts)
 
     for bar in bars:
         datas[0].on_bar_update(ts=bar['ts'], open_=bar['open'], high=bar['high'], low=bar['low'], close=bar['close'], volume=bar['volume'])

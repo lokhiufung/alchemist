@@ -54,7 +54,7 @@ def test_pearson_r_indicator(period, bars_1, bars_2, expected_pearson_r, expecte
     data_2 = BarData(max_len=10000, freq='1s', index='data_2')
     
     # Create the PearsonRIndicator instance
-    indicator = PearsonRIndicator(data_1, data_2, min_period=period)
+    indicator = PearsonRIndicator(data_1.close, data_2.close, min_period=period, ts_line=data_2.ts)
     
     # Add bars to both BarData instances
     for bar_1, bar_2 in zip(bars_1, bars_2):
@@ -84,7 +84,14 @@ def test_pearson_r_indicator(period, bars_1, bars_2, expected_pearson_r, expecte
 
 def test_daily_vwap_indicator_calculation():
     data = BarData(max_len=10000, freq='1m', index='data_1')
-    daily_vwap_indicator = DailyVwapIndicator(data, params={'start_hour': 18})
+    daily_vwap_indicator = DailyVwapIndicator(
+        data.high,
+        data.low,
+        data.close,
+        data.volume,
+        ts_line=data.ts,
+        start_hour=18,
+    )
     
     daily_vwap_indicator.start_vwap_calculation = True
     daily_vwap_indicator.current_date = datetime.date(2024, 1, 1)

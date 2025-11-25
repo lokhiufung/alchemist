@@ -7,14 +7,20 @@ class SmaIndicator(BaseIndicator):
         'sma',
     )
 
-    def __init__(self, data, min_period=1):
-        super().__init__(data, min_period=min_period)
-        self.data = self.data_0
-        self.min_period = min_period
+    def __init__(self, close_line, min_period=1, ts_line=None):
+        super().__init__(close_line, min_period=min_period, ts_line=ts_line)
+        self.close_line = self.data_0
+        self._sum = 0.0
 
     def next(self):
-        close_prices = [bar.close for bar in self.data[-self.min_period:]]
-        new_value = sum(close_prices) / self.min_period
-        self.sma.append(new_value)
-            
+        val = self.close_line[-1]
+        if len(self.sma) == 0:
+            # first value: seed rolling sum with window
+            self._sum = sum(self.close_line[-self.min_period:])
+        else:
+            # rolling update: add new, drop value that rolled out
+            self._sum += val
+            self._sum -= self.close_line[-self.min_period - 1]
 
+        self.sma.append(self._sum / self.min_period)
+            

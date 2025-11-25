@@ -164,3 +164,21 @@ class Frequency:
             list: Supported resolution keys.
         """
         return list(cls.resolution_abbreviations_mapping.keys())
+
+    def to_start_index(self, ts):
+        """
+        Align a timestamp to the start of its bar based on this frequency.
+        """
+        if self.resolution == 's':
+            second = (ts.second // self.unit) * self.unit
+            return ts.replace(second=second, microsecond=0)
+        if self.resolution == 'm':
+            minute = (ts.minute // self.unit) * self.unit
+            return ts.replace(minute=minute, second=0, microsecond=0)
+        if self.resolution == 'h':
+            hour = (ts.hour // self.unit) * self.unit
+            return ts.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if self.resolution == 'd':
+            # day resolution snaps to midnight
+            return ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        raise ValueError(f'Invalid resolution for start index: {self.resolution}')

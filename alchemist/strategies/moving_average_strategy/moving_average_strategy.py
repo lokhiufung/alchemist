@@ -26,7 +26,8 @@ class MovingAverageStrategy(BaseStrategy):
         data_card_index = self.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, aggregation=data_card.aggregation)
         self.data = self.datas[data_card_index]
         self.sma_indicator = SmaIndicator(
-            data=self.data,
+            close_line=self.data.close,
+            ts_line=self.data.ts,
             min_period=self.params['period']
         )
 

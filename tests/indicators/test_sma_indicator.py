@@ -32,7 +32,7 @@ def bar_data(max_len=10, freq='1m'):
 @pytest.fixture
 def sma_indicator(bar_data, min_period=5):
     """Fixture to create an SMAIndicator instance."""
-    return SmaIndicator(bar_data, min_period=min_period)
+    return SmaIndicator(bar_data.close, min_period=min_period, ts_line=bar_data.ts)
 
 def test_sma_initialization(sma_indicator):
     """Test that SMAIndicator initializes correctly."""
