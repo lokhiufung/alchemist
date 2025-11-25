@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.0.0] - 2025-11-24
+
+### Breaking
+- Indicator API now requires `DataLine` inputs (with optional `ts_line`) instead of `BarData` objects; all indicators updated to the new signature. Strategies/tests must pass specific lines (e.g., `bar_data.close`, `bar_data.ts`).
+- `BaseIndicator` centralizes readiness/rollover guards for time- and bar-driven updates; subclasses now implement only core math.
+
+### Features
+- Added per-indicator unit tests for EMA, Bollinger Bands (including width), ATR, STD, Log Returns, and Daily VWAP.
+- Introduced `Frequency.to_start_index` for consistent time-boundary handling in time-driven indicators (e.g., VWAP rollovers).
+
+### Refactor
+- Refined rolling computations in indicators (SMA, Bollinger) to use incremental sums for latency-sensitive updates.
+- Base plumbing now attaches listeners to `DataLine`s to drive push-based updates and maintains last-seen guards to avoid duplicate emissions.
+
 ## [1.2.1] - 2025-11-24
 
 ### Features
