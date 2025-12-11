@@ -1,6 +1,6 @@
-from alchemist.indicators.base_indicator import BaseIndicator
-from collections import deque
+import math
 
+from alchemist.indicators.base_indicator import BaseIndicator
 
 class ATRIndicator(BaseIndicator):
     DATA_LINES = (
@@ -12,10 +12,10 @@ class ATRIndicator(BaseIndicator):
         self.high_line = self.data_0
         self.low_line = self.data_1
         self.close_line = self.data_2
-        self._tr_window = deque(maxlen=min_period)
-        self._tr_sum = 0.0
+        self._tr_buffer = []  # Buffer for initial warmup
 
     def next(self):
+        # We need at least 2 bars to calculate the first True Range (requires prev_close)
         if len(self.close_line) < 2:
             self.atr.append(float('nan'))
             return
@@ -29,9 +29,21 @@ class ATRIndicator(BaseIndicator):
             abs(high - prev_close),
             abs(low - prev_close)
         )
-        if len(self._tr_window) == self._tr_window.maxlen:
-            self._tr_sum -= self._tr_window[0]
-        self._tr_window.append(tr)
-        self._tr_sum += tr
 
-        self.atr.append(self._tr_sum / len(self._tr_window))
+        # Case 1: We already have a valid previous ATR value -> Apply Wilder's Smoothing
+        # Checking if the last appended value is valid (not NaN)
+        if len(self.atr) > 0 and not math.isnan(self.atr[-1]):
+            prev_atr = self.atr[-1]
+            new_atr = ((prev_atr * (self.min_period - 1)) + tr) / self.min_period
+            self.atr.append(new_atr)
+            return
+
+        # Case 2: Initialization Phase (Warm-up)
+        # Collect TR values until we have enough to calculate the initial Simple Average
+        self._tr_buffer.append(tr)
+
+        if len(self._tr_buffer) == self.min_period:
+            initial_atr = sum(self._tr_buffer) / len(self._tr_buffer)
+            self.atr.append(initial_atr)
+        else:
+            self.atr.append(float('nan'))

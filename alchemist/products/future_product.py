@@ -3,7 +3,7 @@ from alchemist.products.base_product import BaseProduct
 class FutureProduct(BaseProduct):
    product_type = 'FUTURE'
    
-   def __init__(self, name: str, base_currency: str, exch: str, contract_month: str):
+   def __init__(self, name: str, base_currency: str, exch: str, contract_month: str, margin: float):
       """Product class for futures
 
       Args:
@@ -14,6 +14,7 @@ class FutureProduct(BaseProduct):
       """
       super().__init__(name, base_currency, exch)
       self.contract_month = contract_month
+      self.margin = margin
 
 
 

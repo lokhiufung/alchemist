@@ -65,8 +65,12 @@ class PortfolioManager:
         for exch, positions in self.positions.items():
             for pdt, position in positions.items():
                 if position.product.base_currency == currency:
-                    # REMINDER: for realized_pnl, it should be already updated in the cash balance
-                    cash += (position.side * position.size * position.avg_price + position.unrealized_pnl)
+                    # For futures we value by PnL (cash already reflects realized PnL and margin),
+                    if getattr(position.product, 'product_type', None) == 'FUTURE':
+                        cash += position.product.margin * position.size + position.unrealized_pnl
+                    else:
+                        # REMINDER: for realized_pnl, it should be already updated in the cash balance
+                        cash += (position.side * position.size * position.avg_price + position.unrealized_pnl)
         return cash
 
     def get_reserved_balance(self, currency: float, oid: str=None) -> float:

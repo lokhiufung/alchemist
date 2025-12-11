@@ -20,6 +20,7 @@ from alchemist.position import Position
 from alchemist.logger import get_logger
 from alchemist.enums import OrderTypeEnum, TimeInForceEnum
 from alchemist.data_card import DataCard
+from alchemist.indicators.base_indicator import BaseIndicator
 
 
 class BaseStrategy(ABC):
@@ -93,6 +94,13 @@ class BaseStrategy(ABC):
         data_card = self.data_cards[0]
         data_card_index = self.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, aggregation=data_card.aggregation)
         self.data = self.datas[data_card_index]
+
+        # register indicators
+        self.indicators = self.register_indicators()
+
+    def register_indicators(self) -> dict[str, BaseIndicator]:
+        # write your indicators inisde a dict, indexed by the indicator name
+        return {}
     
     def get_params(self):
         return self.params
@@ -729,7 +737,7 @@ class BaseStrategy(ABC):
                         is_warmup=is_warmup,  # fill the indicators with warmup
                     )
                     if not is_warmup:
-                        signals.append(self.get_signals())
+                        signals.append({'ts': update['ts'], **self.get_signals()})
                     # 4. simulate the order filling, balance updates, and position updates
                     # always lag behind the strategy's `_on_bar` by 1 bar
                     self.backtest_manager.on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'], on_order_status_update=self.on_order_status_update)
@@ -742,6 +750,7 @@ class BaseStrategy(ABC):
         self._logger.debug(f'Backtesting time: {(end_time - start_time) / 60:.2f} minutes')
 
         signals = pd.DataFrame(signals)
+        signals.set_index('ts', inplace=True)
 
         # write backtesting data
         if export_data:

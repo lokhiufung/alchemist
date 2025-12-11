@@ -116,10 +116,13 @@ class OrderManager:
         # Here we assume that the balance will be updated immediately if the order get filled. so the balance will descrease since increasing position have already costed
         # 1.1 check the available balance
         balance = self.portfolio_manager.get_available_balance(currency=order.product.base_currency)
-        required_balance = order.price * order.size
+        if order.product.product_type != 'FUTURE':
+            required_balance = order.price * order.size
+        else:
+            required_balance = order.product.margin
         # 1.2 check the position to see if the order reduce the position or not
         position = self.portfolio_manager.get_position(product=order.product)
-        if ((not position) or (position.side == order.side)) and (balance - order.price * order.size < 0):
+        if ((not position) or (position.side == order.side)) and (balance - required_balance < 0):
             # case 1: if the position is not exist, then the order will increase the position
             # case 2: if the side of postiion and order is the same, then the order will increase the position
             return {'passed': False, 'reason': f'Not enough balance: {balance=} {required_balance=}'}
@@ -496,6 +499,7 @@ class OrderManager:
         # remove the order from the open_orders
         del self.open_orders[oid]
         self.logger.debug(f'{order=}')
+
         self.portfolio_manager.release_balance(
             order.oid,
             currency=order.product.base_currency,

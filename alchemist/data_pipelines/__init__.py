@@ -1,1 +1,3 @@
 from alchemist.data_pipelines.ib_data_pipeline import IBDataPipeline
+from alchemist.data_pipelines.parquet_data_pipeline import ParquetDataPipeline
+from alchemist.data_pipelines.data_pipeline import DataPipeline

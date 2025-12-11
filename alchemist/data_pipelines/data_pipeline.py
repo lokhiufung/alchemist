@@ -20,7 +20,7 @@ class DataPipeline(BaseDataPipeline):
         # 1. load data as a single pandas dataframe
         # TODO: hard code
         if product.product_type == 'FUTURE':
-            pdt_type = 'futures'
+            pdt_type = 'future'
         else:
             pdt_type = product.product_type.lower()
 

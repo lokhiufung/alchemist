@@ -16,6 +16,8 @@ class BacktestManager(OrderManager):
         self.commission = commission
         self.portfolio_history = []  # list of (ts, portfolio_value)
         self.transaction_log = []    # list of dicts with transaction details
+        # Track how much margin has been reserved per product (for futures)
+        self.position_margin = {}    # key: product name, value: reserved margin
         super().__init__(zmq=None, portfolio_manager=pm)
 
     def place_order(self, order):
@@ -66,41 +68,42 @@ class BacktestManager(OrderManager):
         )
         
         # 2. update balance accordingly
+        # 2. update balance and position accordingly
         product_type = order.product.product_type
         last_balance = self.pm.get_balance(currency='USD')
-        pos = self.pm.get_position(order.product)
-        is_reducing = (
-            pos is not None and pos.size != 0 and
-            ((pos.side == 1 and order.side == -1) or (pos.side == -1 and order.side == 1))
-        )
-
+        
         if product_type == 'FUTURE':
-            if self.commission.is_margin_percentage:
-                margin_required = 0.1 * abs(order.size * filled_price)  # assume 10% initial margin
-            else:
-                margin_required = self.commission.initial_margin * abs(order.size)
-            if not is_reducing:
-                self.pm.update_balance(currency='USD', value=last_balance - margin_required)
-            else:
-                self.pm.update_balance(currency='USD', value=last_balance + margin_required)
-        else:  # stock
-            if not is_reducing:
-                self.pm.update_balance(currency='USD', value=last_balance - order.size * filled_price)
-            else:
-                self.pm.update_balance(currency='USD', value=last_balance + order.size * filled_price)
-        # 3. update position accordingly
-        current_price = bar.close  # use close price for unrealized PnL
+            # if hasattr(self.commission, 'tick_value') and hasattr(self.commission, 'tick_size') and self.commission.tick_size != 0:
+            #     multiplier = self.commission.tick_value / self.commission.tick_size
+            # else:
+            #     multiplier = self.commission.multiplier
+            multiplier = self.commission.multiplier
 
-        if self.pm.get_position(order.product):
-            existing_pos = self.pm.get_position(order.product)
-            is_same_direction = existing_pos.size < 1e-6 or (existing_pos.side == order.side)
+        existing_pos = self.pm.get_position(order.product)
+        current_price = bar.close
 
+        if existing_pos and existing_pos.size > 0:
+            is_same_direction = (existing_pos.side == order.side)
+            
             if is_same_direction:
-                # Increase position size and recalculate avg_price
+                # Increase position
                 new_size = existing_pos.size + order.size
-                new_avg_price = (
-                    (existing_pos.avg_price * existing_pos.size + filled_price * order.size) / new_size
-                )
+                new_avg_price = (existing_pos.avg_price * existing_pos.size + filled_price * order.size) / new_size
+                
+                # Balance update
+                # the margin / initial cash invested is deducted from the cash account
+                if product_type == 'FUTURE':
+                    margin_required = self.commission.initial_margin * order.size
+                    # Reserve additional margin for the added size
+                    prev_margin = self.position_margin.get(order.product.name, 0.0)
+                    new_margin = prev_margin + margin_required
+                    self.position_margin[order.product.name] = new_margin
+                    self.pm.update_balance(currency='USD', value=last_balance - margin_required)
+                    unrealized_pnl = (current_price - new_avg_price) * new_size * order.side * multiplier 
+                else: # Stock
+                    self.pm.update_balance(currency='USD', value=last_balance - order.size * filled_price)
+                    unrealized_pnl = (current_price - new_avg_price) * new_size * order.side 
+                
                 self.pm.update_position(
                     product=order.product,
                     side=order.side,
@@ -108,36 +111,90 @@ class BacktestManager(OrderManager):
                     last_price=filled_price,
                     avg_price=new_avg_price,
                     realized_pnl=existing_pos.realized_pnl - self.commission.commission,
-                    unrealized_pnl=(current_price - new_avg_price) * new_size * order.side
+                    unrealized_pnl=unrealized_pnl,
                 )
             else:
-                # Reducing or closing position
-                if order.size < existing_pos.size:
+                # Reducing, Closing or Reversing
+                if order.size <= existing_pos.size:
+                    # Reducing or Closing
                     remaining_size = existing_pos.size - order.size
-                    realized_pnl = (filled_price - existing_pos.avg_price) * order.size * existing_pos.side - self.commission.commission
+                    closed_size = order.size
+                    
+                    # Balance update
+                    if product_type == 'FUTURE':
+                        trade_pnl = (filled_price - existing_pos.avg_price) * closed_size * existing_pos.side * multiplier
+                        margin_released = self.commission.initial_margin * closed_size
+                        # Do not release more than was reserved
+                        prev_margin = self.position_margin.get(order.product.name, 0.0)
+                        margin_released = min(margin_released, prev_margin)
+                        self.position_margin[order.product.name] = prev_margin - margin_released
+
+                        self.pm.update_balance(currency='USD', value=last_balance + margin_released + trade_pnl)
+                        unrealized_pnl = (current_price - existing_pos.avg_price) * remaining_size * existing_pos.side * multiplier
+                    else: # Stock
+                        # For stock, we get back the cash value of sold shares (revenue)
+                        trade_pnl = (filled_price - existing_pos.avg_price) * closed_size * existing_pos.side
+                        revenue = closed_size * filled_price
+                        self.pm.update_balance(currency='USD', value=last_balance + revenue)
+                        unrealized_pnl = (current_price - existing_pos.avg_price) * remaining_size * existing_pos.side
+
                     self.pm.update_position(
                         product=order.product,
                         side=existing_pos.side,
                         size=remaining_size,
                         last_price=filled_price,
                         avg_price=existing_pos.avg_price,
-                        realized_pnl=existing_pos.realized_pnl + realized_pnl,
-                        unrealized_pnl=(current_price - existing_pos.avg_price) * remaining_size * existing_pos.side
+                        realized_pnl=existing_pos.realized_pnl + trade_pnl - self.commission.commission,
+                        unrealized_pnl=unrealized_pnl,
                     )
                 else:
-                    # Fully closed or reversed
-                    realized_pnl = (filled_price - existing_pos.avg_price) * existing_pos.size * existing_pos.side - self.commission.commission
-                    new_size = order.size - existing_pos.size
+                    # Reversing (Close old pos + Open new pos)
+                    closed_size = existing_pos.size
+                    new_open_size = order.size - existing_pos.size
+                    
+                    # Balance update
+                    if product_type == 'FUTURE':
+                        # Release old margin
+                        trade_pnl = (filled_price - existing_pos.avg_price) * closed_size * existing_pos.side * multiplier
+                        margin_released = self.commission.initial_margin * closed_size
+                        prev_margin = self.position_margin.get(order.product.name, 0.0)
+                        margin_released = min(margin_released, prev_margin)
+                        self.position_margin[order.product.name] = prev_margin - margin_released
+
+                        # release the old margin and lock the new margin
+                        # Deduct new margin
+                        margin_required = self.commission.initial_margin * new_open_size
+                        # Track new margin for the reversed position
+                        self.position_margin[order.product.name] = self.position_margin.get(order.product.name, 0.0) + margin_required
+                        
+                        self.pm.update_balance(currency='USD', value=last_balance + margin_released + trade_pnl - margin_required)
+                        unrealized_pnl = (current_price - filled_price) * new_open_size * order.side * multiplier
+                    else: # Stock
+                        revenue = closed_size * filled_price
+                        cost = new_open_size * filled_price
+                        self.pm.update_balance(currency='USD', value=last_balance + revenue - cost)
+                        unrealized_pnl = (current_price - filled_price) * new_open_size * order.side
+
                     self.pm.update_position(
                         product=order.product,
                         side=order.side,
-                        size=new_size,
+                        size=new_open_size,
                         last_price=filled_price,
                         avg_price=filled_price,
-                        realized_pnl=realized_pnl,
-                        unrealized_pnl=(current_price - filled_price) * new_size * order.side
+                        realized_pnl=existing_pos.realized_pnl + trade_pnl - self.commission.commission,
+                        unrealized_pnl=unrealized_pnl,
                     )
         else:
+            # New Position
+            if product_type == 'FUTURE':
+                margin_required = self.commission.initial_margin * order.size
+                self.position_margin[order.product.name] = margin_required
+                self.pm.update_balance(currency='USD', value=last_balance - margin_required)
+                unrealized_pnl = (current_price - filled_price) * order.size * order.side * multiplier
+            else: # Stock
+                self.pm.update_balance(currency='USD', value=last_balance - order.size * filled_price)
+                unrealized_pnl = (current_price - filled_price) * order.size * order.side
+
             self.pm.create_position(
                 product=order.product,
                 side=order.side,
@@ -145,8 +202,9 @@ class BacktestManager(OrderManager):
                 last_price=filled_price,
                 avg_price=filled_price,
                 realized_pnl=0.0 - self.commission.commission,
-                unrealized_pnl=(current_price - filled_price) * order.size * order.side
+                unrealized_pnl=unrealized_pnl
             )
+
         # Apply commission per transaction
         self.pm.update_balance(currency='USD', value=self.pm.get_balance('USD') - self.commission.commission)
         self.transaction_log.append({
@@ -183,6 +241,16 @@ class BacktestManager(OrderManager):
         product = self.strategy.get_product(exch, pdt)
         if self.pm.get_position(product) is not None:
             position = self.pm.get_position(product)
+            
+            # Determine multiplier
+            multiplier = 1.0
+            if product.product_type == 'FUTURE':
+                # if hasattr(self.commission, 'tick_value') and hasattr(self.commission, 'tick_size') and self.commission.tick_size != 0:
+                #     multiplier = self.commission.tick_value / self.commission.tick_size
+                # else:
+                #     multiplier = self.commission.multiplier
+                multiplier = self.commission.multiplier
+
             self.pm.update_position(
                 product=product,
                 side=position.side,
@@ -190,7 +258,7 @@ class BacktestManager(OrderManager):
                 last_price=close,
                 avg_price=position.avg_price,
                 realized_pnl=position.realized_pnl,
-                unrealized_pnl=(close - position.avg_price) * position.size * position.side
+                unrealized_pnl=(close - position.avg_price) * position.size * position.side * multiplier
             )
 
         portfolio_value = self.pm.get_portfolio_value(currency='USD')
