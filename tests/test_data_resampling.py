@@ -80,6 +80,61 @@ def test_resample_tick_to_sec_bar(ticks, expected_bars, expected_len):
         assert bar.volume == expected_bar.volume
 
 
+def test_resample_hour_bar_to_day_bar():
+    """
+    Ensure 1-hour bars roll up into a single 1-day bar with correct
+    open/high/low/close/volume and day alignment.
+    """
+    target_frequency = Frequency(freq='1d')
+    data = BarData(max_len=10, freq='1d')
+    resampler = TimeBarResampler(frequency=target_frequency)
+
+    start = datetime.datetime(2024, 1, 1, 0, 0, 0)
+    bars = []
+    for hour in range(24):
+        ts = start + datetime.timedelta(hours=hour)
+        bars.append(
+            {
+                'ts': ts,
+                'open': 100 + hour,
+                'high': 101 + hour,
+                'low': 99 + hour,
+                'close': 100.5 + hour,
+                'volume': 1000 + hour,
+            }
+        )
+
+    for bar in bars:
+        resampler.on_bar_update(
+            freq='1h',
+            ts=bar['ts'],
+            open_=bar['open'],
+            high=bar['high'],
+            low=bar['low'],
+            close=bar['close'],
+            volume=bar['volume'],
+        )
+        resampled_bar = resampler.flush()
+        if resampled_bar:
+            data.on_bar_update(
+                ts=resampled_bar.ts,
+                open_=resampled_bar.open,
+                high=resampled_bar.high,
+                low=resampled_bar.low,
+                close=resampled_bar.close,
+                volume=resampled_bar.volume,
+            )
+
+    assert len(data) == 1
+    bar = data[-1]
+    assert bar.ts == datetime.datetime(2024, 1, 1, 0, 0, 0)
+    assert bar.open == bars[0]['open']
+    assert bar.high == max(b['high'] for b in bars)
+    assert bar.low == min(b['low'] for b in bars)
+    assert bar.close == bars[-1]['close']
+    assert bar.volume == sum(b['volume'] for b in bars)
+
+
 # test for resampling 5 sec bars into 1 min bars
 @pytest.mark.parametrize(
         'bars, expected_bars, expected_len',
@@ -206,4 +261,3 @@ def test_resample_sec_bar_to_sec_bar(bars, expected_bars, expected_len):
         assert bar.low == expected_bar.low
         assert bar.close == expected_bar.close
         assert bar.volume == expected_bar.volume
-

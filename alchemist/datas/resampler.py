@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from alchemist.datas.common import Bar
 from alchemist.datas.frequency import Frequency
@@ -43,6 +43,9 @@ class TimeBarResampler:
             # Calculate the hours-based start index
             hour = (ts.hour // self.unit) * self.unit
             return ts.replace(hour=hour, minute=0, second=0, microsecond=0)
+        elif self.resolution == 'd':
+            # Daily bars snap to midnight
+            return ts.replace(hour=0, minute=0, second=0, microsecond=0)
         else:
             raise ValueError(f'Invalid resolution: {self.resolution}')
     
@@ -51,33 +54,12 @@ class TimeBarResampler:
     
     def is_close_bar_from_bar(self, ts: datetime, frequency: Frequency):
         """
-        Determines if the given timestamp (ts) signals the end of the current bar 
-        based on the bar's resolution and unit.
-
-        **Bar Indexing Convention**:
-        - **Start Convention**: The index represents the start of the bar's time window.
-        For example, the bar indexed at `09:30:00` covers the interval from `09:30:00` to `09:30:59`.
-        - **End Convention**: The index represents the end of the bar's time window.
-        For example, the bar indexed at `09:30:00` covers the interval from `09:29:00` to `09:29:59`.
-
-        **Implementation Note**:
-        - For resampling to larger timeframes, such as `5m`, the method accounts for
-        the range of `0-4` minutes within a 5-minute bar.
-        - The "+1" adjustment ensures that the transition to a new bar is correctly detected.
-        - **Unit Divisor Restriction**: Only unit divisors of 10 are allowed for the `unit` parameter 
-        (e.g., 1, 2, 5, 10) to ensure proper alignment of bar boundaries.
-        - The method uses the normalized value of the frequency in seconds to compare timestamps.
-
-        **Behavior**:
-        - It calculates if the sum of the timestamp (in seconds) and the frequency's normalized value
-        is divisible by the current frequency's normalized value without a remainder.
-
-        :param ts: The timestamp to evaluate (as a `datetime` object).
-        :param frequency: The frequency to check against (as a `Frequency` object).
-        :return: True if the timestamp signals the end of the current bar; False otherwise.
+        Determines whether the incoming bar (with its own frequency) closes the
+        current resampled bar window in a timezone-agnostic way.
         """
-        # just check if the ts is a multiple of the unit
-        return (int(ts.timestamp()) + frequency.normalized_value) % self.frequency.normalized_value  == 0
+        # Move forward by one source bar; if the start index changes, we closed a bar.
+        next_ts = ts + timedelta(seconds=frequency.normalized_value)
+        return self.to_start_index(ts) != self.to_start_index(next_ts)
 
     def on_bar_update(self, freq: str, ts: int, open_, high, low, close, volume):
         frequency = Frequency(freq=freq)

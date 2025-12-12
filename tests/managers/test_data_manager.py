@@ -59,6 +59,24 @@ def data_card_5m(mock_product1):
     )
 
 @pytest.fixture
+def data_card_1d(mock_product1):
+    return DataCard(
+        product=mock_product1,
+        freq='1d',
+        aggregation='ohlcv',
+        resample=True
+    )
+
+@pytest.fixture
+def data_card_10m(mock_product1):
+    return DataCard(
+        product=mock_product1,
+        freq='10m',
+        aggregation='ohlcv',
+        resample=False
+    )
+
+@pytest.fixture
 def data_card_tick(mock_product2):
     return DataCard(
         product=mock_product2,
@@ -229,6 +247,60 @@ def test_on_bar_update_with_resampling(data_manager, data_card_5m):
     assert bar_data.volume[-1] == 26000
 
 
+def test_on_bar_update_with_daily_resampling(data_card_1d):
+    """
+    Test that 1-hour bars roll up into a single 1-day bar for a daily DataCard.
+    """
+    dm = DataManager(data_cards=[data_card_1d])
+    index = dm.create_data_index(
+        data_card_1d.product.exch,
+        data_card_1d.product.name,
+        data_card_1d.freq,
+        data_card_1d.aggregation
+    )
+
+    start_ts = datetime(2024, 1, 1, 0, 0, 0)
+    opens = []
+    highs = []
+    lows = []
+    closes = []
+    volumes = []
+
+    for i in range(24):
+        ts = start_ts + timedelta(hours=i)
+        open_ = 100 + i
+        high = 105 + i
+        low = 95 + i
+        close = 101 + i
+        volume = 1000 + i
+        opens.append(open_)
+        highs.append(high)
+        lows.append(low)
+        closes.append(close)
+        volumes.append(volume)
+        dm.on_bar_update(
+            gateway='test_gateway',
+            exch=data_card_1d.product.exch,
+            pdt=data_card_1d.product.name,
+            freq='1h',
+            ts=ts,
+            open_=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume
+        )
+
+    bar_data = dm.get_data(index)
+    assert len(bar_data) == 1
+    assert bar_data.ts[-1] == start_ts
+    assert bar_data.open[-1] == opens[0]
+    assert bar_data.high[-1] == max(highs)
+    assert bar_data.low[-1] == min(lows)
+    assert bar_data.close[-1] == closes[-1]
+    assert bar_data.volume[-1] == sum(volumes)
+
+
 def test_on_tick_update(data_manager, data_card_tick):
     """
     Test that on_tick_update correctly processes tick data and updates TickData.
@@ -263,6 +335,38 @@ def test_on_tick_update(data_manager, data_card_tick):
     # assert len(tick_data.data) == 1, "Tick data was not appended correctly."
     # assert tick_data.data[0].price == tick_price, "Tick data price mismatch."
     # assert tick_data.data[0].size == tick_size, "Tick data size mismatch."
+
+
+def test_on_bar_update_with_multi_digit_frequency(data_card_10m):
+    """
+    Ensure multi-digit frequencies (e.g., 10m) are recognized and routed correctly.
+    """
+    dm = DataManager(data_cards=[data_card_10m])
+    index = dm.create_data_index(
+        data_card_10m.product.exch,
+        data_card_10m.product.name,
+        data_card_10m.freq,
+        data_card_10m.aggregation
+    )
+
+    ts = datetime.now().replace(second=0, microsecond=0)
+    dm.on_bar_update(
+        gateway='test_gateway',
+        exch=data_card_10m.product.exch,
+        pdt=data_card_10m.product.name,
+        freq='10m',
+        ts=ts,
+        open_=100.0,
+        high=105.0,
+        low=95.0,
+        close=102.5,
+        volume=5000
+    )
+
+    bar_data = dm.get_data(index)
+    assert len(bar_data) == 1
+    assert bar_data.open[-1] == 100.0
+    assert bar_data.close[-1] == 102.5
 
 
 def test_check_highest_resolution_5s_1m(data_manager, data_card_1m):

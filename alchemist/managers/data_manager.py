@@ -193,7 +193,7 @@ class DataManager:
             volume (float): The traded volume during the bar.
         """
         frequency = Frequency(freq=freq)
-        key = f'{exch}_{pdt}_[1-9][smhd]'  # TODO: hard coded the regex
+        key = f'{exch}_{pdt}_\\d+[smhd]'  # allow multi-digit units like 15m, 1d
         indexes = [k for k in self.datas.keys() if re.match(key, k)]
 
         for index in indexes:

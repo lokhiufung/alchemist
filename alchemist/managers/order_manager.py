@@ -119,7 +119,7 @@ class OrderManager:
         if order.product.product_type != 'FUTURE':
             required_balance = order.price * order.size
         else:
-            required_balance = order.product.margin
+            required_balance = order.product.margin * order.size
         # 1.2 check the position to see if the order reduce the position or not
         position = self.portfolio_manager.get_position(product=order.product)
         if ((not position) or (position.side == order.side)) and (balance - required_balance < 0):
