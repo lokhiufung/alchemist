@@ -164,7 +164,7 @@ class BaseStrategy(ABC):
                 updates_dict[index] = updates
                 # for update in updates:
                 #     self.datas[index].update_from_tick(update)
-            elif 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq:
+            elif 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq or 'd' in data_card.freq:
                 updates = self.data_pipeline.historical_bars(data_card.product, freq=data_card.freq, start=backfilling_start_date)
                 updates_dict[index] = updates
                 # for update in updates:
@@ -184,7 +184,7 @@ class BaseStrategy(ABC):
                     continue
                 if 't' in data.freq:
                     data.on_tick_update(update['ts'], update['data']['price'], update['data']['size'])
-                elif 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
+                elif 's' in data.freq or 'm' in data.freq or 'h' in data.freq or 'd' in data.freq:
                     data.on_bar_update(update['ts'], update['data']['open'], update['data']['high'], update['data']['low'], update['data']['close'], update['data']['volume'])
                 else:
                     raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
@@ -694,7 +694,7 @@ class BaseStrategy(ABC):
         updates_dict = {}
         for data_card in self.data_cards:
             index = self.dm.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, data_card.aggregation)
-            if 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq:
+            if 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq or 'd' in data_card.freq:
                 updates = data_pipeline.historical_bars(data_card.product, freq=data_card.freq, start=start_date, end=end_date)
                 updates_dict[index] = updates
                 # for update in updates:
@@ -713,7 +713,7 @@ class BaseStrategy(ABC):
                 update = updates_dict[index][i]
                 if update is None:
                     continue
-                if 's' in data.freq or 'm' in data.freq or 'h' in data.freq:
+                if 's' in data.freq or 'm' in data.freq or 'h' in data.freq or 'd' in data.freq:
                     # gateway, exch, pdt, bar = info
                     update['ts'] = datetime.fromtimestamp(update['ts'])
                     self._logger.debug('current_ts={}'.format(update['ts']))
