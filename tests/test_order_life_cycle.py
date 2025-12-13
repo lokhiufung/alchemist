@@ -37,7 +37,7 @@ def test_open_order_update(mock_zmq, portfolio_manager):
     exch = 'test_exch'
     pdt = 'test_pdt'
     oid = '1'
-    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08')
+    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08', margin=2109)
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
     order = Order(gateway, strategy, 1, 100.1, 10, 'limit', product, oid=oid)
@@ -84,7 +84,7 @@ def test_filled_order_update_when_opened(mock_zmq, portfolio_manager):
     exch = 'test_exch'
     pdt = 'test_pdt'
     oid = '1'
-    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08')
+    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08', margin=2109)
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
     order = Order(gateway, strategy, 1, 100.1, 10, 'LIMIT', product, oid=oid)
@@ -129,7 +129,7 @@ def test_partial_filled_order_update(mock_zmq, portfolio_manager):
     exch = 'test_exch'
     pdt = 'test_pdt'
     oid = '1'
-    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08')
+    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08', margin=2109)
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
     order = Order(gateway, strategy, 1, 100.1, 10, 'LIMIT', product, oid=oid)
@@ -177,7 +177,7 @@ def test_cancel_order_update(mock_zmq, portfolio_manager):
     exch = 'test_exch'
     pdt = 'test_pdt'
     oid = '1'
-    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08')
+    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08', margin=2109)
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
     order = Order(gateway, strategy, 1, 100.1, 10, 'LIMIT', product, oid=oid)
@@ -223,7 +223,7 @@ def test_amend_order_update(mock_zmq, portfolio_manager):
     exch = 'test_exch'
     pdt = 'test_pdt'
     oid = '1'
-    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08')
+    product = FutureProduct(name=pdt, base_currency='USD', exch=exch, contract_month='2024-08', margin=2109)
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
     order = Order(gateway, strategy, 1, 100.1, 10, 'limit', product, oid=oid)

@@ -34,7 +34,7 @@ def test_check_enough_balance_to_buy(mock_zmq, portfolio_manager):
         price=1000.2,
         size=100,  # This would require 1000.2 * 100 = 100020
         order_type='limit',
-        product=FutureProduct(name='test_product', base_currency='USD', exch='test_exch', contract_month='2024-08')
+        product=FutureProduct(name='test_product', base_currency='USD', exch='test_exch', contract_month='2024-08', margin=2109)
     )
     validation_result = om._validate_order(order)
     assert not validation_result['passed']
@@ -42,7 +42,7 @@ def test_check_enough_balance_to_buy(mock_zmq, portfolio_manager):
 
 
 def test_check_enough_balance_to_reduce_position(mock_zmq, portfolio_manager):
-    product = FutureProduct(name='test_product', base_currency='USD', exch='test_exch', contract_month='2024-08')
+    product = FutureProduct(name='test_product', base_currency='USD', exch='test_exch', contract_month='2024-08', margin=2109)
     position = Position(product=product, side=1, size=10, last_price=1005.2, avg_price=1005.2, realized_pnl=None, unrealized_pnl=None)
 
     # set balance to 100000
@@ -74,7 +74,7 @@ def test_reserve_balance_on_order_placement(mock_zmq, portfolio_manager):
     portfolio_manager.balances['USD'] = 100000
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
-    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09')
+    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09', margin=2019)
     order = Order(
         gateway='test_gateway',
         strategy='test_strategy',
@@ -104,7 +104,7 @@ def test_release_balance_on_order_canceled(mock_zmq, portfolio_manager: Portfoli
     portfolio_manager.balances['USD'] = 100000
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
-    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09')
+    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09', margin=2019)
     order = Order(
         gateway='test_gateway',
         strategy='test_strategy',
@@ -137,7 +137,7 @@ def test_release_balance_on_order_rejected(mock_zmq, portfolio_manager: Portfoli
     portfolio_manager.balances['USD'] = 100000
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
-    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09')
+    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09', margin=2019)
     order = Order(
         gateway='test_gateway',
         strategy='test_strategy',
@@ -166,7 +166,7 @@ def test_partial_fill_adjustment(mock_zmq, portfolio_manager):
     portfolio_manager.balances['USD'] = 100000
 
     om = OrderManager(zmq=mock_zmq, portfolio_manager=portfolio_manager)
-    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09')
+    product = FutureProduct(name='ES', base_currency='USD', exch='CME', contract_month='2024-09', margin=2019)
     order = Order(
         gateway='test_gateway',
         strategy='test_strategy',
