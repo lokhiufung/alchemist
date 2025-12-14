@@ -1,15 +1,128 @@
+from datetime import datetime
+
 import polars as pl
+
 from alchemist.products.base_product import BaseProduct
 from alchemist.data_pipelines.base_data_pipeline import BaseDataPipeline
 from alchemist import standardized_messages
-from datetime import datetime
-import pytz
+
 
 class ParquetDataPipeline(BaseDataPipeline):
+
     def __init__(self, file_path: str):
         self.file_path = file_path
 
-    def historical_bars(self, product: BaseProduct, freq, start: str, end: str) -> list:
+    def select_rows_by_date_range(self, df: pl.DataFrame, start: str=None, end: str=None) -> pl.DataFrame:
+        # Filter by date
+        # Assuming start/end are strings 'YYYY-MM-DD'
+        predicates = []
+        if start:
+            try:
+                s_dt = datetime.strptime(start, "%Y-%m-%d")
+                predicates.append(pl.col(self.TS_COL) >= s_dt)
+            except ValueError:
+                print(f"Invalid start date format: {start}. Expected YYYY-MM-DD.")
+        
+        if end:
+            try:
+                # Inclusive end of day
+                e_dt = datetime.strptime(end, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999)
+                predicates.append(pl.col(self.TS_COL) <= e_dt)
+            except ValueError:
+                print(f"Invalid end date format: {end}. Expected YYYY-MM-DD.")
+
+        if predicates:
+            combined_filter = predicates[0]
+            for p in predicates[1:]:
+                combined_filter = combined_filter & p
+            df = df.filter(combined_filter)
+        
+        return df
+
+    def adjust_timezone(self, df: pl.DataFrame) -> pl.DataFrame:
+        # Timezone handling and epoch calculation
+        dtype = df.schema[self.TS_COL]
+
+        # Prepare timestamp expression
+        ts_expr = pl.col(self.TS_COL)
+
+        if dtype.time_zone is None:
+            # Naive: assume US/Eastern
+            # replace_time_zone sets the timezone for naive datetimes
+            ts_expr = ts_expr.dt.replace_time_zone("US/Eastern")
+        
+        # Convert to epoch seconds
+        ts_expr = ts_expr.dt.epoch(time_unit="s")
+
+        return df.with_columns(ts_expr.alias(self.TS_COL)) 
+
+    def sanity_check_required_columns(self, df: pl.DataFrame):
+        required_cols = [
+            self.OPEN_COL,
+            self.HIGH_COL,
+            self.LOW_COL,
+            self.CLOSE_COL,
+            self.VOLUME_COL
+        ]
+        
+        available_cols = df.columns
+
+        for col in required_cols:
+            if col not in available_cols:
+                raise ValueError(f"Missing required column: {col}")
+    
+    def sanity_check_missing_values(self, df: pl.DataFrame):
+        required_cols = [
+            self.OPEN_COL,
+            self.HIGH_COL,
+            self.LOW_COL,
+            self.CLOSE_COL,
+            self.VOLUME_COL
+        ]
+
+        for col_name in required_cols:
+            if col_name in df.columns:
+                # Total number of missing values
+                total_missing = df[col_name].is_null().sum()
+
+                # Highest number of consecutive missing values
+                consecutive_missing = df.with_columns(
+                    (pl.col(col_name).is_null()).alias("is_null")
+                ).with_columns(
+                    pl.when(pl.col("is_null"))
+                    .then(pl.col("is_null").cum_sum().over(pl.col("is_null").rle_id()))
+                    .otherwise(0)
+                    .alias("consecutive_nulls")
+                )["consecutive_nulls"].max()
+                
+                if total_missing > 0:
+                    print(f"Column '{col_name}': {total_missing} missing values.")
+                if consecutive_missing > 0:
+                    print(f"Column '{col_name}': Highest consecutive missing values is {consecutive_missing}.")
+
+    def create_resampled_cols(self, df: pl.DataFrame, freqs: list[str]) -> pl.DataFrame:
+        # use native polars to add resampled columns for each freq
+        df = df.sort(self.TS_COL)
+
+        for freq in freqs:
+            resampled_df = df.group_by_dynamic(self.TS_COL, every=freq).agg([
+                pl.col(self.OPEN_COL).first().alias(f"open_{freq}"),
+                pl.col(self.HIGH_COL).max().alias(f"high_{freq}"),
+                pl.col(self.LOW_COL).min().alias(f"low_{freq}"),
+                pl.col(self.CLOSE_COL).last().alias(f"close_{freq}"),
+                pl.col(self.VOLUME_COL).sum().alias(f"volume_{freq}")
+            ])
+            
+            df = df.join_asof(resampled_df, on=self.TS_COL)
+        
+        return df
+
+    def load_and_process_data(
+        self,
+        start_date: str,
+        end_date: str,
+        auto_resample_freqs: list[str] = None
+    ) -> pl.DataFrame:
         # Load data
         try:
             df = pl.read_parquet(self.file_path)
@@ -20,109 +133,70 @@ class ParquetDataPipeline(BaseDataPipeline):
         # Normalize column names to lowercase
         df = df.rename({c: c.lower() for c in df.columns})
 
-        # Identify datetime column
-        ts_col = None
-        for col in ['date', 'datetime', 'timestamp', 'ts']:
-            if col in df.columns:
-                ts_col = col
-                break
-        
-        if not ts_col:
-            # Check for any datetime type column if name match fails?
-            print("No datetime index found in parquet file (checked: date, datetime, timestamp, ts).")
-            return []
-
         # Ensure sorted
-        if not df[ts_col].is_sorted():
-             df = df.sort(ts_col)
+        if not df[self.TS_COL].is_sorted():
+            df = df.sort(self.TS_COL)
 
-        # Filter by date
-        # Assuming start/end are strings 'YYYY-MM-DD'
-        predicates = []
-        if start:
-            try:
-                s_dt = datetime.strptime(start, "%Y-%m-%d")
-                predicates.append(pl.col(ts_col) >= s_dt)
-            except ValueError:
-                print(f"Invalid start date format: {start}. Expected YYYY-MM-DD.")
-        
-        if end:
-            try:
-                # Inclusive end of day
-                e_dt = datetime.strptime(end, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999)
-                predicates.append(pl.col(ts_col) <= e_dt)
-            except ValueError:
-                print(f"Invalid end date format: {end}. Expected YYYY-MM-DD.")
 
-        if predicates:
-            combined_filter = predicates[0]
-            for p in predicates[1:]:
-                combined_filter = combined_filter & p
-            df = df.filter(combined_filter)
+        df = self.select_rows_by_date_range(df, start_date, end_date)
 
-        if df.height == 0:
-            return []
+        # df = self.adjust_timezone(df)
 
-        # Timezone handling and epoch calculation
-        dtype = df.schema[ts_col]
-        
-        # Cast to Datetime if it's Date
-        if isinstance(dtype, pl.Date):
-            df = df.with_columns(pl.col(ts_col).cast(pl.Datetime).alias(ts_col))
-            dtype = df.schema[ts_col]
+        # Perform sanity checks
+        # 1. check if the required columns are present
+        self.sanity_check_required_columns(df)
+        # 2. check for missing values in required columns
+        self.sanity_check_missing_values(df)
 
-        # Prepare timestamp expression
-        ts_expr = pl.col(ts_col)
-        
-        if isinstance(dtype, pl.Datetime):
-             if dtype.time_zone is None:
-                 # Naive: assume US/Eastern
-                 # replace_time_zone sets the timezone for naive datetimes
-                 ts_expr = ts_expr.dt.replace_time_zone("US/Eastern")
-             
-             # Convert to epoch seconds
-             ts_expr = ts_expr.dt.epoch(time_unit="s")
-        else:
-             # Try to handle string or other types if implementation allows, otherwise error/warn
-             # For now, let's assume it's castable or error out
-             try:
-                 # Attempt string to datetime
-                ts_expr = ts_expr.str.to_datetime(strict=False).dt.replace_time_zone("US/Eastern").dt.epoch(time_unit="s")
-             except:
-                 print(f"Could not convert {ts_col} to datetime.")
-                 return []
 
-        # Ensure required columns exist
-        required_cols = ['open', 'high', 'low', 'close', 'volume']
-        available_cols = df.columns
-        for col in required_cols:
-            if col not in available_cols:
-                df = df.with_columns(pl.lit(0.0).alias(col))
-
-        # Select columns and execute
-        df_processed = df.select([
-            ts_expr.alias("ts"),
-            pl.col("open").fill_null(0.0),
-            pl.col("high").fill_null(0.0),
-            pl.col("low").fill_null(0.0),
-            pl.col("close").fill_null(0.0),
-            pl.col("volume").fill_null(0.0)
+        # Select columns and execute, if missing values exist, forward fill them
+        df = df.select([
+            pl.col(self.TS_COL),
+            pl.col(self.OPEN_COL).forward_fill(),
+            pl.col(self.HIGH_COL).forward_fill(),
+            pl.col(self.LOW_COL).forward_fill(),
+            pl.col(self.CLOSE_COL).forward_fill(),
+            pl.col(self.VOLUME_COL).forward_fill()
         ])
         
+        #  3. check for missing values after forward fill
+        self.sanity_check_missing_values(df)
+        
+        if auto_resample_freqs:
+            df = self.create_resampled_cols(df, freqs=auto_resample_freqs)
+
+        return df
+
+    def historical_bars(
+        self,
+        product: BaseProduct,
+        freq: str,
+        start_date: str,
+        end_date: str,
+        auto_resample_freqs: list[str] = None
+    ) -> list:
+        
+        df = self.load_and_process_data(
+            start_date=start_date,
+            end_date=end_date,
+            auto_resample_freqs=auto_resample_freqs
+        )
+
         updates = []
-        gateway = 'parquet'
+        gateway = 'parquet'  # TEMP: maybe problematic
         exch = product.exch
         pdt = product.name
         resolution = freq
         
         # Iterate and construct messages
-        rows = df_processed.iter_rows(named=True)
+        rows = df.iter_rows(named=True)
         for row in rows:
             if row['ts'] is None:
                 continue
                 
             msg = standardized_messages.create_bar_message(
-                ts=int(row['ts']), 
+                # conver datetime back to epoch int
+                ts=int(row['ts'].timestamp()),
                 gateway=gateway,
                 exch=exch,
                 pdt=pdt,
