@@ -167,3 +167,41 @@ def test_create_resampled_cols_adds_frequency_columns():
         assert row["low_2m"] == agg["low_2m"]
         assert row["close_2m"] == agg["close_2m"]
         assert row["volume_2m"] == agg["volume_2m"]
+
+
+def test_create_resampled_cols_5s_to_1d():
+    """
+    Verify resampling from 5-second base frequency to 1-day works correctly.
+    """
+    df = pl.DataFrame(
+        {
+            "ts": [
+                datetime(2024, 1, 1, 23, 59, 50),
+                datetime(2024, 1, 1, 23, 59, 55),
+                datetime(2024, 1, 2, 0, 0, 0),
+                datetime(2024, 1, 2, 0, 0, 5),
+            ],
+            "open": [100, 101, 102, 103],
+            "high": [100.5, 101.5, 102.5, 103.5],
+            "low": [99.5, 100.5, 101.5, 102.5],
+            "close": [100.2, 101.2, 102.2, 103.2],
+            "volume": [10, 20, 30, 40],
+        }
+    )
+    pipeline = ParquetDataPipeline(file_path="dummy")
+
+    resampled = pipeline.create_resampled_cols(df, freqs=["1d"])
+
+    expected_by_date = {
+        datetime(2024, 1, 1).date(): {"open_1d": 100.0, "high_1d": 101.5, "low_1d": 99.5, "close_1d": 101.2, "volume_1d": 30},
+        datetime(2024, 1, 2).date(): {"open_1d": 102.0, "high_1d": 103.5, "low_1d": 101.5, "close_1d": 103.2, "volume_1d": 70},
+    }
+
+    for row in resampled.iter_rows(named=True):
+        row_date = row["ts"].date()
+        agg = expected_by_date[row_date]
+        assert row["open_1d"] == agg["open_1d"]
+        assert row["high_1d"] == agg["high_1d"]
+        assert row["low_1d"] == agg["low_1d"]
+        assert row["close_1d"] == agg["close_1d"]
+        assert row["volume_1d"] == agg["volume_1d"]
