@@ -110,11 +110,18 @@ class ParquetDataPipeline(BaseDataPipeline):
                 pl.col(self.HIGH_COL).max().alias(f"high_{freq}"),
                 pl.col(self.LOW_COL).min().alias(f"low_{freq}"),
                 pl.col(self.CLOSE_COL).last().alias(f"close_{freq}"),
-                pl.col(self.VOLUME_COL).sum().alias(f"volume_{freq}")
+                pl.col(self.VOLUME_COL).sum().alias(f"volume_{freq}"),
+                # capture the timestamp of the last bar in the window so we can align on it
+                pl.col(self.TS_COL).last().alias("bin_last_ts")
             ])
-            
-            df = df.join_asof(resampled_df, on=self.TS_COL)
-        
+
+            df = df.join(
+                    resampled_df,
+                    left_on=self.TS_COL,
+                    right_on="bin_last_ts",
+                    how="left"
+                )
+
         return df
 
     def load_and_process_data(
@@ -166,6 +173,34 @@ class ParquetDataPipeline(BaseDataPipeline):
             df = self.create_resampled_cols(df, freqs=auto_resample_freqs)
 
         return df
+    
+    def create_bar_message(
+        self,
+        ts: int,
+        gateway: str,
+        exch: str,
+        pdt: str,
+        resolution: str,
+        open_: float,
+        high: float,
+        low: float,
+        close: float,
+        volume: float
+    ):
+        msg = standardized_messages.create_bar_message(
+            # conver datetime back to epoch int
+            ts=ts,
+            gateway=gateway,
+            exch=exch,
+            pdt=pdt,
+            resolution=resolution,
+            open_=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume
+        )
+        return msg[-1][-1]
 
     def historical_bars(
         self,
@@ -193,22 +228,39 @@ class ParquetDataPipeline(BaseDataPipeline):
         for row in rows:
             if row['ts'] is None:
                 continue
-                
-            msg = standardized_messages.create_bar_message(
-                # conver datetime back to epoch int
-                ts=int(row['ts'].timestamp()),
-                gateway=gateway,
-                exch=exch,
-                pdt=pdt,
-                resolution=resolution,
-                open_=row['open'],
-                high=row['high'],
-                low=row['low'],
-                close=row['close'],
-                volume=row['volume']
-            )
-            # stored data structure in the message
-            updates.append(msg[-1][-1])
+
+            # update the base frequency
+            updates.append(self.create_bar_message(
+                    # conver datetime back to epoch int
+                    ts=int(row['ts'].timestamp()),
+                    gateway=gateway,
+                    exch=exch,
+                    pdt=pdt,
+                    resolution=resolution,
+                    open_=row['open'],
+                    high=row['high'],
+                    low=row['low'],
+                    close=row['close'],
+                    volume=row['volume']
+                ))
+            
+            # update the auto resampled frequencies
+            if auto_resample_freqs:
+                for auto_freq in auto_resample_freqs:
+                    if row[f'open_{auto_freq}']:
+                        updates.append(self.create_bar_message(
+                            # conver datetime back to epoch int
+                            ts=int(row['ts'].timestamp()),
+                            gateway=gateway,
+                            exch=exch,
+                            pdt=pdt,
+                            resolution=auto_freq,
+                            open_=row[f'open_{auto_freq}'],
+                            high=row[f'high_{auto_freq}'],
+                            low=row[f'low_{auto_freq}'],
+                            close=row[f'close_{auto_freq}'],
+                            volume=row[f'volume_{auto_freq}']
+                        ))
 
         return updates
 
