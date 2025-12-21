@@ -39,12 +39,12 @@ class Backtester:
         # each data card corresponds to 1 bar data
         data_cards_sorted = sorted(data_cards, key=lambda data_card: data_card.frequency)
         
-        base_freq = data_cards_sorted[0].frequency.freq
+        self.base_freq = data_cards_sorted[0].frequency.freq
         resample_freqs = [frequency.freq for frequency in data_cards_sorted[1:]]
 
         self.updates = data_pipeline.historical_bars(
             product=product,
-            freq=base_freq,
+            freq=self.base_freq,
             start_date=start_date,
             end_date=end_date,
             auto_resample_freqs=resample_freqs,
@@ -127,7 +127,7 @@ class Backtester:
                     low=update['data']['low'],
                     close=update['data']['close'],
                     volume=update['data']['volume'],
-                    on_order_status_update=self.on_order_status_update
+                    on_order_status_update=self.strategy.on_order_status_update
                 )
 
         if export_data:

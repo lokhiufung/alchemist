@@ -49,3 +49,21 @@ def test_running_max_resets_each_day(running_max_indicator: DailyRunningMaxIndic
     assert running_max_indicator.daily_max[2] == pytest.approx(90.0)
     assert running_max_indicator.daily_max[3] == pytest.approx(95.0)
     assert running_max_indicator.daily_max[4] == pytest.approx(95.0)
+
+
+def test_running_max_respects_start_time(bar_data: BarData):
+    indicator = DailyRunningMaxIndicator(
+        bar_data.close,
+        ts_line=bar_data.ts,
+        start_hour=9,
+        start_minute=30,
+    )
+    start = datetime(2024, 1, 1, 4, 0)
+
+    _add_closes(bar_data, [90.0, 95.0, 100.0], start)
+    _add_closes(bar_data, [105.0, 110.0], start + timedelta(hours=5, minutes=30))
+
+    assert len(indicator.daily_max) == 5
+    assert all(val != val for val in indicator.daily_max[:3])  # NaNs before start
+    assert indicator.daily_max[3] == pytest.approx(105.0)
+    assert indicator.daily_max[4] == pytest.approx(110.0)

@@ -43,3 +43,22 @@ def test_daily_sma_resets_each_day(bar_data: BarData):
     assert indicator.sma[1] == pytest.approx(105.0, rel=1e-6)
     assert math.isnan(indicator.sma[2])
     assert indicator.sma[3] == pytest.approx(210.0, rel=1e-6)
+
+
+def test_daily_sma_respects_start_time(bar_data: BarData):
+    indicator = DailySmaIndicator(
+        bar_data.close,
+        period=2,
+        ts_line=bar_data.ts,
+        start_hour=9,
+        start_minute=30,
+    )
+    start = datetime(2024, 1, 1, 4, 0)
+
+    # Premarket data should not start the SMA until the configured start time
+    _add_closes(bar_data, [90.0, 95.0, 100.0], start)
+    _add_closes(bar_data, [200.0, 220.0], start + timedelta(hours=5, minutes=30))
+
+    assert len(indicator.sma) == 5
+    assert all(math.isnan(val) for val in indicator.sma[:4])
+    assert indicator.sma[4] == pytest.approx(210.0, rel=1e-6)

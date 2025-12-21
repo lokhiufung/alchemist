@@ -30,9 +30,22 @@ class DailySmaIndicator(BaseIndicator):
         'sma',
     )
 
-    def __init__(self, close_line, period, ts_line):
+    def __init__(
+        self,
+        close_line,
+        period=None,
+        ts_line=None,
+        min_period=None,
+        start_hour=None,
+        start_minute=0,
+    ):
         if ts_line is None:
             raise ValueError('DailySmaIndicator requires a ts_line for daily rollovers')
+
+        if period is None:
+            period = min_period
+        if period is None:
+            raise ValueError('DailySmaIndicator requires `period` or `min_period`')
 
         super().__init__(
             close_line,
@@ -43,13 +56,33 @@ class DailySmaIndicator(BaseIndicator):
         )
         self.close_line = self.data_0
         self.period = period
+        self.start_hour = start_hour
+        self.start_minute = start_minute
         self.reset_state()
 
-    def reset_state(self):
+    def reset_state(self, active=None):
         self._window = []
         self._sum = 0.0
+        if active is None:
+            self._active = self.start_hour is None
+        else:
+            self._active = active
+
+    def _maybe_start_new_session(self, ts):
+        if self.start_hour is None:
+            return
+        if ts.hour == self.start_hour and ts.minute == self.start_minute:
+            # reset and start accumulating for the new session
+            self.reset_state(active=True)
 
     def next(self):
+        ts = self.ts_line[-1]
+        self._maybe_start_new_session(ts)
+
+        if not self._active:
+            self.sma.append(float('nan'))
+            return
+
         val = self.close_line[-1]
         self._window.append(val)
         self._sum += val
