@@ -56,11 +56,14 @@ class Backtester:
         warmup_dt = datetime.strptime(self.warmup_date, '%Y-%m-%d')
         return ts < warmup_dt
     
-    def export_backtest_data(self, signals: list[float], backtest_manager: BacktestManager, path_prefix: str):
-        backtest_manager.export_data(path_prefix=path_prefix)
-        
-        signals = pd.DataFrame(signals)
+    def export_backtest_data(self, path_prefix: str):
+        signals = pd.DataFrame(self.signals)
         signals.set_index('ts', inplace=True)
+        df_portfolio = pd.DataFrame(self.strategy.backtest_manager.portfolio_history)
+        df_transactions = pd.DataFrame(self.strategy.backtest_manager.transaction_log)
+
+        df_portfolio.to_csv(f'{path_prefix}_portfolio.csv', index=False)
+        df_transactions.to_csv(f'{path_prefix}_transactions.csv', index=False)
         signals.to_csv(f'{path_prefix}_signals.csv')
 
     def start_backtesting(
@@ -132,10 +135,8 @@ class Backtester:
 
         if export_data:
             self.export_backtest_data(
-                signals=self.signals,
-                backtest_manager=backtest_manager,
                 path_prefix=path_prefix
-            )
+            )            
 
         
 
