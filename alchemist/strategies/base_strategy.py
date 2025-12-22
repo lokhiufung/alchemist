@@ -436,7 +436,7 @@ class BaseStrategy(ABC):
             )
             self.pm.update_position_status(order.product, 'IDLE')  # this line is only for security. May not need it
         if self._is_backtesting:
-            order = self.backtest_manager.place_order(order)
+            order = self.backtest_manager.place_order(order)  # FIXME: super bad initialization in the backtester
         else:
             order = self.order_manager.place_order(order)
         return order
@@ -672,93 +672,29 @@ class BaseStrategy(ABC):
     def get_signals(self):
         return self.compute_signals()
     
-    def start_backtesting(self, data_pipeline: BaseDataPipeline, start_date: str, end_date: str, initial_cash: float, commission=None, n_warmup=0, export_data=False, path_prefix=''):
-        from alchemist.managers.backtest_manager import BacktestManager
-        
-        if len(self.products) > 1:
-            raise ValueError('Currently backtesting does not support multiple products!')
+    def start_backtesting(
+        self,
+        data_pipeline: BaseDataPipeline,
+        start_date: str,
+        end_date: str,
+        initial_cash: float,
+        commission=None,
+        warmup_date=None,
+        export_data=False,
+        path_prefix='',
+    ):
+        from alchemist.backtester import Backtester
 
-        signals = []
+        backtester = Backtester()
 
-        # turn on the backtesting flag
-        self.backtest_manager = BacktestManager(strategy=self, pm=self.pm, commission=commission)
-
-        start_time = time.time()
-
-        # set the initial capital of your account
-        self.update_balance('USD', initial_cash)
-
-        data_pipeline.start()
-        self._logger.info(f'Start backtesting strategy={self.name} {data_pipeline=}...')
-        # 1. cache the updates to dict first
-        updates_dict = {}
-        for data_card in self.data_cards:
-            index = self.dm.create_data_index(data_card.product.exch, data_card.product.name, data_card.freq, data_card.aggregation)
-            if 's' in data_card.freq or 'm' in data_card.freq or 'h' in data_card.freq or 'd' in data_card.freq:
-                updates = data_pipeline.historical_bars(data_card.product, freq=data_card.freq, start=start_date, end=end_date)
-                updates_dict[index] = updates
-                # for update in updates:
-                #     self.datas[index].update_from_bar(update['ts'], update['data']['open'], update['data']['high'], update['data']['low'], update['data']['close'], update['data']['volume'])
-            else:
-                raise ValueError(f'Backtesting does not support {data_card.freq=}')
-        # 2. pad the updates to the same length
-        max_updates_len = max([len(updates) for updates in updates_dict.values()])
-        for index, updates in updates_dict.items():
-            updates_dict[index] = updates + [None] * (max_updates_len - len(updates))
-        # 3. push the updates to the data
-        for i in range(max_updates_len):
-            for index in updates_dict:
-                exch, pdt, _, _ = self.dm.factor_data_index(index)
-                data = self.datas[index]
-                update = updates_dict[index][i]
-                if update is None:
-                    continue
-                if 's' in data.freq or 'm' in data.freq or 'h' in data.freq or 'd' in data.freq:
-                    # gateway, exch, pdt, bar = info
-                    update['ts'] = datetime.fromtimestamp(update['ts'])
-                    self._logger.debug('current_ts={}'.format(update['ts']))
-                    freq = update['resolution']  # TODO: need to change the standardized messages
-                    gateway = 'ib_gateway' # TODO
-                    exch = self.products[0].exch # TODO
-                    
-                    is_warmup = i < n_warmup
-
-                    self._on_bar(
-                        gateway,
-                        exch,
-                        pdt,
-                        freq, 
-                        ts=update['ts'],
-                        open_=update['data']['open'],
-                        high=update['data']['high'],
-                        low=update['data']['low'],
-                        close=update['data']['close'],
-                        volume=update['data']['volume'],
-                        is_warmup=is_warmup,  # fill the indicators with warmup
-                    )
-                    if not is_warmup:
-                        signals.append({'ts': update['ts'], **self.get_signals()})
-                    # 4. simulate the order filling, balance updates, and position updates
-                    # always lag behind the strategy's `_on_bar` by 1 bar
-                    self.backtest_manager.on_bar(gateway, exch, pdt, freq, ts=update['ts'], open_=update['data']['open'], high=update['data']['high'], low=update['data']['low'], close=update['data']['close'], volume=update['data']['volume'], on_order_status_update=self.on_order_status_update)
-                else:
-                    raise ValueError(f'Invalid data type for backfilling: {data.freq=}')
-
-        self._logger.info(f'Finished backtesting strategy={self.name} {data_pipeline=}...')
-        data_pipeline.stop()
-        end_time = time.time()
-        self._logger.debug(f'Backtesting time: {(end_time - start_time) / 60:.2f} minutes')
-
-        signals = pd.DataFrame(signals)
-        signals.set_index('ts', inplace=True)
-
-        # write backtesting data
-        if export_data:
-            self.backtest_manager.export_data(path_prefix=path_prefix)
-            signals.to_csv(f'{path_prefix}_signals.csv')
-
-        return {
-            'portfolio_value': pd.DataFrame(self.backtest_manager.portfolio_history),
-            'transaction': pd.DataFrame(self.backtest_manager.transaction_log),
-            'signal': signals
-        }
+        backtester.start_backtesting(
+            strategy=self,
+            data_pipeline=data_pipeline,
+            start_date=start_date,
+            end_date=end_date,
+            initial_cash=initial_cash,
+            commission=commission,
+            warmup_date=warmup_date,
+            export_data=export_data,
+            path_prefix=path_prefix,
+        )

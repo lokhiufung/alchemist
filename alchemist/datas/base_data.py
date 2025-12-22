@@ -54,3 +54,9 @@ class BaseData:
     def __repr__(self):
         return (f"Data(index={self.index}, freq='{self.freq}', "
                 f"max_len={self.max_len}, total_len={self.total_len})")
+    
+    def print_latest(self):
+        latest_index = -1
+        if self.total_len > 0:
+            latest_data = {data_line_name: getattr(self, data_line_name)[latest_index] for data_line_name in self.DATA_LINES}
+            print(f"Latest Data @ {latest_data.get('ts', 'N/A')}: {latest_data}")

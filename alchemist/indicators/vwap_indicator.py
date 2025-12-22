@@ -9,7 +9,7 @@ class DailyVwapIndicator(BaseIndicator):
         'vwap',
     )
 
-    def __init__(self, high_line, low_line, close_line, volume_line, ts_line, start_hour=6):
+    def __init__(self, high_line, low_line, close_line, volume_line, ts_line, start_hour=9, start_minute=30):
         super().__init__(
             high_line,
             low_line,
@@ -25,6 +25,7 @@ class DailyVwapIndicator(BaseIndicator):
         self.close_line = self.data_2
         self.volume_line = self.data_3
         self.start_hour = start_hour
+        self.start_minute = start_minute
         self.reset_state()
 
     def reset_state(self):
@@ -36,7 +37,7 @@ class DailyVwapIndicator(BaseIndicator):
         dt = self.ts_line[-1]
 
         # start calculating at configured hour
-        if dt.hour == self.start_hour and dt.minute == 0:
+        if dt.hour == self.start_hour and dt.minute == self.start_minute:
             self.cum_volume = 0.0
             self.cum_vol_price = 0.0
             self.start_vwap_calculation = True

@@ -57,3 +57,12 @@ class ResolutionEnum(BaseEnum):
     MINUTE = 'minute'
     HOUR = 'hour'
     DAY = 'day'
+
+
+class OHLCVEnum(BaseEnum):
+    TS = 'ts'
+    OPEN = 'open'
+    HIGH = 'high'
+    LOW = 'low'
+    CLOSE = 'close'
+    VOLUME = 'volume'
