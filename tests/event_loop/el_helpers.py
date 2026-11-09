@@ -79,6 +79,9 @@ class RecordingStrategy:
     def is_flat_idle(self):
         return self.flat_idle
 
+    async def settle(self):
+        return None
+
 
 class StubGateway:
     def __init__(self, message_type="bar_update", log=None) -> None:

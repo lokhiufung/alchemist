@@ -159,6 +159,9 @@ class Strategy:
             held.update(avg_price=price, entry_ts=self.execution.entry_order_bar_ts)
         held.update(size=new, last_price=price, side="LONG" if new > 0 else "SHORT" if new < 0 else "FLAT")
 
+    async def settle(self) -> None:
+        await self.execution.settle()
+
     def position_view(self) -> dict:
         return dict(self.position)
 

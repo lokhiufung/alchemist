@@ -57,6 +57,9 @@ class RecordingExecution:
     def consume_trade_closed(self):
         return False
 
+    async def settle(self):
+        return None
+
 
 async def test_golden_round_trip_books_position():
     load_strategies(__import__("pathlib").Path("local/strategies"))

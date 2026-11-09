@@ -151,3 +151,15 @@ def test_no_error_when_control_lane_is_at_threshold(caplog):
     assert buffer.control_backlog_exceeded() is False
     buffer.push(order_update(10))
     assert buffer.control_backlog_exceeded() is True
+
+
+def test_fill_behind_a_held_end_of_data_still_jumps_the_data_lane():
+    from el_helpers import end_of_data
+    buffer = EventBuffer(EventLoopConfig())
+    buffer.push(end_of_data())
+    for index in range(5):
+        buffer.push(tick(100.0 + index, 1.0, 1))
+    buffer.push(order_update(7))
+    events = drain_all(buffer)
+    assert [e["event_type"] for e in events][0] == "order_update"
+    assert [e["event_type"] for e in events][-1] == "end_of_data"

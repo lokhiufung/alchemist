@@ -146,6 +146,10 @@ class StrategyExecution:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
+    async def settle(self) -> None:
+        while self.tasks:
+            await asyncio.gather(*list(self.tasks), return_exceptions=True)
+
     async def guarded(self, coroutine) -> None:
         try:
             await coroutine

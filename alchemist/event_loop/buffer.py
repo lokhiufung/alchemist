@@ -57,10 +57,17 @@ class EventBuffer:
         self.wake_pending = False
 
     def pop(self) -> dict | None:
-        if self.control:
-            head = self.control[0]
-            if head["event_type"] != "end_of_data" or not self.data:
-                return self.control.popleft()
+        control = self.control
+        if control:
+            if control[0]["event_type"] != "end_of_data":
+                return control.popleft()
+            for index in range(1, len(control)):
+                if control[index]["event_type"] != "end_of_data":
+                    event = control[index]
+                    del control[index]
+                    return event
+            if not self.data:
+                return control.popleft()
         if self.data:
             return self.data.popleft()
         return None

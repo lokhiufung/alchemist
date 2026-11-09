@@ -1,0 +1,24 @@
+system:
+  bot_id: golden
+  log_path: ${GOLDEN_OUT}
+  strategies_root: tests/golden/strategies
+
+gateway:
+  name: simulation
+
+replay:
+  tape: synthetic:golden_session
+  date: 2026-04-15
+  session: NY_RTH
+  pad_before_s: 0
+  pad_after_s: 0
+  fill_reference: close
+  slippage_ticks: 0
+  journal: ${GOLDEN_OUT}/broker_journal.jsonl
+
+strategies:
+  macd_rsi_rth_long:
+    strat: macd_rsi_rth_long
+    account_id: SIM
+    signal_instrument: MES
+    execution_instrument: MES

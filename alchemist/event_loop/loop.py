@@ -178,6 +178,7 @@ class EventLoop:
                 result = getattr(strategy, method)(*args)
                 if inspect.isawaitable(result):
                     await result
+                await strategy.settle()
                 if is_bar:
                     self.errors[strategy.name] = 0
             except Exception:

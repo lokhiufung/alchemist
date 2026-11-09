@@ -133,6 +133,9 @@ class StubExecution:
         closed, self.trade_closed = self.trade_closed, False
         return closed
 
+    async def settle(self):
+        return None
+
 
 class FakeGateway:
     def __init__(self) -> None:

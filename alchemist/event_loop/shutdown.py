@@ -61,16 +61,17 @@ class ShutdownCoordinator:
             if self.settled_until.get(name, 0.0) >= end_ts or now < end_ts - self.config.cutoff_offset_s:
                 continue
             self.window_end[name] = end_ts
-            self.request_flatten(strategy, now, "session_end")
+            await self.request_flatten(strategy, now, "session_end")
             if strategy.is_flat_idle():
                 self.settled_until[name] = end_ts
             else:
                 self.first_request[name] = now
 
-    def request_flatten(self, strategy, at_ts: float, reason: str) -> None:
+    async def request_flatten(self, strategy, at_ts: float, reason: str) -> None:
         self.last_request[strategy.name] = at_ts
         try:
             strategy.request_flatten(reason, at_ts)
+            await strategy.settle()
         except Exception:
             logger.exception("[%s] flatten request failed", strategy.name)
 
@@ -85,7 +86,7 @@ class ShutdownCoordinator:
                 del self.first_request[name]
                 continue
             if self.last_request.get(name, -1.0) < now:
-                self.request_flatten(strategy, now, "session_end")
+                await self.request_flatten(strategy, now, "session_end")
 
     def ready_to_exit(self) -> bool:
         return self.shutdown_requested
@@ -111,7 +112,7 @@ class ShutdownCoordinator:
             if not busy:
                 return
             for strategy in busy:
-                self.request_flatten(strategy, self.clock.timestamp(), "shutdown")
+                await self.request_flatten(strategy, self.clock.timestamp(), "shutdown")
             await asyncio.sleep(POLL_S)
             await drain_remaining()
 
