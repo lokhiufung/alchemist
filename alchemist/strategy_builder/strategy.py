@@ -34,6 +34,7 @@ class Stores:
 
 class Strategy:
     signal_dag: str
+    resolution_s = 1.0
 
     def __init__(self, config: StrategyConfig, gateway, clock: Clock, stores: Stores,
                  execution_config: ExecutionConfig | None = None) -> None:

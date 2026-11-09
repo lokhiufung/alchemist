@@ -41,7 +41,7 @@ class ReplayClock(Clock):
         return self.current
 
     async def wait(self, timeout: float) -> None:
-        return None
+        await asyncio.sleep(0)
 
     def advance(self, to: datetime) -> None:
         if to < self.current:

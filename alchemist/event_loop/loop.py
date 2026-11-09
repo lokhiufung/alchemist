@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 
 from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
-from alchemist.event_loop.book import RuntimeBook
+from alchemist.event_loop.book import BookClosed, RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
@@ -53,6 +53,7 @@ class EventLoop:
         self.end_of_data_seen = False
         self.stopping = False
         self.backlog_alerted = False
+        self.book_closed = False
         self.feed_types: dict[Instrument, str] = {}
 
     def finished(self) -> bool:
@@ -72,6 +73,7 @@ class EventLoop:
                 await asyncio.sleep(0)
             else:
                 await self.event_buffer.wait(self.clock)
+        self.book_closed = True
         await self.shutdown.finalize(self.drain_remaining)
 
     async def drain_pass(self) -> None:
@@ -107,6 +109,13 @@ class EventLoop:
             logger.error("no handler for event type %r", event["event_type"])
             return
         await handler(self, event["data"])
+
+    async def enqueue_book_op(self, fn: Callable[[RuntimeBook], Any]) -> Any:
+        if self.book_closed:
+            raise BookClosed("book closed")
+        future = asyncio.get_running_loop().create_future()
+        self.event_buffer.push(make_event("book_op", {"fn": fn, "future": future}, self.clock.timestamp()))
+        return await future
 
     async def emit_bar(self, instrument: Instrument, bar: dict, source: str) -> None:
         bar["instrument"] = instrument
@@ -211,7 +220,17 @@ async def on_position_update(loop: EventLoop, data: dict) -> None:
 
 @handles("book_op")
 async def on_book_op(loop: EventLoop, data: dict) -> None:
-    raise NotImplementedError("book operations arrive with the runtime book")
+    future = data["future"]
+    if loop.book_closed:
+        future.set_exception(BookClosed("book closed"))
+        return
+    try:
+        result = data["fn"](loop.book)
+        if inspect.isawaitable(result):
+            result = await result
+        future.set_result(result)
+    except Exception as exc:
+        future.set_exception(exc)
 
 
 @handles("end_of_data")
