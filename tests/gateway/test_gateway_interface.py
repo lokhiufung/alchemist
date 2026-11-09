@@ -117,7 +117,7 @@ def test_order_ids_never_fall_back_when_the_floor_is_lower():
     assert sequence.next() == 50
 
 
-def test_missing_required_operation_fails_at_build():
+def test_subclass_missing_required_operation_fails_at_build():
     with pytest.raises(TypeError, match="heartbeat"):
         gateway_class(missing="heartbeat")(RecordingBuffer(), GatewayConfig("stub"), None)
 

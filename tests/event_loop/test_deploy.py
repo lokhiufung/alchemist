@@ -292,3 +292,38 @@ async def test_client_exit_code_follows_the_terminal_status(terminal, code):
 
 async def test_client_without_a_server_exits_with_failure(tmp_path):
     assert await send_deploy_request(tmp_path / "missing.sock", "b", "abc") == 1
+
+
+@pytest.mark.parametrize("case", ["registered", "noop", "busy", "session_open", "conflict", "unknown_key",
+                                  "stale_config"])
+async def test_scenario_deploy_strategy(tmp_path, case):
+    rig = Rig(tmp_path, now=OPEN_SESSION if case == "session_open" else CLOSED)
+    await rig.start_a()
+    before = rig.snapshot()
+    if case == "registered":
+        assert statuses(await rig.deploy("b")) == [("preparing", None), ("registered", None)]
+        assert rig.gateway.subscribed.count(MES) == 1 and rig.gateway.subscribed.count(ES) == 1
+    elif case == "noop":
+        await rig.deploy("b")
+        assert statuses(await rig.deploy("b")) == [("noop", None)]
+    elif case == "busy":
+        gate = asyncio.Event()
+        original = rig.seeder.attempt
+        rig.seeder.attempt = lambda strategy: _held(gate, original, strategy)
+        first = asyncio.create_task(rig.deploy("b"))
+        await asyncio.sleep(0.01)
+        assert statuses(await rig.deploy("b")) == [("busy", None)]
+        gate.set()
+        await first
+    else:
+        key, sha = {"session_open": ("b", None), "conflict": ("a", None), "unknown_key": ("ghost", None),
+                    "stale_config": ("b", "0" * 64)}[case]
+        if case == "conflict":
+            rig.path.write_text(rig.text + "\n# edited\n")
+        assert statuses(await rig.deploy(key, sha)) == [("rejected", case)]
+        assert rig.snapshot() == before
+
+
+async def _held(gate, original, strategy):
+    await gate.wait()
+    return await original(strategy)

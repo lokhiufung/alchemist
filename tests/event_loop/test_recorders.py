@@ -145,3 +145,19 @@ async def test_null_recorder_does_nothing():
     recorder.record_update({})
     await recorder.flush()
     recorder.finalize()
+
+
+@pytest.mark.parametrize("session,start", [("NY_RTH", at(MES, "NY_RTH", 15, 58)),
+                                           ("NY_GLOBEX", at(MES, "NY_GLOBEX", 23, 59, 0, day=14))])
+async def test_scenario_recording(session, start, tmp_path):
+    bars = BarRecorder(tmp_path, book_with(session))
+    for index in range(120):
+        bars.record(MES, bar(start.timestamp() + index))
+    bars.finalize()
+    assert len(files(tmp_path)) == 1
+    trades = recorder_for(tmp_path, {1: "BUY", 2: "SELL"})
+    trades.record_update(fill(1, 1, 5001.0, 100.0))
+    trades.record_update(fill(2, 1, 5011.0, 200.0))
+    await trades.flush()
+    row = rows(tmp_path)[0]
+    assert (row["entry_price"], row["exit_price"], row["currency"]) == (5001.0, 5011.0, "USD")

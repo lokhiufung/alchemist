@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import cached_property
 from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Callable
@@ -181,7 +182,11 @@ class StrategyExecution:
         if day != self.trading_day:
             self.start_trading_day(day)
         step_signal()
-        self.handlers()[self.state](bar)
+        self.handler_table[self.state](bar)
+
+    @cached_property
+    def handler_table(self) -> dict[Phase, Callable[[dict], None]]:
+        return self.handlers()
 
     def handlers(self) -> dict[Phase, Callable[[dict], None]]:
         return {

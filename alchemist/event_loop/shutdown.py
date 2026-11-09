@@ -14,6 +14,7 @@ from alchemist.instruments import Instrument
 logger = logging.getLogger(__name__)
 
 POLL_S = 0.005
+RECHECK_OUTSIDE_SESSION_S = 30.0
 
 
 class ShutdownCoordinator:
@@ -28,6 +29,7 @@ class ShutdownCoordinator:
         self.last_request: dict[str, float] = {}
         self.window_end: dict[str, float] = {}
         self.settled_until: dict[str, float] = {}
+        self.cutoffs: dict[str, tuple[float, float, float]] = {}
 
     def request_shutdown(self, reason: str) -> None:
         logger.warning("shutdown requested: %s", reason)
@@ -46,19 +48,28 @@ class ShutdownCoordinator:
     def flattening_names(self) -> set[str]:
         return set(self.first_request)
 
+    def cutoff_for(self, strategy, now: float) -> tuple[float, float, float]:
+        known = self.cutoffs.get(strategy.name)
+        if known is not None and now < known[2]:
+            return known
+        profile = exchange_profile(strategy.execution_instrument)
+        window = profile.session_window_at(self.book.sessions_by_strategy[strategy.name], self.clock.now())
+        if window is None:
+            known = (float("inf"), float("inf"), now + RECHECK_OUTSIDE_SESSION_S)
+        else:
+            end_ts = window[1].timestamp()
+            known = (end_ts - self.config.cutoff_offset_s, end_ts, end_ts)
+        self.cutoffs[strategy.name] = known
+        return known
+
     async def process_due(self) -> None:
         now = self.clock.timestamp()
-        moment = self.clock.now()
         for strategy in self.active_strategies():
             name = strategy.name
             if name in self.first_request:
                 continue
-            profile = exchange_profile(strategy.execution_instrument)
-            window = profile.session_window_at(self.book.sessions_by_strategy[name], moment)
-            if window is None:
-                continue
-            end_ts = window[1].timestamp()
-            if self.settled_until.get(name, 0.0) >= end_ts or now < end_ts - self.config.cutoff_offset_s:
+            cutoff, end_ts, _ = self.cutoff_for(strategy, now)
+            if now < cutoff or self.settled_until.get(name, 0.0) >= end_ts:
                 continue
             self.window_end[name] = end_ts
             await self.request_flatten(strategy, now, "session_end")

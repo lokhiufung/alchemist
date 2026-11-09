@@ -272,3 +272,21 @@ async def test_members_changed_resolves_in_replay_and_is_quiet_live(tmp_path):
     live = make_provider({"X": source}, [live_member], clock)
     await live.members_changed()
     assert live_member.ready_calls == 0
+
+
+@pytest.mark.parametrize("value", ["present", "missing"])
+async def test_replay_resolves_or_raises(value, tmp_path):
+    from alchemist.external_data.provider import AuxDataError
+    from alchemist.external_data.sources import FileAuxSource
+    declare_names("X")
+    rows = [(PREVIOUS, 4.0)] + ([(TARGET, 5.0)] if value == "present" else [])
+    (tmp_path / "X.csv").write_text("date,value\n" + "".join(f"{d.isoformat()},{v}\n" for d, v in rows))
+    member = StubStrategy("m", MES, ["X"])
+    provider = make_provider({"X": FileAuxSource(str(tmp_path))}, [member], ReplayClock(ny(0)), resolve_date=TARGET)
+    if value == "missing":
+        with pytest.raises(AuxDataError):
+            await provider.start()
+        assert member.ready_calls == 0
+    else:
+        await provider.start()
+        assert member.ready_calls == 1 and provider.groups[0].armed

@@ -160,7 +160,7 @@ async def test_scenario_restart_restore(case, tmp_path):
         assert second.signal.restored == []
 
 
-async def test_scenario_snapshots_every_n_bars(caplog):
+async def test_scenario_snapshots(caplog):
     for interval, expected in ((0, 0), (60, 3)):
         strategy = make_strategy(snapshot_interval=interval)
         caplog.clear()
@@ -177,3 +177,19 @@ async def test_scenario_snapshots_every_n_bars(caplog):
         for index in range(1, 181):
             send_bar(strategy, index)
     assert [r.snapshot_row["stale"] for r in caplog.records if hasattr(r, "snapshot_row")] == [True] * 3
+
+
+@pytest.mark.parametrize("case", ["flat_later_in_session", "session_ends_in_position"])
+async def test_scenario_late_data_pending_rebuild(case, caplog):
+    if case == "flat_later_in_session":
+        await test_scenario_late_data_pending_rebuild_flat_later()
+    else:
+        await test_scenario_late_data_pending_rebuild_session_ends_in_position(caplog)
+
+
+@pytest.mark.parametrize("case", ["flatten_request", "flatten_wanted"])
+async def test_scenario_flatten_hand_off(case):
+    if case == "flatten_request":
+        await test_scenario_flatten_hand_off_request()
+    else:
+        await test_scenario_flatten_hand_off_wanted()

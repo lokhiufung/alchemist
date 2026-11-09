@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+import zlib
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -59,9 +60,9 @@ class Strategy:
         self.aux_armed = False
         self.persisted_day: str | None = None
         self.bars_stepped = 0
+        self.snapshot_offset = zlib.crc32(config.name.encode()) % config.snapshot_interval if config.snapshot_interval else 0
         self.current_bar: dict | None = None
-        self.execution = None
-        self.reset_signal()
+        self.signal: StrategySignal = self.build_signal()
         self.session = exchange_profile(self.signal_instrument).session(self.signal.params.session).name
         self.execution = make_execution(
             config.execution, self.signal, self.om, instrument=self.execution_instrument,
@@ -83,10 +84,12 @@ class Strategy:
         return {"size": 0, "avg_price": None, "last_price": None, "currency": self.execution_instrument.currency,
                 "entry_ts": None, "side": "FLAT"}
 
+    def build_signal(self) -> StrategySignal:
+        return get_signal_dag(self.signal_dag).from_config(self.config)
+
     def reset_signal(self) -> None:
-        self.signal: StrategySignal = get_signal_dag(self.signal_dag).from_config(self.config)
-        if self.execution is not None:
-            self.execution.signal = self.signal
+        self.signal = self.build_signal()
+        self.execution.signal = self.signal
 
     def aux_names(self) -> frozenset[str]:
         return self.signal.aux_names()
@@ -112,7 +115,8 @@ class Strategy:
     def step_signal(self, bars: deque, bar: dict) -> None:
         self.signal.step(bars, self.strategy_data(bar))
         self.bars_stepped += 1
-        if self.config.snapshot_interval and self.bars_stepped % self.config.snapshot_interval == 0:
+        interval = self.config.snapshot_interval
+        if interval and (self.bars_stepped + self.snapshot_offset) % interval == 0:
             self.log_snapshot()
 
     def strategy_data(self, bar: dict | None = None) -> dict:

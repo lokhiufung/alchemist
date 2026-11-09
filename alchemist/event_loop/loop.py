@@ -156,7 +156,9 @@ class EventLoop:
                                                   "origin": origin}, self.clock.timestamp()), wake=False)
 
     async def dispatch_bar(self, instrument: Instrument, bar: dict) -> None:
-        self.clock_advance(datetime.fromtimestamp(bar["end_ts"], timezone.utc))
+        bar_end = datetime.fromtimestamp(bar["end_ts"], timezone.utc)
+        if bar_end > self.clock.now():
+            self.clock_advance(bar_end)
         await self.shutdown.process_due()
         self.aux.annotate(instrument, bar)
         self.gateway.on_bar(instrument, bar)

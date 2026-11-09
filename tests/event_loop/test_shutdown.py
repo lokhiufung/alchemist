@@ -189,3 +189,45 @@ async def test_event_loop_never_calls_safety_repair():
     offenders = [p for p in Path("alchemist/event_loop").glob("*.py")
                  if re.search(r"repair_stuck|get_executions|reconcile_stuck", p.read_text())]
     assert offenders == []
+
+
+async def test_replay_clock_drives_flatten_and_flush():
+    import time
+    from datetime import datetime as dt
+    from el_helpers import Harness, RecordingStrategy, tick
+    strategy = FlattenStrategy("s", MES, flat_on_request=None)
+    start = at(MES, "NY_RTH", 15, 58, 50)
+    rig = Rig([strategy], start)
+    rig.push_second_bars(MES, start, 30)
+    rig.buffer.push(end_of_data())
+    started = time.time()
+    await rig.run()
+    cutoff = at(MES, "NY_RTH", 15, 59, 0).timestamp()
+    assert strategy.request_times[0] == cutoff and abs(strategy.request_times[0] - started) > 86_400
+    flush_strategy = RecordingStrategy()
+    from alchemist.clock import ReplayClock
+    harness = Harness([flush_strategy], message_type="tick_update",
+                      clock=ReplayClock(dt.fromtimestamp(1_776_259_800.0 + 5, __import__("datetime").timezone.utc)))
+    harness.push(tick(1_776_259_800.2, 1.0, 1))
+    harness.push(end_of_data())
+    await harness.run()
+    assert flush_strategy.bars == [1_776_259_800.0]
+
+
+async def test_process_due_does_not_recompute_session_windows_on_every_call(monkeypatch):
+    from alchemist.exchanges import ExchangeProfile
+    calls = []
+    original = ExchangeProfile.session_window_at
+
+    def counting(self, name, at):
+        calls.append(1)
+        return original(self, name, at)
+
+    monkeypatch.setattr(ExchangeProfile, "session_window_at", counting)
+    strategies = [FlattenStrategy(f"s{i}", MES, flat_on_request=None) for i in range(15)]
+    start = at(MES, "NY_RTH", 11, 0, 0)
+    rig = Rig(strategies, start)
+    for second in range(500):
+        rig.clock.advance(start + timedelta(seconds=second))
+        await rig.shutdown.process_due()
+    assert len(calls) <= 15 * 3

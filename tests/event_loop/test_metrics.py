@@ -95,3 +95,32 @@ def test_timestamp_precision_follows_the_broker_timestamps():
     assert metrics.precision(MES) == 1.0
     metrics.record_feed(MES, 1002.123, 1002.15)
     assert metrics.precision(MES) == 0.001
+
+
+@pytest.mark.parametrize("instruments", [1, 3])
+def test_slot_cost_sum_and_decode_time_logged_per_instrument(instruments, caplog):
+    metrics = LatencyMetrics()
+    chosen = (MES, ES, NQ)[:instruments]
+    for instrument in chosen:
+        for index in range(50):
+            metrics.record_processing(instrument, 1.0, 1.001, 0.0, 0.001, 0.0001 * (index + 1))
+            metrics.record_decode(instrument, 0.00002 * (index + 1))
+    with caplog.at_level(logging.INFO, logger="alchemist.latency"):
+        metrics.flush(100.0)
+    rows = [r.latency_row for r in caplog.records if hasattr(r, "latency_row")]
+    assert len(rows) == instruments
+    assert all(row[k] is not None for row in rows for k in ("slot_cost_p50", "slot_cost_p99", "decode_p50", "decode_p99"))
+
+
+def test_sample_memory_and_flush_cost_stay_bounded_under_a_tick_flood(caplog):
+    import time as time_module
+    metrics = LatencyMetrics()
+    for index in range(200_000):
+        metrics.record_feed(MES, 1000.0, 1000.0 + (index % 100) / 1000.0)
+    assert len(metrics.series["feed"][MES]) <= metrics.MAX_SAMPLES
+    started = time_module.perf_counter()
+    with caplog.at_level(logging.INFO, logger="alchemist.latency"):
+        metrics.flush(2000.0)
+    assert time_module.perf_counter() - started < 0.005
+    row = next(r.latency_row for r in caplog.records if hasattr(r, "latency_row"))
+    assert row["feed_p50"] == pytest.approx(0.05, abs=0.01) and row["feed_p99"] == pytest.approx(0.099, abs=0.005)

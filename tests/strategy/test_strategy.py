@@ -338,3 +338,28 @@ async def test_rebuild_replay_yields_within_budget():
     stop = True
     await watcher
     assert max(gaps) <= strategy.rebuild_yield_budget_s + 0.004 and len(gaps) > 20
+
+
+async def test_signal_stepped_once_before_execution_each_bar():
+    strategy = make_strategy()
+    order = []
+    strategy.execution.on_decide = lambda bar: order.append(("decision", len(strategy.signal.steps)))
+    for index in range(1, 6):
+        bar = make_bar(index)
+        strategy.on_bar(deque([bar]), bar)
+    assert [steps for _, steps in order] == [1, 2, 3, 4, 5] and len(strategy.signal.steps) == 5
+
+
+async def test_snapshots_are_staggered_across_slots(caplog):
+    names = [f"slot{i}" for i in range(8)]
+    strategies = [make_strategy(snapshot_interval=60, name=name) for name in names]
+    first_snapshot_bar = {}
+    for index in range(1, 61):
+        for strategy in strategies:
+            before = len([r for r in caplog.records if hasattr(r, "snapshot_row")])
+            with caplog.at_level(logging.INFO):
+                bar = make_bar(index)
+                strategy.on_bar(deque([bar]), bar)
+            if len([r for r in caplog.records if hasattr(r, "snapshot_row")]) > before:
+                first_snapshot_bar.setdefault(strategy.name, index)
+    assert len(first_snapshot_bar) == 8 and len(set(first_snapshot_bar.values())) > 1

@@ -464,3 +464,36 @@ def test_aux_names_lists_the_series_the_signal_reads():
 
     assert make_signal(with_aux).from_config(strategy_config()).aux_names() == frozenset({"vix_close"})
     assert make_signal(without_aux).from_config(strategy_config()).aux_names() == frozenset()
+
+
+from test_signal_scenarios import BAD_SIGNALS
+
+
+@pytest.mark.parametrize("reason", sorted(BAD_SIGNALS))
+def test_bad_signal_refused_and_leaves_no_state(reason):
+    from alchemist import registry
+    before = {scope: dict(table) for scope, table in registry._calcs.items()}
+    build, overrides, named = BAD_SIGNALS[reason]
+    with pytest.raises(SignalBuildError, match=named):
+        make_signal(build, **overrides).from_config(strategy_config())
+    assert {scope: dict(table) for scope, table in registry._calcs.items()} == before
+
+
+@pytest.mark.parametrize("case", ["setup_raises_on_a_param", "session_calculation_unknown_session", "params_fit"])
+def test_calculation_setup_error_refuses_build_and_names_node(case):
+    def build(g, p):
+        close = g.bar("close")
+        if case == "setup_raises_on_a_param":
+            g.calc("slow_avg", "sma", close, period=0)
+        elif case == "session_calculation_unknown_session":
+            g.calc("left", "session_bars_left", session="MOON")
+        else:
+            g.calc("left", "session_bars_left", session=p.session)
+        entry_exit(g, close)
+
+    if case == "params_fit":
+        assert make_signal(build).from_config(strategy_config()) is not None
+        return
+    node = "slow_avg" if case == "setup_raises_on_a_param" else "left"
+    with pytest.raises(SignalBuildError, match=node):
+        make_signal(build).from_config(strategy_config())
