@@ -202,7 +202,7 @@ class IbkrGateway(Gateway):
         profile = exchange_profile(instrument)
         spec = dict(profile.broker_identity(instrument))
         if instrument.asset_class.value == "future":
-            spec["contract_month"] = profile.front_contract(instrument, datetime.now(timezone.utc).date())
+            spec["contract_month"] = profile.front_contract(instrument, self.clock.now().date())
         details = await self.request_details(spec)
         contract = {**spec, **details, "instrument": instrument}
         self.contracts[instrument] = contract
@@ -396,7 +396,7 @@ class IbkrGateway(Gateway):
     async def get_daily_history(self, instrument: Instrument, start: date, end: date, session: str) -> list[dict]:
         profile = exchange_profile(instrument)
         zone = ZoneInfo(profile.session(session).tz)
-        now = datetime.now(timezone.utc)
+        now = self.clock.now()
         last_close = self.last_completed_close(profile, session, now)
         window_end = min(datetime.combine(end, datetime.max.time(), zone), last_close)
         days = (window_end.date() - start).days + 1
@@ -447,7 +447,7 @@ class IbkrGateway(Gateway):
 
     async def get_intraday_seed_bars(self, instrument: Instrument, session: str) -> list:
         profile = exchange_profile(instrument)
-        now = datetime.now(timezone.utc)
+        now = self.clock.now()
         close = self.last_completed_close(profile, session, now)
         open_at = profile.session_window_at(session, close - timedelta(seconds=1))[0]
         contract = self.history_instrument(instrument, now.date())
