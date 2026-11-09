@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist StrategyExecution map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html">System map</a>
+  <div class="dropdown">
+    <button type="button">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html" class="active">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">Component map · STRATEGY_EXECUTION_MAP · Alchemist v3</div>
+<h1>StrategyExecution</h1>
+<div class="lede"><p>The decision state machine inside each slot. It knows which phase the slot is in, asks the signal only the question that phase needs, sends only the orders that phase allows, and decides what each order event means.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong> Behaviours 1–12 and decisions 1–22 are settled. The calls on the signal use the v3 signal interface. 2026-11-07: startup checks and the entry log read the signal only through its public methods (decision 23).</p></div>
+</header>
+
+<section id="goal">
+<div class="eyebrow">StrategyExecution · Goal</div>
+<h2>Goal</h2>
+<p>Each strategy slot moves through its execution phases correctly and sends only the entry and exit orders those phases allow. For a protected slot, it also never sends a market exit outside the trade's OCA group while a protective order may still fill, and never leaves an open position without protection it has not accounted for.</p>
+<p>Owns, from the System map:</p>
+<blockquote><p>The slot's execution state machine: which phase it is in, when to enter and exit by asking the slot's signal, and what each order event means in the current phase.</p></blockquote>
+<div class="table-wrap"><table>
+<thead><tr><th>Not StrategyExecution's job</th><th>Owned by</th></tr></thead>
+<tbody>
+<tr><td>The signal's logic (calculations, conditions, levels) and when it is stepped. StrategyExecution holds the signal, asks it the entry or exit question its phase needs, and times its exit-input freeze and release (<a href="system_map.html#d20">System map decision 20</a>).</td><td><a href="strategy_signal_map.html">StrategySignal</a> and <a href="strategy_map.html">Strategy</a></td></tr>
+<tr><td>The position. StrategyExecution reads the trade's filled quantities from Order Manager.</td><td><a href="strategy_map.html">Strategy</a></td></tr>
+<tr><td>An order's life at the broker (ids, groups, fill accumulation, closed status)</td><td><a href="order_manager_map.html">Order Manager</a></td></tr>
+<tr><td>Talking to the Event Loop</td><td><a href="strategy_map.html">Strategy</a></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="what-this-component-does">
+<div class="eyebrow">StrategyExecution · What this component does</div>
+<h2>What this component does</h2>
+<p>Strategy hands it every completed bar and every order update.</p>
+<p><strong>On a bar</strong>, it asks the signal whether to enter or exit — only the question its phase needs — and, when the phase allows, sends entry or exit orders and cancels to Order Manager. It freezes the signal's exit inputs on the entry-decision bar and releases them when the slot is flat again.</p>
+<p><strong>On an order update</strong>, it decides what the event means in the current phase. It asks Order Manager — which it already holds to send orders — for what it needs: the order's status and filled quantity (<code>get_order</code>), the group's submitted and open orders, and whether the group is closed (<code>is_group_closed</code>).</p>
+<p>The trade's position is the entry order's filled quantity minus its exit orders' filled quantity, all from Order Manager.</p>
+<p>A failed exit (rejected or cancelled while in position) is never sent again: on the next bar the slot flattens instead (behaviour 12).</p>
+
+<h3>Three classes, one contract</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Class</th><th>Exits</th></tr></thead>
+<tbody>
+<tr><td><code>StrategyExecution</code> (base)</td><td>Bar-close market entries and exits. Knows nothing of resting exits: every exit condition exits at bar close.</td></tr>
+<tr><td><code>ProtectedStrategyExecution</code></td><td>For a slot whose execution block names it (with its <code>resting_exits</code> option). After each entry it places a broker-side protective group, masks the selected conditions while that group works, and sends every market exit of the trade into the same OCA group while a leg is still alive — the broker fills it and cancels the legs, or refuses it when a leg already filled. Falls back to bar-close market exits when protection is lost; once every leg is dead they go out as plain market orders.</td></tr>
+<tr><td><code>StopLossProtectedStrategyExecution</code> (subclass of the protected class)</td><td>Rests one STP at a named level ± an offset in points and masks nothing — a disaster stop for when the server is down.</td></tr>
+</tbody></table></div>
+
+<h3>Phases</h3>
+<p>Code outside the slot never reads phase names: it asks <code>Strategy.is_processing_order()</code>, which forwards here.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Phase</th><th>Class</th><th><code>is_processing_order()</code></th></tr></thead>
+<tbody>
+<tr><td>WARMUP</td><td>base</td><td>false</td></tr>
+<tr><td>WAITING_FOR_WORKING_HOURS</td><td>base</td><td>false</td></tr>
+<tr><td>ENTRY_LOOP_ACTIVITY</td><td>base</td><td>false</td></tr>
+<tr><td>PROCESSING_ENTRY_ORDER</td><td>base</td><td>true</td></tr>
+<tr><td>IN_POSITION_ACTIVITY</td><td>base</td><td>false</td></tr>
+<tr><td>PROCESSING_EXIT_ORDER</td><td>base</td><td>true</td></tr>
+<tr><td>SESSION_END_FLATTENING</td><td>base (behaviour 11)</td><td>true only while an order of the slot may still fill (submitted, open or cancelling)</td></tr>
+<tr><td>DONE</td><td>base</td><td>false</td></tr>
+<tr><td>ERROR</td><td>base</td><td>false</td></tr>
+<tr><td>PROCESSING_PROTECTION_ORDERS — group sent, not every leg OPEN</td><td>protected</td><td>true</td></tr>
+<tr><td>IN_POSITION_PROTECTED — in position, every leg OPEN</td><td>protected</td><td>false</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="sample">
+<div class="eyebrow">StrategyExecution · Sample</div>
+<h2>Sample</h2>
+<p>Two samples. The system golden sample covers the base class. A component-level sample covers the protected class. Inputs are scripted bars and order updates; the Order Manager mock's answers (group closed, filled quantities) are scripted with them.</p>
+<h3>Sample G — system golden sample (base class)</h3>
+<div class="table-wrap"><table><tbody>
+<tr><th>Source</th><td>The system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>.</td></tr>
+<tr><th>Input</th><td>Synthetic bars rising through L and later reaching T; a long-1 fixed-rule signal stub (entry true on the L-cross bar, exit true on the T bar); a fill for each order sent.</td></tr>
+<tr><th>Expected</th><td>Flat until the L-cross bar, one buy decided there; in position on its fill; one sell decided on the T bar; flat on its fill; nothing after.</td></tr>
+<tr><th>Passes when</th><td>Exactly one entry and one exit order reach Order Manager on those bars; <code>is_processing_order()</code> is true only between each order's submission and its fill.</td></tr>
+<tr><th>Fails when</th><td>An order is sent before the L-cross bar; a second buy is sent while the first is pending; or any order is sent after the exit fill.</td></tr>
+</tbody></table></div>
+<h3>Sample P — component-level protected sample</h3>
+<p>Setup: a protected slot (selected: stop STP, target LMT), long 1, entry closed, Filled 1 @ P. Stop level S and target level T come from the signal's <code>exit_condition_level</code> (decision 14). On the next bar the slot places the STP+LMT group G. Then one of these cases:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Case</th><th>What happens</th><th>Expected</th></tr></thead>
+<tbody>
+<tr><td>A</td><td>Both legs OPEN; later STP Filled 1 (Order Manager: position 0), then LMT Cancelled.</td><td>In position protected, then flat; one round trip; no market order.</td></tr>
+<tr><td>B</td><td>Both legs OPEN; an end-of-day cutoff bar; the MKT Filled 1, then both legs Cancelled.</td><td>One MKT SELL 1 carrying OCA group G, no cancel; one round trip.</td></tr>
+<tr><td>B2</td><td>Both legs OPEN; an end-of-day cutoff bar; STP Filled 1 arrives, then the MKT Rejected (at IBKR: Inactive, error 201 "OCA group is already filled").</td><td>As B, and the round trip is the STP's; no second MKT.</td></tr>
+<tr><td>C</td><td>STP Rejected at placement, LMT OPEN; later a bar where the stop condition holds at close.</td><td>In position (fallback), no new group; the stop bar sends one MKT SELL 1 into G.</td></tr>
+<tr><td>D</td><td>STP Filled 1 before the LMT is acknowledged.</td><td>Flat; one round trip; no market order.</td></tr>
+<tr><td>E</td><td>Both legs OPEN; a session-end flatten request.</td><td>Both legs cancelled; once both are final, one MKT outside G for the remaining position (none if a leg filled); DONE; no round trip.</td></tr>
+</tbody></table></div>
+<p><strong>Passes when</strong> every signal market exit of the trade carries G, no cancel is sent before a signal market exit, at most one group is placed per trade, the slot ends flat with one round trip per trade, and no second exit fills.</p>
+<p><strong>Fails when</strong> a market exit is sent without G while a leg may still fill; a cancel comes before a market exit; a second group is placed in one trade; a leg fill that makes the slot flat is not counted as a round trip; or a selected condition is skipped while no working leg covers it.</p>
+</section>
+
+<section id="behaviours">
+<div class="eyebrow">StrategyExecution · Behaviours</div>
+<h2>Behaviours</h2>
+
+<div class="behaviour"><h3><span class="num">1</span>Base lifecycle<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd>Bars and order updates on a base-class slot.</dd>
+<dt>Must</dt><dd>Stay flat until the entry signal, then decide one entry. On its fill, be in position. On a bar-close exit signal, decide one exit. On its fill, be flat, count the round trip, and stop at the daily cap. A dead entry returns to entry seeking; a dead exit returns to in position. Freeze the signal's exit inputs on the entry-decision bar, before the entry order is sent; release them on the exit fill or when the entry dies.</dd>
+<dt>Invariant</dt><dd>At most one order in flight; no order after the cap; a trade's frozen inputs are never released while it is open.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">2</span>The processing-order question<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd><code>is_processing_order()</code>, asked through Strategy by Safety's repair, the Event Loop and shutdown.</dd>
+<dt>Must</dt><dd>Answer true while the slot waits on an order's outcome before it can move on: PROCESSING_ENTRY_ORDER or PROCESSING_EXIT_ORDER, and for a protected slot also PROCESSING_PROTECTION_ORDERS; in SESSION_END_FLATTENING, only while an order of the slot may still fill. False in every other phase, including IN_POSITION_PROTECTED (a position with its legs resting).</dd>
+<dt>Invariant</dt><dd>The only phase questions asked from outside are this one and <code>is_quarantined()</code> (behaviour 10), and no caller reads state names. Questions about orders are answered by Order Manager, not here.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">3</span>Protect on entry<span class="added">protected</span></h3><dl class="gmi">
+<dt>Given</dt><dd>The first bar in position after the entry order is closed with filled quantity &gt; 0. Placement is bar-driven: the level needs the actual average fill price, and the order-update handler is synchronous so it cannot await a group placement.</dd>
+<dt>Must</dt><dd>Once per trade:
+<ul>
+<li>Take the selected levels for the actual average fill price, from <code>exit_condition_level</code> (decision 14).</li>
+<li>If no level is available, or the stop is already crossed by the latest close, run this trade unprotected (stay in IN_POSITION_ACTIVITY).</li>
+<li>Otherwise request one group of the selected legs, sized to the filled quantity, under a fresh OCA group, and enter PROCESSING_PROTECTION_ORDERS. When every leg is OPEN, enter IN_POSITION_PROTECTED.</li>
+</ul>
+<p><em>Stop-loss class:</em> the level comes from the signal's <code>level(name)</code> moved by the offset against the trade (long: below, short: above); one STP leg (decision 22).</p></dd>
+<dt>Invariant</dt><dd>Protection is sized to the confirmed filled quantity; at most one group per trade; no group for a zero fill or a crossed stop.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">4</span>Masking<span class="added">protected only · the base class masks nothing</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A completed bar while in position, and the signal's per-condition answers from <code>evaluate_exit_conditions()</code> (decision 14).</dd>
+<dt>Must</dt><dd><ul>
+<li>In IN_POSITION_PROTECTED: send a bar-close market exit only when a non-selected condition is true and no selected condition is true. When a selected condition is true, send no market exit that bar, even if a non-selected one is also true (decision 15), and log it.</li>
+<li>In PROCESSING_PROTECTION_ORDERS and IN_POSITION_ACTIVITY: judge every condition at bar close (decision 10).</li>
+<li>Log every raw condition answer.</li>
+<li><em>Stop-loss class:</em> masking does not apply; every condition is judged at bar close in every phase.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>On every bar of an open position, each selected condition is covered by a working leg or by bar-close evaluation.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">5</span>A market exit joins the group<span class="added">protected</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A market exit decision from the signal while the trade has a group with at least one leg still submitted or open. With every leg dead the exit is a plain market order: nothing is left to cancel, and a bad group must not also block the exit. The session-end flatten is behaviour 11, not this.</dd>
+<dt>Must</dt><dd>Send one market order sized to the trade's position, carrying the group's OCA group and OCA type 2, with no cancel before it, and enter PROCESSING_EXIT_ORDER. The broker either fills it and cancels the legs, or refuses it when a leg already filled (at IBKR: Inactive + error 201, normalised to REJECTED).
+<ul>
+<li>On its fill: complete the round trip.</li>
+<li>On its reject or cancel: if the slot is flat, a leg fill has already closed the trade (behaviour 6); otherwise return to IN_POSITION_PROTECTED when every leg is still OPEN, else to IN_POSITION_ACTIVITY, and the exit counts as failed (behaviour 12).</li>
+</ul></dd>
+<dt>Invariant</dt><dd>No market exit outside the group while a leg may still fill; no cancel comes before a market exit; a market exit never exceeds the trade's position from Order Manager's filled quantities.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">6</span>Resting fill<span class="added">protected</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A protective leg execution that reduces the position, in any phase of the trade.</dd>
+<dt>Must</dt><dd>Interpret each update by the order it is for (entry, exit, or a leg of the trade's group), not by the current phase. When the position is flat, complete the round trip exactly like a bar-close exit (count, release the frozen inputs, daily cap → done) without any market order. A later update for an order of a closed trade (the sibling's Cancelled, a refused MKT) changes no phase.</dd>
+<dt>Invariant</dt><dd>Every fill that makes the slot flat completes exactly one round trip.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">7</span>Lost protection<span class="added">protected</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A leg ends Rejected or Cancelled while the position is open — and not because the trade's own market exit joined the group or a sibling filled.</dd>
+<dt>Must</dt><dd>No re-placement: enter IN_POSITION_ACTIVITY and judge every condition at bar close from then on. Later market exits still join the group while a leg survives, and go out plain once none does. Log at CRITICAL. The surviving leg is left working (decision 18).</dd>
+<dt>Invariant</dt><dd>At most one group per trade.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">8</span>Gating and daily rollover<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd>Bars before warmup is ready, outside the session (including holiday half-sessions), or on a new trading date.</dd>
+<dt>Must</dt><dd>Seek entries only while warmup is ready and the bar is in session, per the instrument's exchange profile (a half-session holiday counts as closed; if the calendar is unavailable, fall back to open). On the first bar of a new trading date (overnight sessions: at the session roll, not midnight), reset the round-trip count and let a done slot trade again, without disturbing an open position.</dd>
+<dt>Invariant</dt><dd>No entry order while not warm or out of session.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">9</span>Round-trip count across a restart<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A restart in the middle of a trading date, with a round-trip store.</dd>
+<dt>Must</dt><dd>Persist the count on each completed round trip and on the daily reset. On restart in session, restore the same-day count and park in DONE when it is at or over the cap. With no store, no record, or outside session, start from zero.</dd>
+<dt>Invariant</dt><dd>A restart never lets the slot exceed its daily cap.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">10</span>Error parking<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd>The slot has been quarantined (ERROR).</dd>
+<dt>Must</dt><dd>Stay in ERROR and place no order on every bar. Log a reminder at most once per interval per quarantine, saying how long the slot has been parked. On release, restart from waiting for working hours — except a slot quarantined while done (at its daily cap), which returns to done while the trading date is the same.</dd>
+<dt>Invariant</dt><dd>An ERROR slot never sends an order; a quarantine and release never lets the slot exceed its daily cap.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">11</span>Session-end flatten<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd><code>request_flatten</code> from outside the strategy (the shutdown coordinator at a session's cutoff, or SIGINT), in any state — or from Strategy with reason <code>exit_failed</code> (behaviour 12).</dd>
+<dt>Must</dt><dd>Enter SESSION_END_FLATTENING and, on each call:
+<ul>
+<li>cancel every open order;</li>
+<li>while Order Manager has a submitted, open or cancelling order, wait;</li>
+<li>when flat, go to DONE;</li>
+<li>otherwise send one market order for the booked position (no OCA group).</li>
+</ul>
+A rejected flatten order is not resent (same trading date, even across a quarantine). While flattening, no bar is handled and no order update changes the state; the flatten fill counts no round trip.</dd>
+<dt>Invariant</dt><dd>No market order while an order of the slot may still fill; at most one flatten market order per trading date; the same rule for every class.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">12</span>Failed-exit flatten<span class="added">both classes</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A market exit of the slot ends REJECTED or CANCELLED (a broker reject, or one made up by Safety's repair) and, on the next bar, the slot is still in position. Judging on the next bar lets a leg fill that the broker refused the joined exit for be booked first.</dd>
+<dt>Must</dt><dd><ul>
+<li>Log CRITICAL and send no further exit.</li>
+<li>Report <code>flatten_wanted()</code> until the flatten ends; Strategy then calls <code>request_flatten('exit_failed')</code> with the booked position on each bar (behaviour 11: cancel all, wait, one plain market order, DONE for the trading date).</li>
+<li>If that market order fails too, it is not resent and is logged CRITICAL.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>A slot never re-sends an exit that has already failed in position; there is no retry counter.</dd>
+</dl></div>
+</section>
+
+<section id="skeleton-code">
+<div class="eyebrow">StrategyExecution · Skeleton code</div>
+<h2>Skeleton code</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Piece</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>EXECUTION_CLASSES</code></td><td>Every execution class by name (subclasses register themselves).</td></tr>
+<tr><td><code>make_execution(...)</code></td><td>The one plug point: builds the class the slot's execution block names, with the options that class accepts; no block builds the base class. Raises <code>ExecutionConfigError</code> on anything invalid.</td></tr>
+<tr><td><code>ExecutionConfigError</code></td><td>The slot's execution block is invalid; raised while the slot is built, so startup fails before trading.</td></tr>
+<tr><td><code>StrategyExecution</code></td><td>The base state machine. <code>TRANSITIONS</code> lists every legal state change (a subclass extends it).</td></tr>
+<tr><td><code>ProtectedStrategyExecution</code></td><td>Requires <code>resting_exits</code>: a non-empty map of exit-condition names to STP or LMT, at most one of each. Each name must be in the signal's <code>exit_condition_names()</code>.</td></tr>
+<tr><td><code>StopLossProtectedStrategyExecution</code></td><td>Requires a level name and an offset in points. The level must be a node of the signal (<code>has_level()</code>), not a condition (<code>condition_names()</code>).</td></tr>
+</tbody></table></div>
+<h3>Major state of the base class</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>State</th><th>What it holds</th></tr></thead>
+<tbody>
+<tr><td><code>signal</code>, <code>om</code></td><td>The slot's signal (entry/exit answers, params, freeze/release) and Order Manager (sends orders, answers queries).</td></tr>
+<tr><td><code>state</code>, handlers</td><td>The current phase and <code>{phase: on_&lt;phase&gt;(bar) → next phase}</code>.</td></tr>
+<tr><td><code>round_trips</code>, <code>trading_day</code>, <code>roundtrip_store</code></td><td>Round trips completed today (DONE at the daily cap); the session date that count belongs to; the store that persists it.</td></tr>
+<tr><td><code>trade_closed</code></td><td>Set on an exit fill; Strategy reads it through <code>consume_trade_closed()</code>.</td></tr>
+<tr><td><code>entry_order_bar_ts</code></td><td>The bar that submitted the entry order; Strategy anchors the entry timestamp to it.</td></tr>
+</tbody></table></div>
+<details><summary>Full skeleton code<span class="count">python</span></summary>
+<pre><code>"""Skeleton contract for StrategyExecution (Alchemist v3, draft)."""
+
+from __future__ import annotations
+
+from typing import Callable
+
+EXECUTION_CLASSES: dict[str, type["StrategyExecution"]] = {}
+
+
+class ExecutionConfigError(ValueError): ...
+
+
+def make_execution(execution_config: dict | None, signal, om, **kw) -&gt; "StrategyExecution":
+    """The one plug point (decision 21)."""
+
+
+class StrategyExecution:
+    TRANSITIONS: dict[str, set[str]]
+
+    def __init_subclass__(cls, **kw):
+        EXECUTION_CLASSES[cls.__name__] = cls
+
+    @classmethod
+    def options_from_config(cls, options: dict) -&gt; dict: ...
+
+    def on_bar(self, bar: dict, step_signal: Callable[[], None]) -&gt; None:
+        """Behaviours 1, 3-5, 8, 10, 12."""
+    def on_order_update(self, update: dict) -&gt; None:
+        """Behaviours 1, 5-7, 11."""
+    def is_processing_order(self) -&gt; bool: ...          # Behaviour 2
+    def is_quarantined(self) -&gt; bool: ...               # Behaviour 10
+    def quarantine(self, reason: str) -&gt; None: ...
+    def release_quarantine(self) -&gt; None: ...
+    def request_flatten(self, position: dict, reason: str) -&gt; None: ...  # Behaviour 11
+    def flatten_wanted(self) -&gt; bool: ...               # Behaviour 12
+    def consume_trade_closed(self) -&gt; bool: ...
+    def set_warmup_ready(self) -&gt; None: ...
+    def set_aux_ready(self) -&gt; None: ...
+
+
+class ProtectedStrategyExecution(StrategyExecution):
+    """Behaviours 3-7; adds PROCESSING_PROTECTION_ORDERS, IN_POSITION_PROTECTED."""
+    resting_exits: dict[str, str]     # exit condition name -&gt; 'STP' | 'LMT'
+
+
+class StopLossProtectedStrategyExecution(ProtectedStrategyExecution):
+    """Decision 22: one STP at level(name) +/- offset_points; masks nothing."""
+    level_name: str
+    offset_points: float
+</code></pre></details>
+</section>
+
+<section id="test-spec">
+<div class="eyebrow">StrategyExecution · Test spec</div>
+<h2>Test spec</h2>
+<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>.</p>
+<details><summary>Samples<span class="count">7 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>tests/execution/test_execution_sample.py::test_level_cross_entry_then_target_exit</code></td><td>Sample G.</td></tr>
+<tr><td><code>test_protected_case_a_leg_fill_closes_trade</code></td><td>Sample P, case A.</td></tr>
+<tr><td><code>test_protected_case_b_market_exit_joins_group</code></td><td>Case B.</td></tr>
+<tr><td><code>test_protected_case_b2_refused_join_after_leg_fill</code></td><td>Case B2.</td></tr>
+<tr><td><code>test_protected_case_c_fallback_exit_joins_group</code></td><td>Case C.</td></tr>
+<tr><td><code>test_protected_case_d_fill_before_ack</code></td><td>Case D.</td></tr>
+<tr><td><code>test_protected_case_e_flatten_cancels_then_market</code></td><td>Case E.</td></tr>
+</tbody></table></div></details>
+<details><summary>Behaviours 1–12<span class="count">10 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>test_at_most_one_order_in_flight</code></td><td>Behaviour 1.</td></tr>
+<tr><td><code>test_no_caller_reads_state_names</code></td><td>Behaviour 2 invariant.</td></tr>
+<tr><td><code>test_no_group_for_crossed_stop_or_missing_level</code></td><td>Behaviour 3.</td></tr>
+<tr><td><code>test_selected_condition_masked_only_when_every_leg_open</code></td><td>Behaviour 4.</td></tr>
+<tr><td><code>test_market_exit_plain_once_every_leg_dead</code></td><td>Behaviour 5.</td></tr>
+<tr><td><code>test_lost_leg_falls_back_without_replacement</code></td><td>Behaviour 7.</td></tr>
+<tr><td><code>test_daily_reset_at_overnight_session_roll</code></td><td>Behaviour 8.</td></tr>
+<tr><td><code>test_restart_restores_cap</code></td><td>Behaviour 9.</td></tr>
+<tr><td><code>test_release_from_done_quarantine_stays_done</code></td><td>Behaviour 10.</td></tr>
+<tr><td><code>test_failed_exit_never_resent_flattens_next_bar</code></td><td>Behaviour 12.</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="decisions-already-made">
+<div class="eyebrow">StrategyExecution · Decisions already made</div>
+<h2>Decisions already made</h2>
+<div class="decision"><h3><span class="num">2</span>One class or several?</h3><p class="q">Subclasses. <code>ProtectedStrategyExecution</code>, built only for slots whose execution block names it (decision 21), owns the broker group and the mask. The base class takes no resting exits and masks nothing: masking without a broker order is never safe, so it lives only where the order is placed.</p></div>
+<div class="decision"><h3><span class="num">3</span>How does outside code learn the phase?</h3><p class="q">One question, <code>is_processing_order()</code>, reached only through Strategy; plus <code>is_quarantined()</code>. Safety's repair picks slots by their submitted or open orders, asking <code>is_processing_order()</code> only to decide whether a slot with no orders deserves a warning.</p><p class="rej">Rejected: reading state names, which a subclass's new phases would silently escape; order questions on this component — they belong to Order Manager.</p></div>
+<div class="decision"><h3><span class="num">4</span>How does it learn that a group is closed?</h3><p class="q">It asks Order Manager directly.</p><p class="rej">Rejected: Strategy relaying an order context, and tracking orders itself.</p></div>
+<div class="decision"><h3><span class="num">5</span>Which sample?</h3><p class="q">The system golden sample for the base class plus a component-level protected sample. The join-vs-fill race lives here, not in Order Manager.</p></div>
+<div class="decision"><h3><span class="num">6</span>A protective leg rejected or cancelled by the broker without our request?</h3><p class="q">No retry. The trade falls back to bar-close market exits for every condition; its market exits still join the group while a leg survives, and go out plain once every leg is dead.</p><p class="rej">Rejected: a live retry (cancel the rest, wait, place a fresh group) — more states for a rare event.</p></div>
+<div class="decision"><h3><span class="num">7</span>Is a new group ever placed in a trade?</h3><p class="q">No. A market exit joins the working group instead (decision 16). Moving an existing working order into a group is refused by IBKR (errors 10326/10327) and is not used.</p></div>
+<div class="decision"><h3><span class="num">8</span>Stop already crossed when protection would be placed?</h3><p class="q">Place no group; the trade runs unprotected and exits through the normal bar-close market exit.</p><p class="rej">Rejected: an immediate market exit.</p></div>
+<div class="decision"><h3><span class="num">9</span>Entry partially filled?</h3><p class="q">Place protection only once the entry order is closed, sized to its total filled quantity; nothing for a zero fill.</p></div>
+<div class="decision"><h3><span class="num">10</span>Which conditions are masked?</h3><p class="q">Selected conditions, and only in IN_POSITION_PROTECTED (every leg OPEN). While placing and after a fallback, every condition is judged at bar close; a market exit there is safe because it joins the group.</p></div>
+<div class="decision"><h3><span class="num">11</span>Who enforces "an exit never exceeds the position"?</h3><p class="q">StrategyExecution, from Order Manager's filled quantities. Order Manager sends what it is given.</p></div>
+<div class="decision"><h3><span class="num">13</span>Does StrategyExecution hold the signal?</h3><p class="q">Yes (<a href="system_map.html#d20">System map decision 20</a>). It asks for entry or exit in the phase that needs the answer, reads its params through the signal, freezes and releases exit inputs, and logs the inputs with each decision.</p></div>
+<div class="decision"><h3><span class="num">14</span>Where do per-condition exit answers and levels come from?</h3><p class="q">From the signal: <code>evaluate_exit_conditions()</code> returns each named condition's answer; <code>exit_condition_level(name)</code> returns the price the condition compares the close with. The entry price behind a level is the broker's average fill price. The protected class reads each selected level on the trade's first bar in position and stores none; a missing level places no group. The condition's direction and the slot's side give the leg's side; the Gateway rounds to tick.</p><p class="rej">Rejected: forcing selected conditions false inside the signal (it loses the fact that the condition really fired).</p></div>
+<div class="decision"><h3><span class="num">15</span>A selected and a non-selected condition both fire on the same bar?</h3><p class="q">No market exit that bar: the selected condition means price crossed its level, so the broker order has exited or is exiting. A market exit on top would be refused rather than exit twice (decision 16), so this is a preference, not the safety rule. If the broker order did not fill, the non-selected condition is judged again next bar.</p></div>
+<div class="decision"><h3><span class="num">16</span>How does a market exit avoid exiting twice while legs are working?</h3><p class="q">The MKT carries the trade's OCA group (type 2). Verified on an IBKR paper account: into a working group it filled and the broker stopped both legs first; into a group whose leg had filled, the broker refused it (Inactive + error 201), also when sent 0.2 ms after a marketable sibling — 5 of 5. This replaces cancel → wait for final → market and needs no closing state.</p><p class="when">Not tested: the MKT reaching the broker before a sibling fills at the exchange; accepted as very unlikely.</p></div>
+<div class="decision"><h3><span class="num">17</span>Which phases does the protected class add?</h3><p class="q">Two: PROCESSING_PROTECTION_ORDERS and IN_POSITION_PROTECTED. The base states keep their meaning; no closing state.</p></div>
+<div class="decision"><h3><span class="num">18</span>After a fallback, is the surviving leg left working or cancelled?</h3><p class="q">Left working. It needs no cancel, no cancel outcome and no cancel-vs-fill race, and keeps a broker-side order in place. Later market exits join the group, so nothing exits twice; with no surviving leg they go out plain.</p></div>
+<div class="decision"><h3><span class="num">19</span>How does a leg in the broker's pending-cancel state count?</h3><p class="q">It never reaches this component: the Gateway drops pending-cancel, and Order Manager enters CANCELLING only for a cancel the slot sent. An unrequested cancel is seen on its final Cancelled, which triggers the fallback. A CANCELLING leg is not open.</p></div>
+<div class="decision"><h3><span class="num">20</span>Is the session-end flatten a signal exit?</h3><p class="q">No. Signal exits come from the signal (the protected class joins the OCA group); the flatten comes from outside the strategy (cancel all → wait for final → MKT → DONE, the same for every class). A rejected flatten order is not retried; the shutdown flat check is the backstop.</p></div>
+<div class="decision"><h3><span class="num">21</span>How does a slot pick its execution class?</h3><p class="q">Explicitly, by name, in the slot's execution block: <code>execution: {class: ProtectedStrategyExecution, resting_exits: {...}}</code>. The other keys are that class's options; no block builds the base class. Anything invalid fails startup naming the slot.</p><p class="rej">Rejected: inferring the class from an option; dropping an invalid block with a log line — a slot believed protected at the broker but not is exactly the risk the feature exists to remove.</p></div>
+<div class="decision"><h3><span class="num">22</span>A disaster stop without masking?</h3><p class="q"><code>StopLossProtectedStrategyExecution</code>: one STP at a named level ± an offset in points. Every exit stays a bar-close market order that joins the group; the stop is there for when the server is down.</p></div>
+<div class="decision"><h3><span class="num">23</span>What does StrategyExecution read from the signal besides its answers?</h3><p class="q">Only public methods: <code>entry_conditions()</code> for the entry log; <code>exit_condition_names()</code>, <code>condition_names()</code> and <code>has_level()</code> to check the execution block at startup; <code>params</code> for session, direction and the daily quota. It never reads the signal's private state (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading the signal's logic structure or value cache directly.</p><p class="when">proposed · v3 · 2026-11-07</p></div>
+<p class="meta">Decisions 1 and 12 are not used; the numbers are kept so references stay valid.</p>
+</section>
+</div>
+</body>
+</html>

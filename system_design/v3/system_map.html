@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist system map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html" class="active">System map</a>
+  <div class="dropdown">
+    <button type="button">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">System map · SYSTEM_MAP · Alchemist v3</div>
+<h1>System map</h1>
+<div class="lede"><p>The top-level boundary of the Alchemist v3 execution engine: what it is for, the components it is split into, what each one owns, and the one frozen example every component is tested against.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong></p>
+<p>v3 is a seven-component execution engine. Its first requirement is multi-asset and multi-currency trading (<a href="#r1">R1</a>, <a href="#multi-asset">decisions 37–41</a>), and a signal is a Python <code>SignalDag</code> class that holds its own params, behind an abstract interface (<a href="#d42">decision 42</a>).</p>
+<p>Decisions 1–24 are settled. Decisions 25–47 are proposed and become agreed only once confirmed. Decision 44 proposes an eighth component, Aux Data.</p>
+<details><summary>Change history</summary><ul>
+<li><strong>2026-11-07</strong> — <a href="#d35">Decision 35</a> changed: the deploy client is its own script, <code>deploy_strategy.py --config FILE --key KEY</code>; <code>run_strategies.py</code> no longer takes <code>--deploy</code> (<a href="#d43">43</a>, <a href="#d47">47</a> updated).</li>
+<li><strong>2026-11-07</strong> — Code names follow the glossary's new Code column. <a href="#d43">Decision 43</a>: a slot names its <em>strat</em>; <em>strategy key</em> is the slot's own name. "Replay gateway" is now "simulated broker".</li>
+<li><strong>2026-11-07</strong> — New proposed decisions 44–47: an eighth component, <a href="aux_data_map.html">Aux Data</a>, takes auxiliary series and arming from the Event Loop (<a href="#d44">44</a>; would change <a href="#d4">4</a> and <a href="#d23">23</a>; <a href="#d32">32</a> updated); the simulated broker prepares replay data on request (<a href="#d45">45</a>); a shared <code>Clock</code> and <code>RunMode</code> remove mode branches (<a href="#d46">46</a>); <code>run_strategies.py</code> becomes a thin startup module (<a href="#d47">47</a>). Diagram, component table, boundary and golden sample gain Aux Data. Shared code gains Clock and RunMode.</li>
+<li><strong>2026-11-07</strong> — New <a href="#d43">decision 43</a>: <code>run_strategies.py</code> loads custom strategies from <code>local/strategies/</code>; the files of a strategy folder connect by registry names, with calculations scoped per folder.</li>
+<li><strong>2026-11-07</strong> — <a href="#d42">Decision 42</a> changed: a signal is a Python <code>SignalDag</code> subclass that builds its calculation DAG in code and holds its own params; the declarative definition is dropped. <a href="#d5">Decision 5</a> changed: strategy params sit inside the signal class, not in outside config. <a href="#d35">Decision 35</a>: the deploy revision carries only the config file's sha256; version control of strategies is outside the system. The StrategySignal interface gains read-only condition and value methods, so no caller reads a signal's private state.</li>
+<li><strong>2026-11-06</strong> — The "How is a StrategySignal written?" open question is closed by new <a href="#d42">decision 42</a>: a declarative signal definition, built into a DAG of registered calculations. The StrategySignal boundary now reads "calculation DAG". Decision 28 no longer cites an earlier engine. Decision 33 shares a calculation, not an indicator, and needs its own decision first.</li>
+<li><strong>2026-11-06</strong> — Scope widened from futures to futures, stocks and options (<a href="#r1">R1</a>, new <a href="#d41">decision 41</a>, <a href="#d37">37</a>). Decision 24 now reads "1 unit" (1 share or 1 contract). The 5 ms budget is defined as end-to-end latency (<a href="#r3">R3</a>, <a href="#d25">decision 25</a>); the "Which 5 ms?" open question is closed. New open questions: picking an option contract, broker timestamp precision, bars closed without a tick.</li>
+</ul></details></div>
+</header>
+
+<section id="goal">
+<div class="eyebrow">System map · Goal</div>
+<h2>Goal</h2>
+<p><strong>Execute a strategy book at the broker across asset classes (futures, stocks and options), instruments, exchanges and currencies, placing the same orders whether it runs on a simulated broker, a paper account or a live account.</strong></p>
+
+<h3>Not this system's job</h3>
+<ul>
+<li>Strategy research: finding signals, fitting params, or any tooling that produces them.</li>
+<li>Comparing the engine's trades with research results, and monitoring strategies for decay.</li>
+<li>Keeping a registry of strategies and their params versions.</li>
+<li>Version control of strategies and their params: the strategy code under <code>local/strategies/</code> belongs to its author.</li>
+<li>Portfolio reporting in a base currency (see <a href="#d39">decision 39</a>).</li>
+</ul>
+
+<h3 id="requirements">Requirements · v3 draft</h3>
+<p>What the design must meet. Each links to the decisions that answer it.</p>
+<div class="table-wrap"><table>
+<tr><th>#</th><th>Requirement</th><th>What it means</th><th>Answered by</th></tr>
+<tr id="r1"><td>R1</td><td><strong>Multi-asset, multi-currency.</strong> One process trades futures, stocks and options on several exchanges in their own currencies.</td><td>The first book is futures: NQ and ES on CME in USD, and FDAX on Eurex in EUR. Stocks and options are in scope; their first exchanges are not named yet. Adding an instrument is configuration; adding an exchange is one new exchange profile; no component branches on an asset class except where the asset class changes the fact (how a contract is resolved).</td><td><a href="#d31">31</a>, <a href="#d37">37–41</a></td></tr>
+<tr id="r2"><td>R2</td><td><strong>Extensible.</strong> A new exchange, strategy, gateway or outside data source is added in one place, without editing unrelated code.</td><td>No file branches on an exchange name; gateways and data sources plug in through one interface each.</td><td><a href="#d30">30</a>, <a href="#d31">31</a>, <a href="#d32">32</a>, <a href="#d43">43</a></td></tr>
+<tr id="r3"><td>R3</td><td><strong>Scales to 100 strategies.</strong> Strategies do not hold each other up, and a bar becomes an order within 5 ms.</td><td>The 5 ms is <strong>end-to-end latency</strong>: from the broker timestamp of the tick that closes a bar to that bar's order leaving the Gateway for the broker. It includes the feed's transit from the broker, which the engine does not control. Slot cost and dispatch latency are logged as its internal parts. A fixed polling timer must not add queue wait to every event.</td><td><a href="#d25">25–29</a>, <a href="#d33">33</a></td></tr>
+<tr id="r4"><td>R4</td><td><strong>One code path.</strong> Simulation, paper and live run the same components; only what sits behind the Gateway changes.</td><td>No separate simulator path that could drift from live.</td><td><a href="#d6">6</a>, <a href="#d9">9</a></td></tr>
+<tr id="r5"><td>R5</td><td><strong>Add a strategy without a restart.</strong> One strategy is added to a running paper or live process while the strategies already trading keep their connection, positions, orders, indicators and partly built bars.</td><td>The motivating case: a day-session strategy added in the evening while overnight strategies trade.</td><td><a href="#d34">34–36</a></td></tr>
+</table></div>
+</section>
+
+<section id="introduction">
+<div class="eyebrow">System map · Introduction</div>
+<h2>Introduction</h2>
+<p>Alchemist v3 is an execution engine for strategies on futures, stocks and options. Its inputs are the broker's market data (or a replay source standing in for the broker), daily auxiliary series from outside data sources, plus deployment config supplied from outside and the author's strategy classes, which hold each signal's params. Its first book trades CME equity-index futures in USD and Eurex DAX futures in EUR. Its only consumer is the broker, which receives its orders.</p>
+<ol>
+<li>Market data enters through the <strong>Gateway</strong>.</li>
+<li>The <strong>Event Loop</strong> turns it into bars and dispatches them. <em>Proposed:</em> before dispatch, <strong>Aux Data</strong> adds daily auxiliary values from outside data sources to each bar, and tells each strategy that reads them whether it is ready.</li>
+<li>Each <strong>Strategy</strong> steps its <strong>StrategySignal</strong> and passes the bar to its <strong>StrategyExecution</strong> state machine, which asks the signal whether to enter or exit.</li>
+<li>The resulting orders are tracked by the <strong>Order Manager</strong> and leave again through the Gateway.</li>
+<li>Alongside, <strong>Safety</strong> watches the broker connection, reconnects it, and repairs any strategy left waiting on an order during an outage.</li>
+</ol>
+<p>Every instrument names its exchange profile and currency, so every bar, order, fill and position knows where it trades and what money it is counted in.</p>
+</section>
+
+<section id="diagram">
+<div class="eyebrow">System map · Diagram</div>
+<h2>Diagram</h2>
+<div class="diagram">
+<svg viewBox="0 0 780 600" role="img" aria-label="Alchemist v3 component diagram" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+    a:hover .box { stroke: var(--accent); fill: var(--accent-soft); }
+    .ext { fill: none; stroke: var(--ink-3); stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .t { fill: var(--ink); font: 600 15px var(--sans); text-anchor: middle; }
+    .s { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .l { fill: var(--ink-2); font: 12.5px var(--sans); }
+    .arr { stroke: var(--ink-3); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/>
+    </marker>
+  </defs>
+  <rect class="ext" x="220" y="8" width="280" height="40" rx="20"/>
+  <text class="s" x="360" y="33">broker (CME · Eurex) / replay source</text>
+  <path class="arr" d="M330,48 L330,96"/>
+  <text class="l" x="200" y="76">market data, fills</text>
+  <path class="arr" d="M390,96 L390,48"/>
+  <text class="l" x="398" y="76">orders, cancels</text>
+  <a href="gateway_map.html"><rect class="box" x="240" y="98" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="122">Gateway</text><text class="s" x="360" y="142">owns: all broker talk</text></a>
+  <a href="safety_map.html"><rect class="box" x="580" y="98" width="190" height="56" rx="8"/>
+    <text class="t" x="675" y="122">Safety</text><text class="s" x="675" y="142">reconnect + repair</text></a>
+  <path class="arr" d="M480,116 L578,116"/>
+  <text class="l" x="488" y="108">health, executions</text>
+  <path class="arr" d="M578,138 L482,138"/>
+  <text class="l" x="490" y="152">heartbeat, reconnect</text>
+  <path class="arr" d="M675,154 L675,236 L482,236"/>
+  <text class="l" x="560" y="230">repaired fills</text>
+  <rect class="ext" x="40" y="150" width="170" height="36" rx="18"/>
+  <text class="s" x="125" y="173">outside data sources</text>
+  <path class="arr" d="M125,186 L125,206"/>
+  <a href="aux_data_map.html"><rect class="box" x="40" y="208" width="170" height="56" rx="8"/>
+    <text class="t" x="125" y="232">Aux Data</text><text class="s" x="125" y="252">proposed: aux + arming</text></a>
+  <path class="arr" d="M210,236 L238,236"/>
+  <path class="arr" d="M125,264 L125,346 L238,346"/>
+  <text class="l" x="132" y="300">ready,</text>
+  <text class="l" x="132" y="316">frames</text>
+  <path class="arr" d="M360,154 L360,206"/>
+  <text class="l" x="368" y="180">ticks, order updates, history</text>
+  <path class="arr" d="M310,206 L310,156"/>
+  <text class="l" x="214" y="200">history requests</text>
+  <a href="event_loop_map.html"><rect class="box" x="240" y="208" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="232">Event Loop</text><text class="s" x="360" y="252">owns: bars + dispatch</text></a>
+  <path class="arr" d="M360,264 L360,316"/>
+  <text class="l" x="368" y="294">bars, order updates, warmup</text>
+  <a href="strategy_map.html"><rect class="box" x="240" y="318" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="342">Strategy</text><text class="s" x="360" y="362">owns: position + driving</text></a>
+  <a href="strategy_signal_map.html"><rect class="box" x="580" y="290" width="190" height="56" rx="8"/>
+    <text class="t" x="675" y="314">StrategySignal</text><text class="s" x="675" y="334">calculations + logic</text></a>
+  <a href="strategy_execution_map.html"><rect class="box" x="580" y="400" width="190" height="56" rx="8"/>
+    <text class="t" x="675" y="424">StrategyExecution</text><text class="s" x="675" y="444">execution FSM</text></a>
+  <path class="arr" d="M480,332 L578,316"/>
+  <text class="l" x="488" y="312">bars + position</text>
+  <path class="arr" d="M578,336 L482,346"/>
+  <text class="l" x="500" y="358">warm?</text>
+  <path class="arr" d="M480,366 L578,414"/>
+  <text class="l" x="490" y="402">bars, updates</text>
+  <path class="arr" d="M690,398 L690,348"/>
+  <text class="l" x="698" y="378">entry/exit?</text>
+  <path class="arr" d="M675,456 L675,512 L482,512"/>
+  <text class="l" x="540" y="506">orders, cancels, queries</text>
+  <path class="arr" d="M360,374 L360,484"/>
+  <text class="l" x="368" y="440">order updates, ownership</text>
+  <a href="order_manager_map.html"><rect class="box" x="240" y="486" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="510">Order Manager</text><text class="s" x="360" y="530">owns: order lifecycle</text></a>
+  <path class="arr" d="M240,514 L20,514 L20,126 L238,126"/>
+  <text class="l" x="26" y="440">orders,</text>
+  <text class="l" x="26" y="456">cancels</text>
+</svg>
+<p class="caption">Click a box to open its component map. Orders leave through the Gateway; StrategyExecution asks StrategySignal directly for entry/exit answers. Aux Data (proposed) adds values to each bar before the Event Loop dispatches it.</p></div>
+<p>Not drawn: StrategyExecution times the signal's exit-input freeze and release. Aux Data reads daily series straight from outside data sources (or from files in replay), not through the Gateway. <em>Proposed (<a href="#d35">decision 35</a>):</em> in paper and live, an operator's deploy request reaches the Event Loop over a local socket. Every component reads exchange facts from the shared exchange profiles (<a href="#d31">decision 31</a>).</p>
+</section>
+
+<section id="component-maps">
+<div class="eyebrow">System map · Component maps</div>
+<h2>Component maps</h2>
+<p>Each component has its own frozen contract. Once you know which component a change belongs to, read its map before opening source files.</p>
+<div class="table-wrap"><table>
+<tr><th>Component</th><th>Go here for</th></tr>
+<tr><td><a href="gateway_map.html">Gateway</a></td><td>Broker connection, market data in, orders/cancels out, fills back, replay source.</td></tr>
+<tr><td><a href="event_loop_map.html">Event Loop</a></td><td>Ticks → bars, delivering bars/order updates to strategies, broker warmup history seeding.</td></tr>
+<tr><td><a href="aux_data_map.html">Aux Data</a> <em>(proposed)</em></td><td>Auxiliary series from outside sources, arming per session, values on bars.</td></tr>
+<tr><td><a href="strategy_map.html">Strategy</a></td><td>The per-slot object: position booking, driving signal/execution/order manager, rebuild gating.</td></tr>
+<tr><td><a href="strategy_signal_map.html">StrategySignal</a></td><td>Indicators, entry/exit rules, warm state, cold rebuild.</td></tr>
+<tr><td><a href="strategy_execution_map.html">StrategyExecution</a></td><td>Execution phase state machine, when to enter/exit, what order events mean.</td></tr>
+<tr><td><a href="order_manager_map.html">Order Manager</a></td><td>Building, tracking and cancelling orders; order ownership.</td></tr>
+<tr><td><a href="safety_map.html">Safety</a></td><td>Lost connection / frozen process detection, reconnect, repairing fills missed in an outage.</td></tr>
+</table></div>
+</section>
+
+<section id="system-boundary">
+<div class="eyebrow">System map · System boundary</div>
+<h2>System boundary</h2>
+<p>For each component: what it owns, what it leaves to others, what it receives, and what it produces.</p>
+
+<h3>Gateway</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>All communication with the broker: market data in, orders and cancels out, fills and executions back, for every instrument the process trades. A replay source can stand in for the broker behind it.</td></tr>
+<tr><th>Not its job</th><td>Building bars or deciding who hears an event (Event Loop); deciding what to trade (Strategy, StrategyExecution); tracking an order's life (Order Manager); noticing a dead connection or repairing strategies after one (Safety).</td></tr>
+<tr><th>Receives</th><td>From the broker: market data and fills. From Order Manager: orders and cancels. From Safety: heartbeat checks, reconnect requests, requests for executions. From the Event Loop: history requests for warmup.</td></tr>
+<tr><th>Produces</th><td>To the Event Loop: ticks, order updates and warmup history. To the broker: orders and cancels. To Safety: connection health and the broker's executions.</td></tr>
+</table></div>
+
+<h3>Event Loop</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>Turning ticks into completed bars and delivering bars and order updates to the right strategies, in time order, exactly once; and seeding each strategy with the warmup history it needs (daily, prior-session and auxiliary), fetched through Gateway — auxiliary series straight from outside data sources — and retried until it lands. <em>Proposed (<a href="#d44">decision 44</a>): auxiliary series and arming move to Aux Data.</em></td></tr>
+<tr><th>Not its job</th><td>The broker connection, and building daily bars from intraday history (Gateway); entry/exit decisions (Strategy, StrategyExecution); recovering from an outage (Safety).</td></tr>
+<tr><th>Receives</th><td>From Gateway: ticks, order updates and warmup history. From outside data sources: auxiliary daily series (proposed: none; Aux Data reads them). From Aux Data (proposed): values on each bar. From Safety: repaired fill events.</td></tr>
+<tr><th>Produces</th><td>To Strategy: completed bars, order updates and warmup history. To Gateway: history requests.</td></tr>
+<tr><th>Proposed</th><td>Also owns the runtime book, the one registry of the strategies the process runs and the per-instrument resources serving them, and adding one strategy to it while the process runs (decisions 34–36). Receives, from the operator in paper/live: deploy requests. Produces, to the operator: one status line per step until a terminal status. Produces, to Gateway: contract, subscribe and unsubscribe requests for a new strategy's instruments.</td></tr>
+</table></div>
+
+<h3>Aux Data <em>(proposed · decision 44)</em></h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>Reading auxiliary daily series from outside data sources, each through one data-source interface; deciding when a value is settled for its target session; arming and disarming each group of strategies that read them; adding the values to bars; and serving the history frames a cold rebuild needs.</td></tr>
+<tr><th>Not its job</th><td>Broker history (Gateway, requested by the Event Loop); delivering bars (Event Loop); when a signal may be rebuilt and telling StrategyExecution it is ready (Strategy); how a calculation is seeded (StrategySignal).</td></tr>
+<tr><th>Receives</th><td>From outside data sources (files in replay): auxiliary daily series. From the Event Loop: each completed bar before dispatch, and the runtime book's members. From Strategy: frame requests on a cold rebuild.</td></tr>
+<tr><th>Produces</th><td>To the Event Loop: bars with auxiliary values added. To Strategy: ready / not ready, with the history frames.</td></tr>
+</table></div>
+
+<h3>Strategy</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>Being the one per-slot object the Event Loop talks to: booking its own position from fills, in the instrument's currency, and driving its StrategySignal, StrategyExecution and Order Manager with what the Event Loop delivers — stepping the signal on each bar, passing the bar on to StrategyExecution, and deciding when the signal may be rebuilt (only while flat with no open or submitted orders).</td></tr>
+<tr><th>Not its job</th><td>Its params (StrategySignal holds them); the calculations and entry/exit logic (StrategySignal); which execution phase the slot is in or what an order event means in it (StrategyExecution); an order's life from submission to closed status (Order Manager); when bars are complete (Event Loop).</td></tr>
+<tr><th>Receives</th><td>From the Event Loop: completed bars, order updates and warmup history. From Aux Data (proposed): ready / not ready and history frames. From outside: deployment config. From StrategySignal: warm/not-warm. From StrategyExecution: whether it is processing an order. From Order Manager: ownership answers.</td></tr>
+<tr><th>Produces</th><td>To StrategySignal: bars with position data (entry price, seconds since entry) and rebuild requests. To StrategyExecution: bars and order updates. To Order Manager: order updates and ownership checks.</td></tr>
+</table></div>
+
+<h3>StrategySignal</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>The slot's signal: its calculation DAG and params, stepping the calculations on each bar in dependency order, evaluating the entry and exit logic, reporting whether it is warm, and how to rebuild itself cold by replaying seed bars. <em>Written as a Python <code>SignalDag</code> subclass that holds its own params (<a href="#d42">decision 42</a>).</em></td></tr>
+<tr><th>Not its job</th><td>When it is stepped or rebuilt (Strategy); the position or fills beyond what Strategy passes in (Strategy); acting on its signals, or when its exit inputs are frozen and released (StrategyExecution); orders (Order Manager); talking to the Event Loop (Strategy).</td></tr>
+<tr><th>Receives</th><td>From Strategy: bars with position data, and rebuild requests. From StrategyExecution: entry/exit questions and exit-input freeze/release.</td></tr>
+<tr><th>Produces</th><td>To StrategyExecution: entry/exit signals. To Strategy: warm/not-warm.</td></tr>
+</table></div>
+
+<h3>StrategyExecution</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>The slot's execution state machine: which phase it is in, when to enter and exit by asking the slot's signal, and what each order event means in the current phase.</td></tr>
+<tr><th>Not its job</th><td>The signal's logic or when it is stepped (StrategySignal, Strategy); the position (Strategy); an order's life at the broker (Order Manager); talking to the Event Loop (Strategy).</td></tr>
+<tr><th>Receives</th><td>From Strategy: bars and order updates. From StrategySignal: entry/exit signals. From Order Manager: answers about its orders (status and filled quantity, submitted and open orders, group finality).</td></tr>
+<tr><th>Produces</th><td>To Order Manager: entry and exit orders, cancels, and order queries. To StrategySignal: entry/exit questions and exit-input freeze/release. To Strategy: its phase, through query answers.</td></tr>
+</table></div>
+
+<h3>Order Manager</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>The life of every order the slot sends: building it, tracking it from submission to a closed status, knowing which orders the slot owns, and sending cancels.</td></tr>
+<tr><th>Not its job</th><td>Deciding to enter or exit (StrategyExecution); the position (Strategy); broker communication (Gateway).</td></tr>
+<tr><th>Receives</th><td>From StrategyExecution: entry and exit orders, cancels, and order queries. From Strategy: order updates and ownership checks.</td></tr>
+<tr><th>Produces</th><td>To Gateway: orders and cancels. To Strategy: ownership answers. To StrategyExecution: query answers (its submitted and open orders, group finality, filled quantities).</td></tr>
+</table></div>
+
+<h3>Safety</h3>
+<div class="table-wrap"><table>
+<tr><th>Owns</th><td>Detecting a lost broker connection or a frozen process, reconnecting, and un-sticking any strategy left waiting on an order whose fill happened during the outage.</td></tr>
+<tr><th>Not its job</th><td>Talking to the broker itself (Gateway); deciding what to trade (Strategy, StrategyExecution); normal event delivery (Event Loop).</td></tr>
+<tr><th>Receives</th><td>From Gateway: connection health and the broker's executions.</td></tr>
+<tr><th>Produces</th><td>To Gateway: heartbeat checks and reconnect requests. To the Event Loop: repaired fill events.</td></tr>
+</table></div>
+
+<h3>Shared, owned by no component</h3>
+<ul>
+<li><strong>Exchange profiles</strong> — one per exchange: sessions, calendar, venue, currency, contract identity and, for futures, roll (<a href="#d31">decision 31</a>).</li>
+<li><strong>Instruments</strong> — asset class, symbol, exchange profile, currency, multiplier, tick size (<a href="#d37">decision 37</a>, <a href="#d41">41</a>).</li>
+<li><strong>Configuration loading</strong> and <strong>structured logging</strong>.</li>
+<li><em>Proposed (<a href="#d46">decision 46</a>):</em> <strong>Clock</strong> — <code>now()</code> and <code>wait(timeout)</code>, as <code>WallClock</code> or <code>ReplayClock</code>; and <strong>RunMode</strong> — the run mode, built once by the runner.</li>
+</ul>
+
+<h3 id="open-questions">Open questions · not decided</h3>
+<div class="table-wrap"><table>
+<tr><th>Question</th><th>Where it stands</th></tr>
+<tr><td><strong>How is an option contract picked?</strong></td><td>An option instrument needs an expiry, a strike and a right (call or put), and option contracts expire. Who picks them — fixed in deployment config, a selection rule like the futures roll rule, or the strategy at entry from an option chain — is not decided. The last one would bring option-chain data into the boundary (<a href="#d41">decision 41</a>).</td></tr>
+<tr><td><strong>Is the broker timestamp precise enough?</strong></td><td>R3's 5 ms starts at the closing tick's broker timestamp. If the broker stamps ticks only to the second, or its clock is not in step with ours, the number cannot be measured to 5 ms. How the start time is taken, and how clock offset is handled, is not decided (<a href="#d25">decision 25</a>).</td></tr>
+<tr><td><strong>Bars closed without a tick?</strong></td><td>A bar can also be closed by the flush timer after its grace (1.0 s) when no tick arrives. Such a bar has no closing tick, so whether it counts toward the 5 ms budget, and from what start, is not decided.</td></tr>
+<tr><td><strong>Size beyond 1 unit?</strong></td><td><a href="#d24">Decision 24</a> keeps every entry at 1 unit (1 share, or 1 contract). Stock books in particular may want larger sizes; changing it reopens partial fills everywhere.</td></tr>
+</table></div>
+</section>
+
+<section id="golden-sample-frozen">
+<div class="eyebrow">System map · Golden sample · frozen</div>
+<h2>Golden sample · frozen</h2>
+<h3>Input</h3>
+<p>A few minutes of synthetic 1-second ticks entering through the Gateway in replay mode, run with a trivial fixed-rule strategy: go long 1 contract once on the first bar closing above a fixed level L, and exit on the first bar reaching a fixed target T. The price path rises through L, later reaches T, and there is no connection outage.</p>
+<p>It is small because it is a few minutes of hand-made prices. Its known answer is exactly one buy on the L-cross bar and one sell on the T bar.</p>
+<h3>Per component</h3>
+<div class="table-wrap"><table>
+<tr><th>Component</th><th>Expected behaviour</th></tr>
+<tr><td>Gateway</td><td>Delivers every tick of the session in order, followed by end of data; accepts exactly two orders and returns a fill for each.</td></tr>
+<tr><td>Event Loop</td><td>Delivers each completed 1-second bar to the strategy exactly once, in time order; delivers both fills; stops after the data ends.</td></tr>
+<tr><td>Strategy</td><td>Steps the signal on every bar and passes every bar and both fills on; books a long 1 position on the buy fill and flat on the sell fill; ends flat.</td></tr>
+<tr><td>StrategySignal</td><td>Is warm from the first bar; entry true only on the L-cross bar; exit true on the T bar.</td></tr>
+<tr><td>StrategyExecution</td><td>Stays flat until the L-cross bar and decides one buy; moves to in-position on its fill; decides one sell on the T bar; returns to flat on its fill and decides nothing afterwards.</td></tr>
+<tr><td>Order Manager</td><td>Submits exactly two market orders, tracks each to filled, and ends with no open or submitted order.</td></tr>
+<tr><td>Safety</td><td>Requests no reconnect and repairs nothing.</td></tr>
+<tr><td>Aux Data <em>(proposed)</em></td><td>The strategy reads no auxiliary name: reads no source, arms nothing, adds nothing to any bar.</td></tr>
+</table></div>
+<h3>End to end</h3>
+<p>The broker receives exactly one buy and one sell of 1 contract, on the L-cross bar and the T bar, and the book ends flat.</p>
+</section>
+
+<section id="decisions-already-made">
+<div class="eyebrow">System map · Decisions already made</div>
+<h2>Decisions already made</h2>
+
+<h3>Goal and boundary</h3>
+<div class="decision" id="d1"><h3><span class="num">1</span>What is the system's one goal?</h3><p class="q">Execute a strategy book at the broker, placing the same orders on a simulated broker, a paper account or a live account.</p></div>
+<div class="decision" id="d2"><h3><span class="num">2</span>Who consumes the output?</h3><p class="q">The broker only.</p></div>
+<div class="decision" id="d3"><h3><span class="num">3</span>Are strategy research, comparing results with research, a strategy/params registry or decay monitoring inside the boundary?</h3><p class="q">None of them. None of that work happens here, so they are left out of the map.</p></div>
+<div class="decision" id="d4"><h3><span class="num">4</span>How many components?</h3><p class="q">Seven: Gateway, Event Loop, Strategy, StrategySignal, StrategyExecution, Order Manager, Safety.</p><p class="rej">Rejected: folding Safety into Gateway (it fails and recovers independently of trading); a separate Warmup component (not needed at this level).</p><p class="when">proposed change: eight, with Aux Data (<a href="#d44">decision 44</a>)</p></div>
+<div class="decision" id="d5"><h3><span class="num">5</span>Where do strategy params and deployment config sit?</h3><p class="q">Deployment config is an external input, not a component. Strategy params sit inside each strategy's signal class (<a href="#d42">decision 42</a>): they are code the strategy author writes, not config.</p><p class="rej">Rejected: a Configuration component (the engine reads config, it does not own it); params in outside config (a second place that must agree with the code).</p><p class="when">changed 2026-11-07 · params were an external input</p></div>
+<div class="decision" id="d6"><h3><span class="num">6</span>How do simulation/replay modes relate to the boundary?</h3><p class="q">A swap behind the Gateway: a simulated broker that replays data and fills orders sits behind the same interface as the real one, so every other component runs unchanged.</p><p class="rej">Rejected: a separate Simulator component, a simulation path that feeds strategies directly, and leaving sim out.</p></div>
+<div class="decision" id="d7"><h3><span class="num">7</span>The broker is both source and sink — one Gateway, or split feed/orders?</h3><p class="q">Keep one Gateway per broker, serving every instrument the process trades there. The diagram's order arrow is labelled as leaving through the Gateway.</p><p class="rej">Rejected: a Market Feed / Order Router split.</p></div>
+<div class="decision" id="d8"><h3><span class="num">8</span>What does Safety exchange?</h3><p class="q">Heartbeat and reconnect with Gateway, executions from Gateway, repaired fill events into the Event Loop.</p><p class="rej">Rejected: detection-only.</p></div>
+
+<h3>Golden sample</h3>
+<div class="decision" id="d9"><h3><span class="num">9</span>Where does the golden sample sit?</h3><p class="q">A normal input through the Gateway on the normal path.</p><p class="rej">Rejected: its own harness component.</p></div>
+<div class="decision" id="d10"><h3><span class="num">10</span>How detailed is its expected behaviour?</h3><p class="q">Both: one behaviour per component and one end-to-end result.</p></div>
+<div class="decision" id="d11"><h3><span class="num">11</span>What is its data?</h3><p class="q">A synthetic session.</p><p class="rej">Rejected: a small real day (slower, and its right answer is not known by hand).</p></div>
+<div class="decision" id="d12"><h3><span class="num">12</span>Which strategy runs on it?</h3><p class="q">A trivial fixed rule (long on L-cross, exit at target T).</p><p class="rej">Rejected: a real book strategy.</p></div>
+<div class="decision" id="d13"><h3><span class="num">13</span>Does it include a broker outage?</h3><p class="q">No; Safety's expected behaviour is to do nothing.</p></div>
+
+<h3>Splitting the slot</h3>
+<div class="decision" id="d14"><h3><span class="num">14</span>Why split StrategyExecution and Order Manager out of Strategy?</h3><p class="q">Separation of work: Order Manager handles the order lifecycle, StrategyExecution handles the execution state machine, and Strategy is the higher-level object that uses both to interact with the Event Loop and consume its updates.</p><p class="when">Resting broker-side exits (OCA groups) made both concerns the hard part.</p></div>
+<div class="decision" id="d15"><h3><span class="num">15</span>Who talks to Order Manager?</h3><p class="q">Both: StrategyExecution sends entry and exit orders and cancels and queries its own orders; Strategy forwards order updates and checks ownership.</p><p class="rej">Rejected: routing everything through StrategyExecution, and Strategy relaying Order Manager's answers to StrategyExecution in an order-context object.</p></div>
+<div class="decision" id="d16"><h3><span class="num">16</span>Who owns the position?</h3><p class="q">Strategy.</p><p class="rej">Rejected: moving it into Order Manager.</p></div>
+<div class="decision" id="d17"><h3><span class="num">17</span>Does the golden sample change with the split?</h3><p class="q">No: the same bar-close round trip, with expected behaviour for StrategyExecution and Order Manager.</p><p class="rej">Rejected: a resting-exit sample.</p></div>
+<div class="decision" id="d18"><h3><span class="num">18</span>Does the system's goal or external boundary change with the split?</h3><p class="q">No; only the internal split changes.</p></div>
+<div class="decision" id="d19"><h3><span class="num">19</span>Why split StrategySignal out of Strategy?</h3><p class="q">It is deterministic (bars and position data in, entry/exit answers out, no I/O), and it is where most warmup and signal bugs live; giving it its own boundary lets it be tested alone, from bars in to answers out. Strategy becomes the driver of StrategySignal, StrategyExecution and Order Manager, and stays the only component the Event Loop talks to.</p></div>
+<div class="decision" id="d20"><h3><span class="num">20</span>Who calls the signal?</h3><p class="q">Strategy and StrategyExecution: Strategy steps StrategySignal on each bar and rebuilds it; StrategyExecution asks it for the entry or exit answer in the phase that needs one. The Event Loop never reads the signal; it goes through Strategy.</p><p class="rej">Rejected: Strategy evaluating both answers and handing them to StrategyExecution — evaluating exit while flat, or entry before warmup, reads calculations that do not exist yet, and choosing by phase would leak the state machine into Strategy.</p></div>
+<div class="decision" id="d21"><h3><span class="num">21</span>Does the signal see more than bars?</h3><p class="q">Yes, position data: Strategy passes strategy data (entry price, seconds since entry) into each step, and StrategyExecution times the exit-input freeze (entry-decision bar) and release (flat again). The signal never reads Strategy's position itself. It answers exit per condition as well as overall, so StrategyExecution can mask conditions a resting broker order already covers.</p></div>
+<div class="decision" id="d22"><h3><span class="num">22</span>Who owns the signal rebuild (cold reset + seed replay)?</h3><p class="q">Split: StrategySignal owns how; Strategy owns when — only while flat with no open or submitted orders, which needs position and Order Manager state the signal must not see.</p></div>
+<div class="decision" id="d23"><h3><span class="num">23</span>Who seeds strategies with warmup history (fetch, retry, auxiliary data)?</h3><p class="q">The Event Loop. It already holds the per-instrument plumbing and the loop the retries run on; Strategy decides only when a rebuild may happen (decision 22) and the signal how. Still no separate Warmup component (decision 4).</p><p class="when">proposed change: auxiliary data moves to Aux Data (<a href="#d44">decision 44</a>); broker history stays here</p></div>
+<div class="decision" id="d24"><h3><span class="num">24</span>What size does a slot trade?</h3><p class="q">Always 1 unit per entry: 1 contract for futures and options, 1 share for stocks. So an order fills whole or not at all: partially filled orders and partial exits are not handled anywhere (Order Manager, StrategyExecution, Safety's repair), and a design or review must not raise them as a gap. Changing the size reopens this decision.</p><p class="when">carried · wording widened from "1 contract" to "1 unit" for stocks and options, 2026-11-06</p></div>
+
+<h3 id="proposed">Proposed · not agreed</h3>
+<p>Each becomes a decision above once confirmed.</p>
+
+<h4>Latency and concurrency (R3)</h4>
+<div class="decision" id="d25"><h3><span class="num">25</span>What latency does R3 measure?</h3><p class="q">The 5 ms budget is <strong>end-to-end latency</strong>: from the broker timestamp of the tick that closes a bar to that bar's order leaving the Gateway for the broker, at p99. It is logged per minute as p50/p99 together with its two internal parts: <strong>slot cost</strong> (one strategy, one bar) and <strong>dispatch latency</strong> (a bar's closing event entering the event buffer → the last strategy on that instrument done). Because feed transit counts against the budget, the engine's own share is what is left after transit.</p><p class="rej">Rejected: bar age measured from the bar's nominal end time — it includes the wait for the next tick that closes the bar (often hundreds of ms in a quiet market), which no engine design can remove. Rejected: counting only internal processing (slot cost or dispatch latency alone) — the budget is from the broker's time to the order.</p><p class="when">proposed</p></div>
+<div class="decision" id="d26"><h3><span class="num">26</span>How does the Event Loop learn there is work?</h3><p class="q">A drain wake-up: every producer of the event buffer raises it after appending (the broker's reader thread through a thread-safe call into the loop), and the loop waits on it with a timeout equal to the bar-flush cadence (20 ms), so the clock-driven bar flush still runs on time. The event buffer stays a deque. This removes a 0–20 ms queue wait on every event that a fixed polling timer would add. A producer raises the wake-up only when none is pending, the buffer drains a control lane before a data lane, and each pass has a batch budget (<a href="event_loop_map.html#d8">Event Loop decision 8</a>).</p><p class="rej">Rejected: a shorter timer (more idle wake-ups and still a floor); an asyncio queue everywhere (replay preloads the whole day into the buffer and puts fills at its front).</p><p class="when">proposed</p></div>
+<div class="decision" id="d27"><h3><span class="num">27</span>What happens when the event buffer backs up?</h3><p class="q">It stays lossless (order updates are never dropped), but a backlog over a threshold becomes an ERROR with an operator alert, and its size and the queue wait are logged with each drain pass.</p><p class="rej">Rejected: a hard size limit that drops events — it could drop a fill.</p><p class="when">proposed</p></div>
+<div class="decision" id="d28"><h3><span class="num">28</span>What concurrency model runs the strategies?</h3><p class="q">One process, one asyncio event loop, the broker's reader thread and one send thread; strategies on a bar are stepped one after another, in time order. One process keeps dispatch latency under 5 ms at p99 up to about 10 strategies active at once; under R3's end-to-end budget the engine's share is 5 ms less feed transit, so that count is an upper bound to be re-measured. The load target is 3 tick-by-tick streams and 10–15 strategies; whether one process carries it is decided by a measured scale trigger, not by a strategy count (<a href="event_loop_map.html#d9">Event Loop decision 9</a>). Beyond that, split into process shards by strategy group, with one process still owning the single Gateway (decision 7 holds). Before sharding, Safety and its repair need a design that covers every shard.</p><p class="rej">Rejected: a thread per strategy (the GIL serialises CPU-bound Python anyway); an asyncio task per strategy (no parallelism, and the time-order guarantee gets harder to keep); one actor per strategy and gateway with message ports between them (no global time order, and ports wired by hand); sharding before it is needed.</p><p class="when">proposed</p></div>
+<div class="decision" id="d29"><h3><span class="num">29</span>Where are per-bar logs written?</h3><p class="q">Off the loop thread: loggers hand records to a queue and a listener thread writes the files. Record content and field names are a stable format that outside tools may read.</p><p class="rej">Rejected: dropping per-bar indicator logs to DEBUG — they are how a run is audited afterwards.</p><p class="when">proposed</p></div>
+<div class="decision" id="d33"><h3><span class="num">33</span>How is slot cost brought down before sharding?</h3><p class="q">Profile one strategy's bar first: logging is a small part of slot cost, so the rest is signal stepping and the execution state machine. Then consider computing a calculation once for all strategies on the same instrument when its registry name and params are identical. That would change who owns a calculation's state, so it needs its own decision first. This reduces sharding but does not replace it.</p><p class="when">proposed</p></div>
+
+<h4>Extensibility (R2)</h4>
+<div class="decision" id="d30"><h3><span class="num">30</span>What is the Gateway interface?</h3><p class="q">An abstract interface. Required methods have no body, so a gateway that misses one fails when it is built instead of returning nothing. Optional methods are gateway capabilities declared on the interface with safe defaults, never looked up by name at runtime. Gateways are picked by name from a registry. History is requested in broker-neutral units (months or dates), not broker-specific duration strings. See <a href="gateway_map.html">Gateway</a>.</p><p class="rej">Rejected: splitting the Gateway (decision 7 holds).</p><p class="when">proposed</p></div>
+<div class="decision" id="d31"><h3><span class="num">31</span>Where do exchange facts live?</h3><p class="q">In one exchange profile per exchange, in shared code: session names, calendar and early closes, the continuous data session, contract venue and currency, the broker's contract identity, the futures contract roll rule and session-end cutoffs. Every component reads it; no other file branches on an exchange name. CME and Eurex are the first two profiles.</p><p class="rej">Rejected: one component owning the calendar — the Event Loop, Gateway, Safety and StrategySignal all read it; special cases for one exchange spread over the files that need them.</p><p class="when">proposed</p></div>
+<div class="decision" id="d32"><h3><span class="num">32</span>How do auxiliary data sources plug in?</h3><p class="q">Outside data sources are named on the boundary as a second external input, read only by Aux Data (<a href="#d44">decision 44</a>), each through one data-source interface. A new feed or backup is one new class.</p><p class="rej">Rejected: moving them behind the Gateway — the Gateway is the broker only (decision 7).</p><p class="when">proposed · changed 2026-11-07 · was the Event Loop's auxiliary data provider</p></div>
+
+<h4>Add a strategy without a restart (R5)</h4>
+<div class="decision" id="d34"><h3><span class="num">34</span>Who owns the set of strategies the process runs?</h3><p class="q">The Event Loop, as one <strong>runtime book</strong>: strategies in dispatch order, per-instrument resamplers and bar buffers, contracts, the recording session maps and the background retry tasks. Only the drain-loop task changes it, and only at a commit boundary: another task hands it a book operation and awaits the result, so a bar or order dispatch already in flight never sees the book change. Everyone else reads membership from the book at call time — shutdown, Safety's repair and positions poll, the auxiliary retry, the recorders and the reconnect resubscribe — so a strategy added later is a full member. Cold start and hot-add go through the same steps: reserve instruments, stage, prepare, commit.</p><p class="rej">Rejected: each consumer keeping its own copy of the strategy list made at start; a book changed from any task (a dispatch could see a half-added strategy).</p><p class="when">proposed</p></div>
+<div class="decision" id="d35"><h3><span class="num">35</span>How does an operator add a strategy to a running process?</h3><p class="q">A separate client script, <code>deploy_strategy.py --config FILE --key KEY</code>. It reads the same config file to find the socket and the sha256, sends one request and exits with the terminal status. The runner, in paper and live only, listens on a local socket next to its logs (directory 0700, socket 0600). One deploy request per connection names one strategy key and the config file's sha256; the runner streams status lines (preparing, then one of registered, noop, rejected, failed) with a reason and the revision (the config file's sha256). Which version of a strategy's code runs is not tracked: version control of strategies is outside the system. Requests run one at a time. Every terminal status is logged with the same hash fields as the startup deploy fingerprint. The slot is first added to the config file, so the next cold start runs it too: the deploy request is the existing deployment-config input arriving while the process runs (decision 5 holds). Simulation never opens the socket.</p><p class="rej">Rejected: a <code>--deploy</code> flag on the runner script (a short socket client and the long-running driver would share one parser and one <code>main</code>); a second service; the runner polling the config file.</p><p class="when">proposed · changed 2026-11-07 · was a <code>--deploy KEY</code> flag on the runner script</p></div>
+<div class="decision" id="d36"><h3><span class="num">36</span>What may a deploy request do?</h3><p class="q">Add one new strategy key, nothing else, and only when it cannot disturb what is running. It is refused, before anything is touched, when the config differs anywhere but the new slot (<code>config_drift</code>), the key already runs (<code>conflict</code>), the strategy's session is open (<code>session_open</code>), its next session closes after this process exits (<code>after_process_exit</code>), no running strategy uses its account (<code>unknown_account_route</code>), or a position or order on its execution instrument belongs to no running strategy, compared per account (<code>unmanaged_exposure</code>; nothing is cancelled or flattened). A failure after that cleans only what the candidate created; shared feeds and running strategies are never touched. A committed strategy starts gated and can first enter at its next session open, once warmup and auxiliary data are ready.</p><p class="rej">Rejected as out of scope: changing or removing a running strategy, reloading code or params, starting a strategy inside its own session, adding several strategies atomically, new account routes, changing when the process exits, automatic recovery from quarantine.</p><p class="when">proposed</p></div>
+
+<h4 id="multi-asset">Multi-asset and multi-currency (R1)</h4>
+<div class="decision" id="d37"><h3><span class="num">37</span>What is an instrument?</h3><p class="q">One shared value naming a tradable product: its asset class (<a href="#d41">decision 41</a>), symbol (NQ, ES, FDAX), its exchange profile, its currency, multiplier (1 for a stock) and tick size. Every tick, bar, order, fill and position carries the instrument, so no component needs to guess an exchange or a currency from a symbol. For a future, the front-month contract is resolved from the instrument by its exchange profile's roll rule; a stock is its one listing and has no roll; how an option contract is resolved is an <a href="#open-questions">open question</a>.</p><p class="when">proposed · v3</p></div>
+<div class="decision" id="d38"><h3><span class="num">38</span>How does a strategy name what it trades?</h3><p class="q">By two instrument lists in its deployment config: <strong>signal instruments</strong> (market data it subscribes to) and <strong>execution instruments</strong> (where its orders and position live). They are usually the same; they differ when a strategy reads one market and trades another.</p><p class="when">proposed · v3</p></div>
+<div class="decision" id="d39"><h3><span class="num">39</span>What currency is money counted in?</h3><p class="q">Every money amount carries its currency, and Strategy books position and PnL in its execution instrument's currency (USD for NQ/ES, EUR for FDAX). The engine never converts between currencies; account cash per currency is read from the broker. Reporting a book in one base currency is outside the system.</p><p class="rej">Rejected: converting to a base currency inside the engine (it needs a live FX rate source on the trading path, and no trading decision needs it).</p><p class="when">proposed · v3 · to confirm</p></div>
+<div class="decision" id="d40"><h3><span class="num">40</span>Do sessions differ per instrument?</h3><p class="q">Yes. Session names, open and close times, early closes, the continuous data session that arms the market-data watchdog, and the end-of-session cutoffs all come from the instrument's exchange profile, each on its own local clock (New York for CME, Frankfurt for Eurex). One process can trade both exchanges at the same time.</p><p class="when">proposed · v3</p></div>
+<div class="decision" id="d41"><h3><span class="num">41</span>Which asset classes does the engine trade?</h3><p class="q">Futures, stocks and options, through the same seven components and one code path. The asset class is part of the instrument, and only the facts that differ by asset class branch on it — how the tradable contract is resolved (futures roll, stocks have none, options open) and the unit of size (decision 24). Signal, execution, order lifecycle and Safety work the same for all three.</p><p class="rej">Rejected: futures only (the v3 starting scope).</p><p class="when">proposed · v3 · 2026-11-06</p></div>
+<h4 id="signal-model">StrategySignal model</h4>
+<div class="decision" id="d42"><h3><span class="num">42</span>How is a StrategySignal written?</h3><p class="q">As a Python <code>SignalDag</code> subclass, registered by name. It declares its params as a typed, frozen dataclass whose defaults are the values, and builds its DAG in <code>build_graph()</code> from registered calculations, inline Python expressions, named conditions and named exits. The <code>SignalDag</code> base class implements the whole abstract signal interface, so a strategy author writes only the params and the graph. The instrument comes from deployment config and the session from the exchange profile. See <a href="strategy_signal_map.html#signal-definition">StrategySignal</a>.</p><p class="rej">Rejected: a declarative signal definition file (a second format to parse and check; a Python class is checked at import and build); params in outside config (<a href="#d5">decision 5</a>); shipping the interface only (every user would have to bring a signal layer).</p><p class="when">proposed · v3 · changed 2026-11-07</p></div>
+<h4 id="custom-strategies">Custom strategies</h4>
+<div class="decision" id="d43"><h3><span class="num">43</span>How does the engine load a custom strategy?</h3><p class="q"><code>run_strategies.py</code> is the only entry point that runs strategies. At start it imports every folder under <code>local/strategies/</code> by file path: <code>calculations.py</code>, <code>strategy_signal.py</code> and <code>strategy.py</code>. The three files do not import from each other; they connect by registry names. <code>register_calc</code> binds a calculation in its folder's scope; <code>register_signal_dag</code> and <code>register_strategy</code> bind global names. A slot's config names its strat (the registered strategy name); the strategy names its signal; the signal's graph names its calculations, looked up in the folder's scope first and then in the built-in library. Lookups run when a slot is built, after every import, so import order does not matter. A name bound twice in the same scope stops startup and names both files.</p><p class="rej">Rejected: imports between the files of a strategy folder (the folder is not a package on the engine's import path); one global calculation namespace (two folders could not each have their own <code>rsi</code>).</p><p class="when">proposed · v3 · 2026-11-07</p></div>
+<h4 id="maintainability">Smaller code (R2, R4)</h4>
+<div class="decision" id="d44"><h3><span class="num">44</span>Is auxiliary data its own component?</h3><p class="q">Yes: <a href="aux_data_map.html">Aux Data</a>, the eighth component. It has its own outside input, its own failure modes (source down, value not settled, provisional value changed, backup not confirmed) and its own clock (arming by each session's open, on each exchange's clock). It meets the rest of the engine at three points only: values on a bar (called by the Event Loop before dispatch), frames for a cold rebuild (read by Strategy), and ready / not ready (sent to Strategy). A group's arm session comes from the exchange profile. Once confirmed, decision 4 reads "eight" and decision 23 keeps only broker history in the Event Loop.</p><p class="rej">Rejected: keeping it in the Event Loop (its widest part, with most of its outside I/O); behind the Gateway (decision 7); a component for resampling too (a small pure module with no outside input; see the Event Loop map, decision 7).</p><p class="when">proposed · 2026-11-07</p></div>
+<div class="decision" id="d45"><h3><span class="num">45</span>Who prepares replay data?</h3><p class="q">The simulated broker, on request (<a href="gateway_map.html">Gateway</a> behaviour 15). It reads the tape lazily, checks it against the session from the exchange profile with one generic check, and answers daily-history and prior-session requests like the broker gateway. Padding and synthetic tapes are simulated broker options. The Gateway builds daily bars in live and replay; the Event Loop only requests them. This follows decision 6.</p><p class="rej">Rejected: the runner slicing the tape and writing history files before start (a second history path that must read strategies before they exist); one hand-written session check per exchange.</p><p class="when">proposed · 2026-11-07</p></div>
+<div class="decision" id="d46"><h3><span class="num">46</span>How do components differ between replay and live?</h3><p class="q">Only through what the runner passes in. A shared <code>Clock</code> (<code>now()</code>, <code>wait(timeout)</code>) is a <code>WallClock</code> live and a <code>ReplayClock</code> in replay, moving forward on each bar close; the bar flush, session-end flatten, reconcile and the session-active flag read it. <code>RunMode</code> is built once by the runner, which uses it to choose components and do-nothing stand-ins (recorders, Safety, state stores). No component reads the mode or checks a collaborator for <code>None</code>.</p><p class="rej">Rejected: checking a mode string inside components (it spreads, and a check that matches the wrong mode runs the wall clock against replayed data).</p><p class="when">proposed · 2026-11-07</p></div>
+<div class="decision" id="d47"><h3><span class="num">47</span>What does <code>run_strategies.py</code> do?</h3><p class="q">It is a thin startup module. It parses <code>--config</code> and <code>--mode</code> only (the deploy client is <code>deploy_strategy.py</code>, <a href="#d35">decision 35</a>); replay settings (tape, date, session) sit in a <code>replay:</code> section of the config. It builds a <code>Runtime</code> from the config and the mode: the gateway by registry name (decision 30), the clock, the stand-ins and each component with its own typed config section. Every long-lived part follows one <code>Service</code> protocol (<code>start()</code>, <code>stop()</code>); <code>Runtime</code> starts them in order and stops them in reverse, also when start-up fails, then runs the Event Loop. Logging is one queue-handler setup (decision 29) with a logger per module. Comparing results with research stays outside (decision 3).</p><pre><code>async def main(cfg, mode):
+    async with Runtime.build(cfg, mode) as rt:
+        await rt.run()</code></pre><p class="rej">Rejected: building components one by one with a try/finally of None checks; a long list of replay flags on the command line; keyword arguments copied one by one from config into a component.</p><p class="when">proposed · 2026-11-07</p></div>
+</section>
+</div>
+</body>
+</html>

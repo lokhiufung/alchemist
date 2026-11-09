@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist v3 design docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html">System map</a>
+  <div class="dropdown">
+    <button type="button">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">Documentation · v3 draft · 2026-11-06</div>
+<h1>Alchemist v3</h1>
+<div class="lede"><p>An execution engine for strategy books on futures, stocks and options, across exchanges and currencies: the same orders on a simulated broker, a paper account or a live account.</p></div>
+</header>
+<section id="start-here">
+<div class="eyebrow">Start here</div>
+<h2>Start here</h2>
+<div class="cards">
+<a class="card start" href="system_map.html"><div class="eyebrow">SYSTEM_MAP · v3 draft</div>
+<h3>System map</h3><p>Goal, boundary of all components (seven agreed, an eighth proposed), the golden sample and the decisions behind the split.</p></a>
+<a class="card" href="explainers/index.html"><div class="eyebrow">Plain language</div>
+<h3>Explainers</h3><p>Answers to questions about the system, as simple picture posts.</p></a>
+<a class="card" href="system_map.html#requirements"><div class="eyebrow">v3 · not agreed</div>
+<h3>Requirements and proposals</h3><p>Five requirements (multi-asset and multi-currency, extensible, 100 strategies with bar-to-order under 5 ms, one code path for sim and live, add a strategy without a restart) and proposed decisions 25–47.</p></a>
+<a class="card" href="glossary.html"><div class="eyebrow">GLOSSARY</div>
+<h3>Glossary</h3><p>Every term the design uses: meaning and an example.</p></a>
+</div>
+</section>
+<section id="diagram">
+<div class="eyebrow">System diagram</div>
+<h2>How the components connect</h2>
+<div class="diagram">
+<svg viewBox="0 0 780 600" role="img" aria-label="Alchemist v3 component diagram" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+    a:hover .box { stroke: var(--accent); fill: var(--accent-soft); }
+    .ext { fill: none; stroke: var(--ink-3); stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .t { fill: var(--ink); font: 600 15px var(--sans); text-anchor: middle; }
+    .s { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .l { fill: var(--ink-2); font: 12.5px var(--sans); }
+    .arr { stroke: var(--ink-3); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/>
+    </marker>
+  </defs>
+
+  <!-- external broker -->
+  <rect class="ext" x="220" y="8" width="280" height="40" rx="20"/>
+  <text class="s" x="360" y="33">broker (CME · Eurex) / replay source</text>
+
+  <!-- broker <-> gateway -->
+  <path class="arr" d="M330,48 L330,96"/>
+  <text class="l" x="200" y="76">market data, fills</text>
+  <path class="arr" d="M390,96 L390,48"/>
+  <text class="l" x="398" y="76">orders, cancels</text>
+
+  <a href="gateway_map.html"><rect class="box" x="240" y="98" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="122">Gateway</text><text class="s" x="360" y="142">owns: all broker talk</text></a>
+
+  <a href="safety_map.html"><rect class="box" x="580" y="98" width="190" height="56" rx="8"/>
+    <text class="t" x="675" y="122">Safety</text><text class="s" x="675" y="142">reconnect + repair</text></a>
+  <path class="arr" d="M480,116 L578,116"/>
+  <text class="l" x="488" y="108">health, executions</text>
+  <path class="arr" d="M578,138 L482,138"/>
+  <text class="l" x="490" y="152">heartbeat, reconnect</text>
+  <path class="arr" d="M675,154 L675,236 L482,236"/>
+  <text class="l" x="560" y="230">repaired fills</text>
+
+  <!-- gateway -> event loop -->
+  <!-- outside data sources -> aux data (proposed) -->
+  <rect class="ext" x="40" y="150" width="170" height="36" rx="18"/>
+  <text class="s" x="125" y="173">outside data sources</text>
+  <path class="arr" d="M125,186 L125,206"/>
+  <a href="aux_data_map.html"><rect class="box" x="40" y="208" width="170" height="56" rx="8"/>
+    <text class="t" x="125" y="232">Aux Data</text><text class="s" x="125" y="252">proposed: aux + arming</text></a>
+  <path class="arr" d="M210,236 L238,236"/>
+  <path class="arr" d="M125,264 L125,346 L238,346"/>
+  <text class="l" x="132" y="300">ready,</text>
+  <text class="l" x="132" y="316">frames</text>
+
+  <path class="arr" d="M360,154 L360,206"/>
+  <text class="l" x="368" y="180">ticks, order updates, history</text>
+  <path class="arr" d="M310,206 L310,156"/>
+  <text class="l" x="214" y="200">history requests</text>
+
+  <a href="event_loop_map.html"><rect class="box" x="240" y="208" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="232">Event Loop</text><text class="s" x="360" y="252">owns: bars + dispatch</text></a>
+
+  <path class="arr" d="M360,264 L360,316"/>
+  <text class="l" x="368" y="294">bars, order updates, warmup</text>
+
+  <a href="strategy_map.html"><rect class="box" x="240" y="318" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="342">Strategy</text><text class="s" x="360" y="362">owns: position + driving</text></a>
+
+  <a href="strategy_signal_map.html"><rect class="box" x="580" y="290" width="190" height="56" rx="8"/>
+    <text class="t" x="675" y="314">StrategySignal</text><text class="s" x="675" y="334">calculations + logic</text></a>
+  <a href="strategy_execution_map.html"><rect class="box" x="580" y="400" width="190" height="56" rx="8"/>
+    <text class="t" x="675" y="424">StrategyExecution</text><text class="s" x="675" y="444">execution FSM</text></a>
+
+  <path class="arr" d="M480,332 L578,316"/>
+  <text class="l" x="488" y="312">bars + position</text>
+  <path class="arr" d="M578,336 L482,346"/>
+  <text class="l" x="500" y="358">warm?</text>
+  <path class="arr" d="M480,366 L578,414"/>
+  <text class="l" x="490" y="402">bars, updates</text>
+  <path class="arr" d="M690,398 L690,348"/>
+  <text class="l" x="698" y="378">entry/exit?</text>
+  <path class="arr" d="M675,456 L675,512 L482,512"/>
+  <text class="l" x="540" y="506">orders, cancels, queries</text>
+
+  <path class="arr" d="M360,374 L360,484"/>
+  <text class="l" x="368" y="440">order updates, ownership</text>
+
+  <a href="order_manager_map.html"><rect class="box" x="240" y="486" width="240" height="56" rx="8"/>
+    <text class="t" x="360" y="510">Order Manager</text><text class="s" x="360" y="530">owns: order lifecycle</text></a>
+
+  <!-- order manager -> gateway (orders leave through Gateway) -->
+  <path class="arr" d="M240,514 L20,514 L20,126 L238,126"/>
+  <text class="l" x="26" y="440">orders,</text>
+  <text class="l" x="26" y="456">cancels</text>
+</svg>
+<p class="caption">Click a box to open its component map. Orders leave through the Gateway; StrategyExecution asks StrategySignal directly for entry/exit answers. Aux Data (proposed) adds values to each bar before the Event Loop dispatches it.</p></div>
+
+</section>
+<section id="components">
+<div class="eyebrow">Component maps · 7 + 1 proposed</div>
+<h2>Component maps</h2>
+<p>Each component has its own frozen contract: goal, behaviours, skeleton code and test spec.</p>
+<div class="cards">
+<a class="card" href="gateway_map.html"><div class="eyebrow">GATEWAY_MAP</div><h3>Gateway</h3></a>
+<a class="card" href="event_loop_map.html"><div class="eyebrow">EVENT_LOOP_MAP</div><h3>Event Loop</h3></a>
+<a class="card" href="aux_data_map.html"><div class="eyebrow">AUX_DATA_MAP · proposed</div><h3>Aux Data</h3></a>
+<a class="card" href="strategy_map.html"><div class="eyebrow">STRATEGY_MAP</div><h3>Strategy</h3></a>
+<a class="card" href="strategy_signal_map.html"><div class="eyebrow">STRATEGY_SIGNAL_MAP</div><h3>StrategySignal</h3></a>
+<a class="card" href="strategy_execution_map.html"><div class="eyebrow">STRATEGY_EXECUTION_MAP</div><h3>StrategyExecution</h3></a>
+<a class="card" href="order_manager_map.html"><div class="eyebrow">ORDER_MANAGER_MAP</div><h3>Order Manager</h3></a>
+<a class="card" href="safety_map.html"><div class="eyebrow">SAFETY_MAP</div><h3>Safety</h3></a>
+</div>
+</section>
+</div>
+</body>
+</html>

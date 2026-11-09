@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist Gateway map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html">System map</a>
+  <div class="dropdown">
+    <button type="button" class="active">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html" class="active">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">Component map · GATEWAY_MAP · Alchemist v3</div>
+<h1>Gateway</h1>
+<div class="lede"><p>The engine's only line to the broker. Prices come in through it, orders go out through it, and fills come back through it. In simulation, a simulated broker sits behind the same interface.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-07 — not agreed.</strong> Behaviours 1–9 and decisions 1–6 are settled. Behaviours 10–15 and decision 7 are proposed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (behaviour 13).</p>
+<details><summary>Change history</summary><ul>
+<li><strong>2026-11-07</strong> — New behaviour 15 and decision 7: the simulated broker prepares all replay data itself, on request; the runner writes no data files (<a href="system_map.html#d45">System map decision 45</a>).</li>
+</ul></details></div>
+</header>
+
+<section id="goal">
+<div class="eyebrow">Gateway · Goal</div>
+<h2>Goal</h2>
+<p>Give the rest of the engine one uniform, asynchronous interface to the execution broker (or the simulated broker). Through it the engine reliably receives streaming market ticks for every instrument it trades, sends orders, tracks executions, and sees whether the connection is healthy.</p>
+<p>Owns, from the System map:</p>
+<blockquote><p>All communication with the broker: market data in, orders and cancels out, fills and executions back, for every instrument the process trades. A replay source can stand in for the broker behind it.</p></blockquote>
+<div class="table-wrap"><table>
+<thead><tr><th>Not the Gateway's job</th><th>Owned by</th></tr></thead>
+<tbody>
+<tr><td>Building bars, or deciding who hears an event</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
+<tr><td>Deciding what to trade</td><td><a href="strategy_map.html">Strategy</a>, <a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>Tracking an order's life</td><td><a href="order_manager_map.html">Order Manager</a></td></tr>
+<tr><td>Noticing a dead connection, or repairing strategies after one</td><td><a href="safety_map.html">Safety</a></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="what-this-component-does">
+<div class="eyebrow">Gateway · What this component does</div>
+<h2>What this component does</h2>
+<p>The Gateway sits on the boundary between the outside world (the broker's API, or a replay data source) and the engine.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Direction</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td>Connection</td><td>Connects to the broker API or the replay source.</td></tr>
+<tr><td>Contracts</td><td>Derives each instrument's tradable contract on its venue, from its exchange profile and asset class (a future's current contract by roll rule; a stock's one listing; options open, see System map open questions): CME in USD for NQ and ES, Eurex in EUR for FDAX. Where the broker lists several products under one symbol (FDAX, FDXM and FDXS all appear as DAX at IBKR), the instrument's trading class tells them apart.</td></tr>
+<tr><td>In: prices</td><td>Takes raw market ticks and pushes them onto the central event buffer.</td></tr>
+<tr><td>Out: orders</td><td>Receives orders and sends them to the broker. In simulation, its internal fill engine fills them instead.</td></tr>
+<tr><td>In: updates</td><td>Puts order status, position and balance updates on the buffer.</td></tr>
+<tr><td>Queries</td><td>Answers questions about executions, open orders and positions.</td></tr>
+<tr><td>Health</td><td>Exposes a socket heartbeat, feed liveness and reconnect hooks to Safety.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="sample">
+<div class="eyebrow">Gateway · Sample</div>
+<h2>Sample</h2>
+<p>The Gateway's slice of the system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>.</p>
+<div class="table-wrap"><table><tbody>
+<tr><th>Input</th><td>A synthetic session of 1-second price ticks for one instrument that rises through level L and later reaches target T, entering through the Gateway in replay mode. Two market orders are sent one after the other: BUY 1 MKT when L is crossed, SELL 1 MKT when T is reached. Then end of data.</td></tr>
+<tr><th>Expected</th><td>Every tick lands in the event buffer in time order, followed by <code>end_of_data</code>. Each order is accepted, gets a unique <code>order_id</code>, and produces a matching <code>FILLED</code> order update. <code>get_executions()</code> returns exactly two execution records, each tagged with the <code>order_id</code> it came from.</td></tr>
+<tr><th>Passes when</th><td>All synthetic ticks appear in the buffer with time never going backwards; exactly two orders produce two filled order updates; <code>get_executions()</code> returns two rows matching the orders' IDs; and <code>heartbeat()</code> returns True.</td></tr>
+<tr><th>Fails when</th><td>Any tick is dropped, duplicated or out of order; an order does not produce an order update; an execution row is missing its originating <code>order_id</code>; or <code>heartbeat()</code> fails to notice a disconnected socket.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="behaviours">
+<div class="eyebrow">Gateway · Behaviours</div>
+<h2>Behaviours</h2>
+<p>Each behaviour says what the Gateway is given, what it must do, and what must always stay true.</p>
+
+<div class="behaviour"><h3><span class="num">1</span>Connection lifecycle</h3><dl class="gmi">
+<dt>Given</dt><dd>The Gateway's configuration, or a reconnect request from outside.</dd>
+<dt>Must</dt><dd>Connect to, disconnect from, or reconnect to the broker or replay source, and update the connection status.</dd>
+<dt>Invariant</dt><dd>A successful connect or reconnect brings back the order-status, account and market-data streams the engine needs, for every instrument.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">2</span>Market data streaming</h3><dl class="gmi">
+<dt>Given</dt><dd>An active contract subscription and incoming price ticks from the broker or replay source.</dd>
+<dt>Must</dt><dd>Append each tick event to the event buffer in time order and update the last-tick time. Once each instrument's session is declared, the last-tick time counts only instruments whose exchange's data session is open, so a closed Eurex feed does not look dead while CME trades on.</dd>
+<dt>Invariant</dt><dd>Tick events keep their price, size, instrument and non-decreasing timestamps.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">3</span>Placing orders</h3><dl class="gmi">
+<dt>Given</dt><dd>A valid order from Order Manager: instrument, action, size and order type (MKT, STP or LMT), with a stop price for STP and a limit price for LMT, and optionally an OCA group and OCA type on any type.</dd>
+<dt>Must</dt><dd>Give the order a unique <code>order_id</code>, send it to the broker or the simulated broker, and put the resulting order update on the event buffer. Also:
+<ul>
+<li><strong>Tick rounding.</strong> For STP and LMT, round the price to the contract's minimum tick — BUY STP and SELL LMT round up, SELL STP and BUY LMT round down — and write the rounded price back into the order. At IBKR, stops trigger on last price.</li>
+<li><strong>Local rejects.</strong> A priced order without a valid price (missing, zero, negative, NaN or not a number) or without a known minimum tick is rejected before anything is sent. An order with an OCA group must carry OCA type 1, 2 or 3 — there is no default, the caller chooses — or it is rejected locally.</li>
+<li><strong>Time in force.</strong> Every order is DAY and allowed outside regular hours.</li>
+<li><strong>Contract identity.</strong> Resolved contracts, tick subscriptions, minimum ticks, fills and positions are all keyed by the engine's instrument, so FDAX and FDXS never collide on the broker's shared DAX symbol.</li>
+<li><strong>Simulation.</strong> The simulated broker rests STP/LMT orders (emitting OPEN) and matches them on each later bar of the instrument: a touch fills at the level, a gap fills at the open, the stop wins when both legs of a group fire, and the group's other legs become CANCELLED. An order into an already-filled OCA group is REJECTED; a MKT into a working group cancels the legs first. A resting fill is booked after strategies have seen its bar — one bar later than live, accepted.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>Every placed order gets a distinct, increasing <code>order_id</code> and eventually ends FILLED, CANCELLED or REJECTED. An STP/LMT price sent to the broker is always on tick.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">4</span>Cancelling orders</h3><dl class="gmi">
+<dt>Given</dt><dd>An active <code>order_id</code> still pending at the broker.</dd>
+<dt>Must</dt><dd>Send a cancel request to the broker and put a CANCELLED order update on the buffer once it is confirmed.
+<ul>
+<li>When the broker refuses the cancel (at IBKR, errors 10147, 10148, 161), put a CANCEL_REJECTED order update for that order id. Never forward the broker's intermediate pending-cancel status.</li>
+<li>The simulated broker cancels only a resting order (→ CANCELLED); any other id gets no event.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>A cancelled order never produces another fill. A refused cancel never produces a CANCELLED.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">5</span>Broker state and execution queries</h3><dl class="gmi">
+<dt>Given</dt><dd>A request for broker executions or open orders, optionally filtered by a since-timestamp.</dd>
+<dt>Must</dt><dd>Fetch the broker-side execution rows and open-order snapshots.</dd>
+<dt>Invariant</dt><dd>Every execution record includes <code>order_id</code>, instrument, side, fill quantity, average price, currency, fill time and execution id, so each fill can be traced to its order without doubt.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">6</span>Socket heartbeat</h3><dl class="gmi">
+<dt>Given</dt><dd>A heartbeat probe from Safety.</dd>
+<dt>Must</dt><dd>Query the broker endpoint (for example its current-time request) and return True if it answers within the timeout, False otherwise.</dd>
+<dt>Invariant</dt><dd>Returns True if and only if the socket answers within the latency threshold.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">7</span>History and intraday seed</h3><dl class="gmi">
+<dt>Given</dt><dd>An instrument, a history window and a session.</dd>
+<dt>Must</dt><dd>Fetch historical bars for warmup and intraday seeding before the session trades.
+<ul>
+<li><strong>Daily frame.</strong> Built from intraday bars over the full session, clipped and aggregated per trading date, with bar dates normalised to UTC. The window ends at the last completed session's real close, on that session's own clock.</li>
+<li><strong>Contract roll.</strong> Before a roll is complete, history that depends on liquidity is taken from the previous contract, and the Gateway can name the sessions where the feed is the new, still-thin contract.</li>
+<li><strong>Replay.</strong> The simulated broker builds its daily frame from the replay tape, with the same definitions, when the Event Loop asks for it (behaviour 15).</li>
+</ul></dd>
+<dt>Invariant</dt><dd>History arrives in time order, with no look-ahead past the requested window. A value the frame cannot serve exactly is never served silently.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">8</span>Account, position and balance updates</h3><dl class="gmi">
+<dt>Given</dt><dd>Account subscriptions, or a request for a position snapshot.</dd>
+<dt>Must</dt><dd>Put position updates (signed size, side, average price, account; flat for zero) and balance updates (available funds per account and per currency) on the buffer, from the broker's streams or, in simulation, from the simulated book. Answer position snapshots for the configured accounts. Broker decimals become floats.</dd>
+<dt>Invariant</dt><dd>Every update carries its account, and every money amount its currency. A snapshot that times out raises an error and leaves no waiter behind.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">9</span>Broker status messages</h3><dl class="gmi">
+<dt>Given</dt><dd>Error and status messages from the broker.</dd>
+<dt>Must</dt><dd><ul>
+<li>Ignore harmless codes.</li>
+<li>Track connectivity and each data farm's status; on recovery, raise a one-shot resubscribe request.</li>
+<li>Turn an order reject into a Rejected order update by order id — never for a data request id. At IBKR the order-reject codes are 110, 200, 201, 203, 321, 401 and 512. Code 401 (an order field failed validation) gets no order status from the broker, so without this the order would sit pending, unprotected, until Safety's repair declared it dead.</li>
+<li>Resolve or fail pending history requests according to their codes.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>No status message ever stops the engine or invents an order update.</dd>
+</dl></div>
+
+<h3 id="proposed">Proposed · not agreed</h3>
+
+<div class="behaviour"><h3><span class="num">10</span>An explicit interface<span class="added">proposed · System map decision 30</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A new concrete gateway.</dd>
+<dt>Must</dt><dd><ul>
+<li>Implement every required method (connect, disconnect, reconnect, orders, cancels, contracts, subscriptions, history, executions, positions); building a gateway that misses one fails at once.</li>
+<li>Override a gateway capability only when it has one; the interface's default is safe. Capabilities: feed liveness, the resubscribe request, market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal.</li>
+<li>Register under a name; the runner picks the gateway by that name.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>No caller looks a gateway method up by name.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">11</span>History in broker-neutral units<span class="added">proposed · System map decision 30</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A history request from the Event Loop.</dd>
+<dt>Must</dt><dd>Take the window as months (or start/end dates) and the session; each gateway turns it into its own broker's request. Broker-specific duration strings are built inside that gateway only.</dd>
+<dt>Invariant</dt><dd>Behaviour 7's invariant holds: history in time order, no look-ahead.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">12</span>Wake the Event Loop<span class="added">proposed · System map decision 26</span></h3><dl class="gmi">
+<dt>Given</dt><dd>The gateway has appended an event to the event buffer from any thread.</dd>
+<dt>Must</dt><dd>Raise the Event Loop's drain wake-up through a thread-safe call into the loop.</dd>
+<dt>Invariant</dt><dd>The reader thread never touches loop state except through the loop.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">13</span>Exchange facts from the exchange profile<span class="added">proposed · System map decisions 31, 37</span></h3><dl class="gmi">
+<dt>Given</dt><dd>An instrument to qualify, subscribe or fetch history for.</dd>
+<dt>Must</dt><dd>Read its contract venue, currency, broker contract identity, roll rule and session clocks from its exchange profile; no exchange special case in gateway code.</dd>
+<dt>Invariant</dt><dd>A new exchange needs a new exchange profile, not gateway edits (unless the broker itself differs).</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">14</span>Serve a strategy added while running<span class="added">proposed · System map decisions 34–36</span></h3><dl class="gmi">
+<dt>Given</dt><dd>The Event Loop staging a candidate strategy in a running paper/live process.</dd>
+<dt>Must</dt><dd><ul>
+<li>Resolve a contract and subscribe ticks for an instrument new to the process, while the existing feeds keep running.</li>
+<li><code>unsubscribe_tick(contract)</code>: release a tick subscription when a failed candidate's new instrument is cleaned up. A no-op where feeds cost nothing (the simulated broker).</li>
+<li>Re-declare instrument sessions from the runtime book when a new instrument is reserved, so a new Eurex feed is judged on the Frankfurt clock, not the CME one.</li>
+<li>Answer the candidate's admission check from the existing positions and open-orders reads; a broker that does not answer makes the request <code>unmanaged_exposure</code>.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>Adding a strategy never re-subscribes or drops a feed a running strategy uses.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">15</span>The simulated broker prepares its own data<span class="added">proposed · System map decision 45</span></h3><dl class="gmi">
+<dt>Given</dt><dd>Replay settings from the config: a tape source, a replay date and a session.</dd>
+<dt>Must</dt><dd><ul>
+<li>Read the tape lazily, and collect only the rows each request needs.</li>
+<li>Check, before replay starts, that every row in the replay window and the history it serves falls inside the session, using the exchange profile's session hours, calendar and early closes. One generic check serves every exchange. Refuse a tape with rows outside the session, and a day-session-only tape given for an overnight session.</li>
+<li>Answer <code>get_daily_history</code> and <code>get_intraday_seed_bars</code> from the tape when asked, like the broker gateway. Return an empty list when the tape has no prior session.</li>
+<li>Pad the replay window before and after the session with flat bars, as a simulated broker option.</li>
+<li>A synthetic generator is a second tape source behind the same simulated broker.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>The runner writes no data files and reads no strategy before the strategy exists. Replay history has the same definitions as broker history (behaviour 7).</dd>
+</dl></div>
+</section>
+
+<section id="skeleton-code">
+<div class="eyebrow">Gateway · Skeleton code</div>
+<h2>Skeleton code</h2>
+<p>The Gateway interface for v3, with two implementations: a broker gateway (IBKR first) and the simulated broker. Orders and execution rows carry the keys named in behaviours 3 and 5; contracts are resolved from an <code>Instrument</code> (System map decision 37).</p>
+<h3>Major state</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Where</th><th>State</th><th>What it holds</th></tr></thead>
+<tbody>
+<tr><td>Interface</td><td><code>event_buffer</code></td><td>The one shared queue the Event Loop drains. Every tick, order update and balance/position update is appended as <code>{event_type, data, enqueued_at}</code>; event types are <code>tick</code>, <code>order_update</code>, <code>position_update</code>, <code>balance_update</code>, <code>end_of_data</code>.</td></tr>
+<tr><td>Interface</td><td><code>last_tick_ts</code></td><td>Time of the last tick on an instrument whose data session is open. Safety's feed-liveness input.</td></tr>
+<tr><td>Broker gateway</td><td>contracts</td><td>Resolved contracts by instrument.</td></tr>
+<tr><td>Broker gateway</td><td>instrument sessions</td><td>Instrument → session, so liveness skips instruments whose data session is closed.</td></tr>
+<tr><td>Broker gateway</td><td>connection generation</td><td>Bumped on each (re)connect; stale subscriptions are dropped by it.</td></tr>
+<tr><td>Broker gateway</td><td>next order id</td><td>Guarded by a lock; never regresses on reconnect.</td></tr>
+<tr><td>Broker gateway</td><td>request waiters</td><td>Futures for executions, open orders, positions, history and contract-details requests in flight.</td></tr>
+<tr><td>Simulated broker</td><td>tape, current bars</td><td>The replay tape; the latest bar per instrument, which fills are priced off.</td></tr>
+<tr><td>Simulated broker</td><td>positions, executions, balances</td><td>The simulated book, with balances per currency.</td></tr>
+<tr><td>Simulated broker</td><td>resting orders, filled groups</td><td>Resting STP/LMT orders by id; OCA groups already filled.</td></tr>
+<tr><td>Simulated broker</td><td>fill engine</td><td>Prices fills: reference price (bar close by default) and slippage in ticks.</td></tr>
+</tbody></table></div>
+<h3>Methods by behaviour</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Behaviour</th><th>Methods</th></tr></thead>
+<tbody>
+<tr><td>1. Connection lifecycle</td><td><code>connect()</code>, <code>disconnect()</code>, <code>reconnect()</code>, <code>subscribe_order_update()</code></td></tr>
+<tr><td>2. Market data</td><td><code>subscribe_tick()</code>, <code>last_tick_ts</code>, <code>market_data_ready()</code>, <code>set_instrument_sessions()</code></td></tr>
+<tr><td>3. Placing orders</td><td><code>next_order_id()</code>, <code>place_order()</code>, <code>resolve_contract()</code>, <code>on_bar()</code></td></tr>
+<tr><td>4. Cancelling</td><td><code>cancel_order()</code></td></tr>
+<tr><td>5. Queries</td><td><code>get_executions(since)</code>, <code>get_open_orders()</code>, <code>get_commissions()</code></td></tr>
+<tr><td>6. Heartbeat</td><td><code>heartbeat(timeout=3.0)</code></td></tr>
+<tr><td>7. History</td><td><code>get_daily_history()</code>, <code>get_intraday_seed_bars()</code>, <code>roll_mismatch_dates()</code></td></tr>
+<tr><td>8. Account updates</td><td><code>subscribe_account_update()</code>, <code>get_positions()</code></td></tr>
+<tr><td>9. Status messages</td><td><code>consume_resubscribe_request()</code></td></tr>
+<tr><td>14. Hot-add</td><td><code>unsubscribe_tick()</code></td></tr>
+</tbody></table></div>
+<details><summary>Full skeleton code<span class="count">python</span></summary>
+<pre><code>"""Skeleton contract for the Gateway component (Alchemist v3, draft)."""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections import deque
+from datetime import date
+from typing import Any
+
+from alchemist.instruments import Instrument
+
+
+class Gateway(ABC):
+    """Base of every broker gateway and of the simulated broker."""
+
+    event_buffer: deque
+    #   the one shared queue the Event Loop drains; entries are
+    #   {'event_type', 'data', 'enqueued_at'} with event_type in
+    #   tick, order_update, position_update, balance_update, end_of_data
+
+    # ---- required (Behaviours 1-9) ----
+    @abstractmethod
+    async def connect(self) -&gt; None:
+        """Behaviour 1: connect to the broker or replay source."""
+
+    @abstractmethod
+    async def disconnect(self) -&gt; None:
+        """Behaviour 1: close the connection and release resources."""
+
+    @abstractmethod
+    async def reconnect(self) -&gt; None:
+        """Behaviour 1: re-establish the connection and restore subscriptions."""
+
+    @abstractmethod
+    async def subscribe_order_update(self) -&gt; None:
+        """Behaviour 1: subscribe to order status updates."""
+
+    @abstractmethod
+    async def resolve_contract(self, instrument: Instrument) -&gt; Any:
+        """Behaviour 3: qualify the instrument's current contract (exchange profile roll rule)."""
+
+    @abstractmethod
+    async def subscribe_tick(self, contract: Any) -&gt; None:
+        """Behaviour 2: subscribe to real-time ticks."""
+
+    @abstractmethod
+    def next_order_id(self) -&gt; int:
+        """Behaviour 3: a monotonic, unique order id."""
+
+    @abstractmethod
+    async def place_order(self, order: dict[str, Any]) -&gt; None:
+        """Behaviour 3: round, validate, send; queue the order update."""
+
+    @abstractmethod
+    async def cancel_order(self, order_id: int) -&gt; None:
+        """Behaviour 4: cancel a pending order."""
+
+    @abstractmethod
+    async def get_executions(self, since: float | None = None) -&gt; list[dict[str, Any]]:
+        """Behaviour 5: execution rows, each with its order_id and currency."""
+
+    @abstractmethod
+    async def get_open_orders(self, timeout: float = 5.0) -&gt; list[dict[str, Any]]:
+        """Behaviour 5: orders still working at the broker."""
+
+    @abstractmethod
+    async def heartbeat(self, timeout: float = 3.0) -&gt; bool:
+        """Behaviour 6: True iff the socket answers within the timeout."""
+
+    @abstractmethod
+    async def get_daily_history(self, instrument: Instrument, start: date,
+                                end: date, session: str) -&gt; Any:
+        """Behaviours 7, 11: daily frame in broker-neutral units, no look-ahead."""
+
+    @abstractmethod
+    async def get_intraday_seed_bars(self, instrument: Instrument, session: str) -&gt; list:
+        """Behaviour 7: prior-session 1-second bars for intraday seeding."""
+
+    @abstractmethod
+    async def subscribe_account_update(self) -&gt; None:
+        """Behaviour 8: account, position and balance streams."""
+
+    @abstractmethod
+    async def get_positions(self, timeout: float = 5.0) -&gt; list[dict]:
+        """Behaviour 8: position snapshot for the configured accounts."""
+
+    # ---- capabilities with safe defaults (Behaviour 10) ----
+    @property
+    def last_tick_ts(self) -&gt; float | None:
+        """Behaviour 2: last tick on an instrument whose data session is open."""
+        return None
+
+    def set_instrument_sessions(self, sessions: dict[Instrument, str]) -&gt; None:
+        """Behaviours 2, 14: which data session judges each instrument's feed."""
+
+    def market_data_ready(self) -&gt; bool:
+        return True
+
+    def consume_resubscribe_request(self) -&gt; bool:
+        """Behaviour 9: read and reset the one-shot resubscribe request."""
+        return False
+
+    def roll_mismatch_dates(self) -&gt; frozenset:
+        """Behaviour 7: sessions served by a newly rolled, still-thin contract."""
+        return frozenset()
+
+    async def get_commissions(self) -&gt; dict[str, dict]:
+        return {}
+
+    def on_bar(self, instrument: Instrument, bar: dict[str, Any]) -&gt; None:
+        """Behaviour 3: current bar from the Event Loop; drives simulated fills."""
+
+    def intraday_seed_failure_is_fatal(self) -&gt; bool:
+        return False
+
+    async def unsubscribe_tick(self, contract: Any) -&gt; None:
+        """Behaviour 14: release a failed hot-add candidate's new feed."""
+
+
+GATEWAYS: dict[str, type[Gateway]] = {}   # Behaviour 10: picked by name
+</code></pre></details>
+</section>
+
+<section id="test-spec">
+<div class="eyebrow">Gateway · Test spec</div>
+<h2>Test spec</h2>
+<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>. Open a behaviour to see its tests.</p>
+<details><summary>Sample<span class="count">1 test</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>tests/gateway/test_gateway_sample.py::test_golden_replay_delivers_every_tick_then_end_of_data_and_fills_two_orders</code></td><td>The Sample's Passes-when, end to end on the simulated broker.</td></tr>
+</tbody></table></div></details>
+<details><summary>1–2. Connection and market data<span class="count">4 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>test_reconnect_restores_order_account_and_tick_streams</code></td><td>Every stream returns after a reconnect.</td></tr>
+<tr><td><code>test_ticks_appended_in_time_order</code></td><td>Timestamps never go backwards in the buffer.</td></tr>
+<tr><td><code>test_last_tick_ts_ignores_instrument_whose_data_session_is_closed</code></td><td>A closed Eurex feed does not make the feed look dead while CME trades.</td></tr>
+<tr><td><code>test_stale_subscription_dropped_after_reconnect</code></td><td>Connection generation filters old callbacks.</td></tr>
+</tbody></table></div></details>
+<details><summary>3–4. Orders and cancels<span class="count">8 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>test_stop_and_limit_prices_rounded_by_side_and_type</code></td><td>BUY STP / SELL LMT up, SELL STP / BUY LMT down.</td></tr>
+<tr><td><code>test_priced_order_without_valid_price_rejected_locally</code></td><td>Nothing reaches the broker.</td></tr>
+<tr><td><code>test_oca_group_without_type_rejected_locally</code></td><td>No default OCA type.</td></tr>
+<tr><td><code>test_fdax_and_fdxs_keyed_apart_on_shared_symbol</code></td><td>Contracts, fills and positions never collide.</td></tr>
+<tr><td><code>test_order_ids_increase_and_never_regress_on_reconnect</code></td><td>Distinct, increasing ids.</td></tr>
+<tr><td><code>test_sim_stop_wins_when_both_legs_touch</code></td><td>Other leg CANCELLED.</td></tr>
+<tr><td><code>test_sim_order_into_filled_group_rejected</code></td><td>REJECTED.</td></tr>
+<tr><td><code>test_refused_cancel_becomes_cancel_rejected_never_cancelled</code></td><td>Behaviour 4 invariant.</td></tr>
+</tbody></table></div></details>
+<details><summary>5–9. Queries, heartbeat, history, account, status<span class="count">7 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>test_every_execution_row_carries_order_id_and_currency</code></td><td>Behaviour 5 invariant.</td></tr>
+<tr><td><code>test_heartbeat_false_on_timeout</code></td><td>Behaviour 6.</td></tr>
+<tr><td><code>test_daily_frame_has_no_look_ahead_past_last_completed_close</code></td><td>On the session's own clock.</td></tr>
+<tr><td><code>test_balance_update_per_currency</code></td><td>USD and EUR reported apart.</td></tr>
+<tr><td><code>test_position_snapshot_timeout_leaves_no_waiter</code></td><td>Behaviour 8 invariant.</td></tr>
+<tr><td><code>test_order_reject_codes_become_rejected_by_order_id</code></td><td>Including 401; never for a data request id.</td></tr>
+<tr><td><code>test_data_farm_recovery_raises_one_shot_resubscribe</code></td><td>Behaviour 9.</td></tr>
+</tbody></table></div></details>
+<details><summary>15. Proposed<span class="count">3 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>test_replay_refuses_tape_rows_outside_session</code></td><td>Behaviour 15, from the exchange profile, for CME and Eurex.</td></tr>
+<tr><td><code>test_replay_daily_history_matches_broker_definitions</code></td><td>Behaviour 15 invariant.</td></tr>
+<tr><td><code>test_replay_no_prior_session_returns_empty_seed</code></td><td>Behaviour 15.</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="decisions-already-made">
+<div class="eyebrow">Gateway · Decisions already made</div>
+<h2>Decisions already made</h2>
+
+<div class="decision"><h3><span class="num">1</span>One Gateway interface for live and simulation?</h3>
+<p class="q">Yes — one Gateway interface covers both the live broker and simulation/replay.</p>
+<p class="rej">Rejected: splitting it into separate market-feed and order-router components.</p></div>
+
+<div class="decision"><h3><span class="num">2</span>Where does simulated execution live?</h3>
+<p class="q">Inside the simulated broker, which holds a fill engine (bar reference price, optional slippage in ticks) and presents exactly the same asynchronous interface and events as the broker gateway.</p></div>
+
+<div class="decision"><h3><span class="num">3</span>How are executions attributed?</h3>
+<p class="q">Every execution row carries its <code>order_id</code>, so Safety's repair can attribute fills correctly even when several strategies trade the same instrument at once.</p></div>
+
+<div class="decision"><h3><span class="num">4</span>How is data liveness tracked?</h3>
+<p class="q">The last-tick time is a property on the Gateway, so Safety can watch feed liveness separately from the socket heartbeat.</p></div>
+
+<div class="decision"><h3><span class="num">5</span>Who rounds resting prices?</h3>
+<p class="q">The Gateway, silently, choosing the direction from side and type, with one shared rounding helper the simulated broker also uses.</p></div>
+
+<div class="decision"><h3><span class="num">6</span>What about the broker's pending-cancel status and refused cancels?</h3>
+<p class="q">Pending-cancel is dropped: Order Manager learns of a cancel only from the final Cancelled. A refused cancel becomes a CANCEL_REJECTED update by order id.</p></div>
+
+<h3>Proposed · not agreed</h3>
+<div class="decision"><h3><span class="num">7</span>Who prepares replay data?</h3>
+<p class="q">The simulated broker (<code>SimulationGateway</code>), on request, from a tape source (behaviour 15). The runner only names the tape, the date and the session in config.</p>
+<p class="rej">Rejected: the runner slicing the tape and writing history files before start (a second history path beside the Gateway, and it must read strategies before they exist to know which columns to build).</p>
+<p class="when">proposed · 2026-11-07</p></div>
+</section>
+</div>
+</body>
+</html>

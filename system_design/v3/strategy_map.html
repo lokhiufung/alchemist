@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist Strategy map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html">System map</a>
+  <div class="dropdown">
+    <button type="button">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html" class="active">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">Component map · STRATEGY_MAP · Alchemist v3</div>
+<h1>Strategy</h1>
+<div class="lede"><p>The one object per slot that the Event Loop talks to. It drives the slot's three parts — StrategySignal, StrategyExecution and Order Manager — with what the Event Loop delivers, and books the slot's own position from fills.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong> Behaviours and decisions are settled. The calls Strategy makes on StrategySignal use the v3 signal interface (<a href="strategy_signal_map.html#skeleton-code">StrategySignal skeleton</a>). Multi-asset: the position is booked in the execution instrument's currency (<a href="system_map.html#d39">System map decision 39</a>). 2026-11-07: the strategy is registered with <code>register_strategy</code> and names its signal by registry name; the signal is built with <code>from_config()</code> and its params sit in the signal class; logs and snapshots read <code>values()</code> (decision 16).</p></div>
+</header>
+
+<section id="goal">
+<div class="eyebrow">Strategy · Goal</div>
+<h2>Goal</h2>
+<p>Be the one per-slot object the Event Loop talks to, and drive the slot's three parts — StrategySignal, StrategyExecution and Order Manager — with what the Event Loop delivers, booking the slot's own position from fills along the way.</p>
+<p>Owns, from the System map:</p>
+<blockquote><p>Being the one per-slot object the Event Loop talks to: booking its own position from fills, in the instrument's currency, and driving its StrategySignal, StrategyExecution and Order Manager with what the Event Loop delivers — stepping the signal on each bar, passing the bar on to StrategyExecution, and deciding when the signal may be rebuilt (only while flat with no open or submitted orders).</p></blockquote>
+<div class="table-wrap"><table>
+<thead><tr><th>Not Strategy's job</th><th>Owned by</th></tr></thead>
+<tbody>
+<tr><td>The signal's params</td><td><a href="strategy_signal_map.html">StrategySignal</a> (the signal class holds them)</td></tr>
+<tr><td>The calculations and entry/exit logic</td><td><a href="strategy_signal_map.html">StrategySignal</a></td></tr>
+<tr><td>Which execution phase the slot is in, session gating, the daily quota, asking the signal for the entry/exit answer, timing its exit-input freeze and release, and what an order event means</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>An order's life from submission to closed status, and which orders are owned</td><td><a href="order_manager_map.html">Order Manager</a></td></tr>
+<tr><td>When bars are complete</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="what-this-component-does">
+<div class="eyebrow">Strategy · What this component does</div>
+<h2>What this component does</h2>
+<h3>On each bar</h3>
+<p>Strategy is the only thing that steps the slot's StrategySignal. It steps it once with <code>step()</code>, passing strategy data built from its position:</p>
+<ul>
+<li><code>entry_price</code> — the booked average price;</li>
+<li><code>secs_since_entry</code> — counted from the entry-order bar.</li>
+</ul>
+<p>Both are <code>None</code> while flat. It then passes the bar to StrategyExecution, which asks the signal for the entry or exit answer its phase needs, decides, and sends orders through Order Manager.</p>
+<h3>On each order update</h3>
+<p>It forwards the update to Order Manager, books the position only from the change Order Manager returns, and passes the update to StrategyExecution — which asks Order Manager itself for anything more it needs. The new entry price reaches the signal through strategy data on the next bar.</p>
+<h3>When late data arrives</h3>
+<p>When late warmup or auxiliary data arrives, it rebuilds the signal cold — but only while <code>is_flat_idle()</code> holds: no position, and Order Manager has no open or submitted order. Then it tells StrategyExecution the slot is ready.</p>
+</section>
+
+<section id="sample">
+<div class="eyebrow">Strategy · Sample</div>
+<h2>Sample</h2>
+<p>Strategy's slice of the system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>.</p>
+<div class="table-wrap"><table><tbody>
+<tr><th>Input</th><td>A synthetic price path that rises through fixed level L on bar 10 and later reaches target T on bar 20, with no outage. A fixed-rule long signal: entry true on the first close above L, exit true on the first bar reaching T. StrategySignal and StrategyExecution are scripted stubs; Order Manager is a mock that returns each fill as an owned change.</td></tr>
+<tr><th>Expected</th><td>Strategy steps the signal exactly once per bar, before StrategyExecution sees that bar. On the buy fill it books +1, and from the next bar steps the signal with <code>entry_price</code> = fill price. On the sell fill it books 0. It ends flat with <code>entry_price</code> back to <code>None</code>.</td></tr>
+<tr><th>Passes when</th><td>Every bar reaches the signal once and StrategyExecution once, in that order; the position is +1 between the two fills and 0 at the end.</td></tr>
+<tr><th>Fails when</th><td>A bar reaches StrategyExecution before the signal was stepped with it; or the position moves on an update Order Manager did not return as a change.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="behaviours">
+<div class="eyebrow">Strategy · Behaviours</div>
+<h2>Behaviours</h2>
+<p>Each behaviour says what Strategy is given, what it must do, and what must always stay true.</p>
+
+<div class="behaviour"><h3><span class="num">1</span>Bar drive</h3><dl class="gmi">
+<dt>Given</dt><dd>A completed bar from the Event Loop.</dd>
+<dt>Must</dt><dd>Call StrategyExecution's <code>on_bar(bar, step_signal)</code>. When it calls <code>step_signal</code>, call the signal's <code>step()</code> with the bar history and strategy data from the booked position.</dd>
+<dt>Invariant</dt><dd>The signal is stepped exactly once per in-session bar, and before StrategyExecution sees that bar. The first in-session bar is the session's bar 0, so no step happens while StrategyExecution waits for the session, or while a quarantined slot is out of session.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">2</span>Exit-input freeze and release timing — not a Strategy behaviour</h3>
+<p>StrategyExecution calls <code>freeze_exit_inputs()</code> / <code>release_exit_inputs()</code> (StrategyExecution behaviour 1). The number is kept so references to the later behaviours stay valid.</p></div>
+
+<div class="behaviour"><h3><span class="num">3</span>Order-update relay and position booking</h3><dl class="gmi">
+<dt>Given</dt><dd>An order update from the Event Loop.</dd>
+<dt>Must</dt><dd><ul>
+<li>Forward it to Order Manager. If Order Manager returns no change, stop.</li>
+<li>Otherwise book the position (size, average price, currency, entry timestamp = the entry-order bar) from the returned change, and call StrategyExecution's <code>on_order_update(order_update)</code>.</li>
+<li>Also: build Order Manager with the slot's account; apply a broker position update only for this slot's execution instrument; take in a balance update for this slot's account and its instrument's currency.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>The position changes only from changes Order Manager returns, each booked once. The signal sees position data only through strategy data.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">4</span>Readiness and rebuild timing</h3><dl class="gmi">
+<dt>Given</dt><dd>Warmup history from the Event Loop, or auxiliary ready / not ready with its frames from <a href="aux_data_map.html">Aux Data</a> (proposed, <a href="system_map.html#d44">System map decision 44</a>), or the signal not yet warm. On a cold rebuild while aux is ready, Strategy reads the frames again from Aux Data.</dd>
+<dt>Must</dt><dd><ul>
+<li>Rebuild the signal cold and replay the seed bars only while <code>is_flat_idle()</code> holds (no position, and Order Manager has no open or submitted order); then set StrategyExecution's warmup-ready / aux-ready.</li>
+<li>During a mid-session replay, hold live bars back and step them afterwards, in order. Replayed bars outside the slot's session are skipped.</li>
+</ul></dd>
+<dt>Invariant</dt><dd>No rebuild ever happens with a position or an open or submitted order. StrategyExecution is never told "ready" while the signal is not warm. No live bar is stepped in the middle of a replay or dropped by it.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">5</span>Teardown</h3><dl class="gmi">
+<dt>Given</dt><dd>A <code>request_flatten</code> call (session end, shutdown) — or Strategy's own call with reason <code>exit_failed</code>, made on each bar while StrategyExecution reports <code>flatten_wanted()</code> after an exit failed in position (StrategyExecution behaviour 12).</dd>
+<dt>Must</dt><dd>Hand StrategyExecution the booked position on every call. StrategyExecution cancels every order, waits until each is final, then sends one market order opposite the booked position (none when flat) and goes to DONE (StrategyExecution behaviour 11). <code>is_flat_idle()</code> counts submitted, open and cancelling orders.</dd>
+<dt>Invariant</dt><dd>A flat slot sends no close order.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">6</span>Signal state across a restart</h3><dl class="gmi">
+<dt>Given</dt><dd>A state store and the signal's list of values fixed for the session.</dd>
+<dt>Must</dt><dd>Accept only session-fixed values as cached. Once warm, persist their state once. On restart, restore it (logging loudly), and treat a missing or corrupt record as nothing to restore. A quarantined slot never persists.</dd>
+<dt>Invariant</dt><dd>Only values that cannot go stale while the process is down are restored.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">7</span>Observability</h3><dl class="gmi">
+<dt>Given</dt><dd>A snapshot interval and the slot's health.</dd>
+<dt>Must</dt><dd>Log a signal snapshot, built from the signal's <code>values()</code>, every N bars (never when 0) with instrument and event fields. Mark a quarantined slot's in-session snapshot row as stale; a healthy row carries no stale keys. The write happens on a logging thread, not the event loop (<a href="system_map.html#d29">System map decision 29</a>).</dd>
+<dt>Invariant</dt><dd>Logging never changes what is traded.</dd>
+</dl></div>
+</section>
+
+<section id="skeleton-code">
+<div class="eyebrow">Strategy · Skeleton code</div>
+<h2>Skeleton code</h2>
+<h3>Major state</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>State</th><th>What it holds</th></tr></thead>
+<tbody>
+<tr><td><code>config</code>, <code>name</code></td><td>The slot's deployment config (instruments, account, execution block) and key.</td></tr>
+<tr><td><code>signal_instrument</code> / <code>execution_instrument</code> / <code>session</code></td><td>The instrument it reads; the instrument orders go to; its session name from the exchange profile.</td></tr>
+<tr><td><code>position</code></td><td>Signed size, average price, last price, currency, entry timestamp, side (LONG / SHORT / FLAT). Booked only from Order Manager's changes.</td></tr>
+<tr><td><code>balance</code></td><td>Available funds for this slot's account in its instrument's currency.</td></tr>
+<tr><td><code>signal</code>, <code>om</code>, <code>execution</code></td><td>The slot's three parts. The signal is stepped here and also held by StrategyExecution.</td></tr>
+<tr><td><code>deferred_bars</code></td><td>Live bars held back while a rebuild replays recorded ones; <code>None</code> otherwise.</td></tr>
+<tr><td><code>state_store</code>, <code>roundtrip_store</code></td><td>Persist session-fixed signal values across restarts; persist round trips.</td></tr>
+</tbody></table></div>
+<h3>Methods by behaviour</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Behaviour</th><th>Methods</th></tr></thead>
+<tbody>
+<tr><td>1. Bar drive</td><td><code>on_bar()</code>, <code>strategy_data()</code></td></tr>
+<tr><td>3. Relay and booking</td><td><code>on_order_update()</code>, <code>on_position_update()</code>, <code>on_balance_update()</code></td></tr>
+<tr><td>4. Readiness and rebuild</td><td><code>warmup()</code>, <code>rebuild_intraday_state()</code>, <code>reset_signal()</code>, <code>is_flat_idle()</code>, <code>warmup_requirements()</code> (routes to the signal)</td></tr>
+<tr><td>5. Teardown</td><td><code>request_flatten(reason, bar_ts)</code></td></tr>
+<tr><td>6. Signal state</td><td><code>restore_signal_state()</code>, <code>restore_round_trips()</code></td></tr>
+<tr><td>7. Observability</td><td><code>signal_snapshot()</code></td></tr>
+<tr><td>Slot-state routing (decision 14)</td><td><code>is_processing_order()</code>, <code>quarantine()</code>, <code>release_quarantine()</code>, <code>is_quarantined()</code>, <code>warmup_ready</code>, <code>aux_ready</code>, <code>consume_trade_closed()</code>, <code>get_submitted_orders()</code>, <code>get_open_orders()</code>, <code>get_cancelling_orders()</code>. Code outside the slot asks only these and never reaches into Order Manager or StrategyExecution.</td></tr>
+</tbody></table></div>
+<details><summary>Full skeleton code<span class="count">python</span></summary>
+<pre><code>"""Skeleton contract for Strategy, the slot driver (Alchemist v3, draft)."""
+
+from __future__ import annotations
+
+from collections import deque
+from typing import Any
+
+from alchemist.instruments import Instrument
+from alchemist.strategy_builder.strategy_signal import StrategySignal
+from alchemist.strategy_builder.strategy_executions import make_execution
+from alchemist.managers.order_manager import OrderManager
+
+
+class Strategy:
+    name: str
+    config: dict
+    signal_instrument: Instrument
+    execution_instrument: Instrument
+    session: str
+    position: dict          # size, avg_price, last_price, currency, entry_ts, side
+    balance: dict           # {'currency': str, 'available': float | None}
+    signal: StrategySignal
+    signal_name: str        # registry name of the signal, set by the strategy subclass
+    om: OrderManager
+    execution: Any          # StrategyExecution, built by make_execution(config)
+    deferred_bars: list | None
+
+    # Behaviour 1
+    def on_bar(self, bars: deque, bar: dict) -&gt; None:
+        """execution.on_bar(bar, step_signal); step_signal calls
+        signal.step(bars, self.strategy_data()) exactly once."""
+
+    def strategy_data(self) -&gt; dict:
+        """{'entry_price': ..., 'secs_since_entry': ...}; both None while flat."""
+
+    # Behaviour 3
+    def on_order_update(self, update: dict) -&gt; None:
+        """change = om.on_order_update(update); book only from change;
+        then execution.on_order_update(update)."""
+
+    def on_position_update(self, update: dict) -&gt; None: ...
+    def on_balance_update(self, update: dict) -&gt; None: ...
+
+    # Behaviour 4
+    def warmup_requirements(self) -&gt; dict:
+        """Route the signal's declared history needs to the Event Loop."""
+    def warmup(self, history: dict) -&gt; None: ...
+    def rebuild_intraday_state(self, seed_bars: list) -&gt; None: ...
+    def reset_signal(self) -&gt; None:
+        """self.signal = get_signal_dag(self.signal_name).from_config(self.config)."""
+    def is_flat_idle(self) -&gt; bool:
+        """No position; no submitted, open or cancelling order."""
+
+    # Behaviour 5
+    def request_flatten(self, reason: str, bar_ts: float) -&gt; None: ...
+
+    # Behaviour 6-7
+    def restore_signal_state(self) -&gt; None: ...
+    def signal_snapshot(self) -&gt; dict: ...
+
+    # Slot-state routing (decision 14)
+    def is_processing_order(self) -&gt; bool: ...
+    def quarantine(self, reason: str) -&gt; None: ...
+    def is_quarantined(self) -&gt; bool: ...
+    def get_submitted_orders(self) -&gt; list: ...
+    def get_open_orders(self) -&gt; list: ...
+    def get_cancelling_orders(self) -&gt; list: ...
+</code></pre></details>
+</section>
+
+<section id="test-spec">
+<div class="eyebrow">Strategy · Test spec</div>
+<h2>Test spec</h2>
+<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>.</p>
+<details><summary>Sample and behaviours 1–7<span class="count">10 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>tests/strategy/test_strategy.py::test_signal_stepped_once_before_execution_each_bar</code></td><td>Behaviour 1; the Sample.</td></tr>
+<tr><td><code>test_strategy_data_carries_entry_price_after_fill</code></td><td>Behaviour 1, 3.</td></tr>
+<tr><td><code>test_position_booked_only_from_order_manager_changes</code></td><td>Behaviour 3 invariant.</td></tr>
+<tr><td><code>test_position_booked_in_execution_instrument_currency</code></td><td>EUR for FDAX, USD for NQ.</td></tr>
+<tr><td><code>test_position_update_for_other_instrument_ignored</code></td><td>Behaviour 3.</td></tr>
+<tr><td><code>test_rebuild_refused_with_open_or_submitted_order</code></td><td>Behaviour 4 invariant.</td></tr>
+<tr><td><code>test_rebuild_then_ready_when_flat_idle</code></td><td>Behaviour 4.</td></tr>
+<tr><td><code>test_live_bars_held_during_replay_then_stepped_in_order</code></td><td>Behaviour 4.</td></tr>
+<tr><td><code>test_flat_slot_sends_no_close_order</code></td><td>Behaviour 5 invariant.</td></tr>
+<tr><td><code>test_corrupt_state_record_restores_nothing</code></td><td>Behaviour 6.</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="decisions-already-made">
+<div class="eyebrow">Strategy · Decisions already made</div>
+<h2>Decisions already made</h2>
+<div class="decision"><h3><span class="num">1</span>Who drives the signal?</h3><p class="q">Strategy steps and rebuilds it; StrategyExecution holds it and asks it for the entry/exit answers (<a href="system_map.html#d20">System map decision 20</a>).</p><p class="rej">Rejected: Strategy evaluating the answers and handing them over.</p></div>
+<div class="decision"><h3><span class="num">2</span>What does Strategy need from the signal's interface?</h3><p class="q">Step, warm state, rebuild, warmup requirements, and the entry/exit answers StrategyExecution asks for — including per-condition exit answers and each exit condition's level, so a protected slot can rest a broker order at the level the signal already computes — and the read-only <code>values()</code> for logs and snapshots.</p><p class="rej">Rejected: skip-masks or a fill callback inside the signal.</p></div>
+<div class="decision"><h3><span class="num">3</span>How does the signal see position data?</h3><p class="q">Through strategy data (entry price, seconds since entry) passed into each step (<a href="system_map.html#d21">System map decision 21</a>). It never reads the position itself.</p></div>
+<div class="decision"><h3><span class="num">4</span>Who freezes and releases the signal's exit inputs?</h3><p class="q">StrategyExecution: freeze on the entry-decision bar before the entry order is sent; release on the exit fill or when the entry dies.</p><p class="rej">Rejected: moving them to Strategy.</p></div>
+<div class="decision"><h3><span class="num">5</span>Who owns the rebuild?</h3><p class="q">Split (<a href="system_map.html#d22">System map decision 22</a>): StrategySignal owns how; Strategy owns when (flat, idle, no open or submitted order).</p></div>
+<div class="decision"><h3><span class="num">6</span>Where do session gating, entry/exit placement, quota and teardown live?</h3><p class="q">In StrategyExecution (its own map). StrategyExecution reads the params it needs through the signal it holds.</p></div>
+<div class="decision"><h3><span class="num">7</span>Fill attribution</h3><p class="q">Strategy books only what Order Manager returns as a change (Order Manager owns ownership).</p></div>
+<div class="decision"><h3><span class="num">8</span>What anchors the entry timestamp?</h3><p class="q">The bar that submitted the entry.</p></div>
+<div class="decision"><h3><span class="num">9</span>Does Strategy relay Order Manager's answers to StrategyExecution?</h3><p class="q">No. Strategy passes the order update on as is; StrategyExecution queries Order Manager itself.</p><p class="rej">Rejected: an order-context relay — it duplicated the open and submitted orders Order Manager already stores.</p></div>
+<div class="decision"><h3><span class="num">10</span>How does the Event Loop's warmup seeding reach the signal?</h3><p class="q">Through Strategy only: <code>warmup_requirements()</code> and <code>warmup()</code> route to the signal; the Event Loop never reads the signal.</p></div>
+<div class="decision"><h3><span class="num">11</span>Who logs the entry/exit decision's inputs?</h3><p class="q">StrategyExecution, when it evaluates the signal.</p></div>
+<div class="decision"><h3><span class="num">14</span>How does code outside the slot ask about it?</h3><p class="q">Only through Strategy: <code>is_processing_order()</code> forwards to StrategyExecution; <code>get_submitted_orders()</code> / <code>get_open_orders()</code> / <code>get_cancelling_orders()</code> forward to Order Manager under its own status names; <code>is_flat_idle()</code> is answered here; <code>is_quarantined()</code> too. Safety's repair picks slots by their submitted and open orders.</p><p class="rej">Rejected: names that are not order statuses ("pending", "working").</p></div>
+<div class="decision"><h3><span class="num">15</span>An unknown key in a slot's config?</h3><p class="q">Logged, never fatal. A bad execution block fails startup (StrategyExecution decision 21).</p></div>
+<div class="decision"><h3><span class="num">16</span>How is a strategy declared, and how is its signal built?</h3><p class="q">A strategy is a small declarative subclass in its folder's <code>strategy.py</code>, registered with <code>register_strategy(strat)</code>; the slot config names that strat. It names its signal by registry name (<code>signal_name</code>), not by import (<a href="system_map.html#d43">System map decision 43</a>). Strategy builds the signal with <code>get_signal_dag(signal_name).from_config(config)</code> at start and on every rebuild, and reads it only through the public signal interface (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading or writing the signal's value cache directly for logs or restore.</p><p class="when">proposed · v3 · 2026-11-07</p></div>
+<p class="meta">Decisions 12 and 13 are not used; the numbers are kept so references stay valid.</p>
+</section>
+</div>
+</body>
+</html>

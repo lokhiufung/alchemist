@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist v3 glossary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html">System map</a>
+  <div class="dropdown">
+    <button type="button">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html" class="active">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">Glossary · GLOSSARY · Alchemist v3</div>
+<h1>Glossary</h1>
+<div class="lede"><p>The words this design uses, each with what it means, its name in code and one example. Reuse these words when you write a page, a map or code; add a new one only when no term below already covers the idea.</p></div>
+<div class="meta"><p>v3 draft, 2026-11-07.</p>
+<details><summary>Change history</summary><ul>
+<li><strong>2026-11-07</strong> — New Code column: each term names its symbol in the skeleton code. Shared runtime terms added (configuration, strategy key, strat, account, warmup, intraday seed, readiness flags, recorded and deferring bars, fill engine, reserve, staging, deploy fingerprint, recorders, stores, order state). Renamed: Trading day → Trading date, Flush grace → Bar flush grace, Repair → FSM repair.</li>
+</ul></details></div>
+</header>
+
+<section id="terms">
+<div class="eyebrow">Glossary · Terms</div>
+<h2>Terms</h2>
+<p>Code names are relative to the <code>alchemist</code> package; a bare <code>Class.member</code> means the class named above it in its table.</p>
+
+<h3>Markets and money</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Term</th><th>Definition</th><th>Code</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><strong>Asset class</strong></td><td>The kind of product an instrument is: future, stock or option. It decides how the tradable contract is resolved and what one unit of size is.</td><td><code>instruments.AssetClass</code></td><td>FDAX is a future; 1 unit of a stock is 1 share.</td></tr>
+<tr><td><strong>Instrument</strong></td><td>A tradable product: asset class, symbol, exchange profile, currency, multiplier, tick size. Every tick, bar, order, fill and position carries one.</td><td><code>instruments.Instrument</code></td><td>FDAX on Eurex, EUR.</td></tr>
+<tr><td><strong>Exchange profile</strong></td><td>All facts about one exchange in one place: sessions, calendar and early closes, data session, contract venue, currency, broker contract identity, futures roll rule, session-end cutoffs.</td><td><code>exchange_profiles.ExchangeProfile</code></td><td>The CME profile; the Eurex profile.</td></tr>
+<tr><td><strong>Session</strong></td><td>A named trading window of an exchange, on that exchange's local clock.</td><td><code>ExchangeProfile.sessions</code></td><td>CME day session 09:30–16:00 New York.</td></tr>
+<tr><td><strong>Data session</strong></td><td>The exchange's continuous feed window; the market-data watchdog arms on it whatever the strategies' own sessions are.</td><td><code>ExchangeProfile.data_session</code></td><td>CME: Sunday 18:00 → Friday 17:00 New York, less the daily break.</td></tr>
+<tr><td><strong>Trading date</strong></td><td>The date a bar belongs to by its session; an overnight session rolls at its open, not at midnight.</td><td><code>ExchangeProfile.trading_date</code></td><td>A Sunday-evening CME bar belongs to Monday.</td></tr>
+<tr><td><strong>Contract venue</strong></td><td>The exchange a contract is routed to at the broker, from the exchange profile.</td><td><code>ExchangeProfile.contract_venue</code></td><td>CME for NQ.</td></tr>
+<tr><td><strong>Contract roll</strong></td><td>The switch from the expiring futures contract to the next, by the exchange profile's roll rule.</td><td><code>ExchangeProfile.broker_contract</code></td><td>Roll a set number of days before expiry.</td></tr>
+<tr><td><strong>Roll mismatch dates</strong></td><td>Sessions where the feed is a newly rolled, still-thin contract.</td><td><code>Gateway.roll_mismatch_dates</code></td><td>—</td></tr>
+<tr><td><strong>Signal / execution instrument</strong></td><td>The instrument a strategy reads / the instrument its orders and position live on. Usually the same. Replaces a ticker pair.</td><td><code>Strategy.signal_instrument</code>, <code>Strategy.execution_instrument</code></td><td>Read ES, trade ES.</td></tr>
+<tr><td><strong>Currency</strong></td><td>Every money amount carries one; the engine never converts between them.</td><td><code>Instrument.currency</code></td><td>FDAX PnL in EUR, NQ PnL in USD.</td></tr>
+<tr><td><strong>Account</strong></td><td>The broker account a slot trades through and attaches to its orders; not the strategy key.</td><td><code>StrategyConfig.account_id</code></td><td>Two slots on one product through two accounts.</td></tr>
+<tr><td><strong>Auxiliary series</strong></td><td>A daily series from an outside data source (not the broker) that a signal reads.</td><td><code>aux_data.AuxSource</code></td><td>A daily index close.</td></tr>
+<tr><td><strong>Aux column</strong></td><td>One auxiliary value added to a bar under a registered name.</td><td><code>AuxProvider.annotate</code></td><td>The previous index close on each bar.</td></tr>
+</tbody></table></div>
+
+<h3>Engine</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Term</th><th>Definition</th><th>Code</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><strong>Configuration</strong></td><td>The loaded deployment config: system settings, one entry per slot, and one typed section per component.</td><td><code>config.Configuration</code>, <code>SystemConfig</code>, <code>StrategyConfig</code></td><td>—</td></tr>
+<tr><td><strong>bot_id</strong></td><td>The deployment identifier that namespaces runtime state files.</td><td><code>SystemConfig.bot_id</code></td><td>Paper and live use different values.</td></tr>
+<tr><td><strong>Strategy key</strong></td><td>The configured name of one slot; it namespaces the slot's persisted state and is what a deploy request adds.</td><td><code>StrategyConfig.name</code>, <code>Strategy.name</code></td><td><code>macd_long_nq_1</code>.</td></tr>
+<tr><td><strong>strat</strong></td><td>The registered name of the strategy class a slot runs; several slots may share one.</td><td><code>StrategyConfig.strat</code>, <code>register_strategy</code></td><td>Two slots with the same strat.</td></tr>
+<tr><td><strong>Slot</strong></td><td>One configured strategy instance: one Strategy with its StrategySignal, StrategyExecution and Order Manager.</td><td><code>strategy_builder.strategy.Strategy</code></td><td>A strategy key in the deployment config.</td></tr>
+<tr><td><strong>Execution block</strong></td><td>A slot's optional execution mapping that names its StrategyExecution class and that class's options.</td><td><code>StrategyConfig.execution</code>, <code>make_execution</code></td><td>A protected execution with a resting stop.</td></tr>
+<tr><td><strong>Event buffer</strong></td><td>The one shared queue the Event Loop drains: ticks, bars, order updates, balance and position updates, repaired fills, book operations, end of data.</td><td><code>event_buffer</code></td><td>—</td></tr>
+<tr><td><strong>Drain pass</strong></td><td>One run of the Event Loop over everything in the buffer.</td><td><code>EventLoop.run</code></td><td>—</td></tr>
+<tr><td><strong>Drain wake-up</strong></td><td>The signal a producer raises after appending, so a drain pass starts without waiting for a timer.</td><td><code>drain_wakeup</code></td><td>—</td></tr>
+<tr><td><strong>Tick</strong></td><td>One trade from the feed: timestamp, price and size.</td><td><code>Resampler.update_from_tick</code></td><td>—</td></tr>
+<tr><td><strong>Bar (OHLCV bar)</strong></td><td>A completed 1-second OHLCV bucket of one instrument.</td><td><code>event_loop.resampler.Resampler</code></td><td>—</td></tr>
+<tr><td><strong>Resampler</strong></td><td>The tick-to-bar builder; drops late and out-of-order ticks.</td><td><code>Resampler</code></td><td>—</td></tr>
+<tr><td><strong>Clock-driven bar flush</strong></td><td>A quiet bar forced out by the clock when no tick rolls it over.</td><td><code>EventLoop.fire_due_bars</code>, <code>Resampler.flush_due</code></td><td>—</td></tr>
+<tr><td><strong>Bar flush grace</strong></td><td>How long a quiet bar may wait before the clock-driven bar flush (1.0 s).</td><td><code>SystemConfig.bar_flush_grace_s</code></td><td>—</td></tr>
+<tr><td><strong>Clock</strong></td><td>Shared code giving the time: WallClock live, ReplayClock in replay, which moves forward on each bar close. Proposed.</td><td><code>clock.Clock</code>, <code>WallClock</code>, <code>ReplayClock</code></td><td>Session-end flatten reads <code>clock.now()</code>.</td></tr>
+<tr><td><strong>RunMode</strong></td><td>The run mode (replay, paper, live), built once by the runner to choose components and stand-ins. No component reads it. Proposed.</td><td><code>run_mode.RunMode</code></td><td>—</td></tr>
+<tr><td><strong>Warmup</strong></td><td>Seeding a slot's signal from history before it trades: daily bars, prior-session bars, auxiliary frames.</td><td><code>Strategy.warmup</code>, <code>event_loop.seeder.Seeder</code></td><td>—</td></tr>
+<tr><td><strong>Intraday seed</strong></td><td>The prior session's trailing 1-second bars, for calculations with a rolling intraday window.</td><td><code>Gateway.get_intraday_seed_bars</code></td><td>—</td></tr>
+<tr><td><strong>Seed state</strong></td><td>One value per slot: pending, ready, quarantined (recoverable) or quarantined (terminal). Proposed.</td><td><code>seeder.SeedState</code></td><td>A failed prior-session fetch leaves the slot pending until the retry lands.</td></tr>
+<tr><td><strong>warmup_ready / aux_ready / ready_to_arm</strong></td><td>The two readiness flags StrategyExecution holds, and their AND, which lets a slot arm.</td><td><code>StrategyExecution.warmup_ready</code>, <code>aux_ready</code>, <code>ready_to_arm</code></td><td>—</td></tr>
+<tr><td><strong>Recorded bars</strong></td><td>Today's bars already written to disk, replayed on a mid-session start.</td><td><code>BarRecorder</code>, <code>seeder.load_recorded_bars</code></td><td>—</td></tr>
+<tr><td><strong>Deferring bars</strong></td><td>Holding a slot's live bars aside while recorded bars replay, then stepping them in order.</td><td><code>Strategy.deferring_bars</code></td><td>—</td></tr>
+<tr><td><strong>Tape</strong></td><td>The stored 1-second bars the simulated broker replays and builds history from.</td><td><code>simulation_gateway.TapeSource</code></td><td>One instrument's day-session tape.</td></tr>
+<tr><td><strong>Simulated broker</strong></td><td>The Gateway implementation that replays a tape and fills orders, behind the same interface as the real broker.</td><td><code>gateways.SimulationGateway</code></td><td>—</td></tr>
+<tr><td><strong>OrderFillingEngine</strong></td><td>The simulated broker's fill pricer: a fill reference on the current bar plus slippage in ticks.</td><td><code>OrderFillingEngine</code>, <code>fill_reference</code>, <code>slippage_ticks</code></td><td>Fill at the bar close, 1 tick worse.</td></tr>
+<tr><td><strong>Gateway capability</strong></td><td>An optional Gateway method declared on the interface with a safe default.</td><td><code>Gateway.market_data_ready</code>, <code>…</code></td><td>—</td></tr>
+<tr><td><strong>Runtime book</strong></td><td>The one registry of strategies the process runs and the per-instrument resources serving them; changed only between events.</td><td><code>event_loop.book.RuntimeBook</code></td><td>—</td></tr>
+<tr><td><strong>Reserve</strong></td><td>Setting up an instrument's resampler, bar buffer, contract and recording partition before any slot on it is committed.</td><td><code>RuntimeBook.reserve_instrument</code></td><td>—</td></tr>
+<tr><td><strong>Book operation / commit boundary</strong></td><td>A change to the runtime book, handed to the drain loop and run between events.</td><td><code>enqueue_book_op</code>, <code>RuntimeBook.commit</code></td><td>Commit a new strategy.</td></tr>
+<tr><td><strong>Hot-add / deploy request</strong></td><td>Adding one strategy to a running paper or live process, asked for over a local socket.</td><td><code>DeployService</code>, <code>send_deploy_request</code></td><td><code>deploy_strategy.py --key KEY</code>.</td></tr>
+<tr><td><strong>Staging / candidate</strong></td><td>A strategy built and prepared by a deploy request but not yet committed.</td><td><code>DeployService.stage_strategy</code>, <code>Candidate</code></td><td>—</td></tr>
+<tr><td><strong>Deploy fingerprint</strong></td><td>The startup log line recording the config file's sha256 and the run's identity.</td><td><code>runtime.log_deploy_fingerprint</code></td><td>—</td></tr>
+<tr><td><strong>Quarantine</strong></td><td>A slot parked in ERROR after repeated failures; it sends no orders while the rest carry on.</td><td><code>Strategy.quarantine</code>, <code>release_quarantine</code></td><td>3 <code>on_bar</code> errors in a row.</td></tr>
+<tr><td><strong>Arming / arm session</strong></td><td>A group of slots becoming ready to trade a session once their auxiliary values for it have landed; the session a group arms for.</td><td><code>AuxArmGroup</code>, <code>AuxArmGroup.arm_session</code></td><td>—</td></tr>
+<tr><td><strong>Aux Data</strong></td><td>The component that owns auxiliary series, arming and aux columns. Proposed.</td><td><code>aux_data.AuxProvider</code></td><td>—</td></tr>
+<tr><td><strong>SafetyMonitor</strong></td><td>Safety's watcher of the broker socket and the feed; climbs the recovery ladder.</td><td><code>safety.SafetyMonitor</code></td><td>—</td></tr>
+<tr><td><strong>FreezeDetector</strong></td><td>A watchdog thread that detects a stalled event loop and dumps stacks; it does not recover.</td><td><code>safety.FreezeDetector</code></td><td>—</td></tr>
+<tr><td><strong>Gateway controller</strong></td><td>Restarts the broker gateway process, only inside a maintenance window.</td><td><code>safety.GatewayController</code></td><td>—</td></tr>
+<tr><td><strong>ShutdownCoordinator</strong></td><td>Session-end flatten, shutdown requests and the final flat check before exit.</td><td><code>event_loop.shutdown.ShutdownCoordinator</code></td><td>—</td></tr>
+<tr><td><strong>BarRecorder / TradeRecorder</strong></td><td>Write bars per instrument per session day / round trips per slot, in live and paper.</td><td><code>event_loop.recorders</code></td><td>—</td></tr>
+<tr><td><strong>CalcStateStore / RoundTripStore</strong></td><td>Keep session-fixed signal values / round trips per strategy key across a restart.</td><td><code>stores.CalcStateStore</code>, <code>stores.RoundTripStore</code></td><td>—</td></tr>
+<tr><td><strong>Slot cost</strong></td><td>Time one strategy spends on one bar.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>Queue wait</strong></td><td>Time an event waits in the buffer before its drain pass takes it.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>Dispatch latency</strong></td><td>Time from a bar's closing event entering the buffer to the last strategy on that instrument being done.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>End-to-end latency</strong></td><td>R3's 5 ms budget: from the broker timestamp of the tick that closes a bar to that bar's order leaving the Gateway for the broker. Includes feed transit.</td><td>—</td><td>Closing tick stamped 10:00:01.002, order sent 10:00:01.006 → 4 ms.</td></tr>
+</tbody></table></div>
+
+<h3>Signal</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Term</th><th>Definition</th><th>Code</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><strong>Calculation</strong></td><td>A registered kernel the signal steps every bar, from bars, params and other calculations; one node of the signal's DAG.</td><td><code>calculations.Calculation</code>, <code>register_calc</code></td><td><code>sma</code>, a 5-bar moving average.</td></tr>
+<tr><td><strong>SessionFixedCalculation</strong></td><td>A calculation whose value is fixed for the session and may be restored after a restart.</td><td><code>calculations.SessionFixedCalculation</code></td><td>Today's opening price.</td></tr>
+<tr><td><strong>SignalDag</strong></td><td>The Python class a signal is written as: typed params it holds itself, and a <code>build_graph()</code> that adds calculations, expressions, conditions and exits to the DAG. The strategy author writes it under <code>local/strategies/</code>.</td><td><code>strategy_builder.signal_dag.SignalDag</code>, <code>register_signal_dag</code></td><td><code>LevelCross</code></td></tr>
+<tr><td><strong>Rearm</strong></td><td>With <code>rearm_required</code>, entry fires only on the per-day rising edge of the entry logic.</td><td><code>SignalParams.rearm_required</code></td><td>A run of 4 bars above L gives one entry.</td></tr>
+<tr><td><strong>Strategy data</strong></td><td>Position data Strategy passes into each signal step: entry price, seconds since entry. Both <code>None</code> while flat.</td><td><code>Strategy.strategy_data</code></td><td>—</td></tr>
+<tr><td><strong>Warm</strong></td><td>Every warmup calculation has a value.</td><td><code>StrategySignal.is_warm</code></td><td>—</td></tr>
+<tr><td><strong>Cold rebuild</strong></td><td>Discarding the signal and building it afresh, then replaying seed bars; only while flat and idle.</td><td><code>Strategy.reset_signal</code>, <code>rebuild_intraday_state</code></td><td>Late auxiliary data arrives.</td></tr>
+<tr><td><strong>Exit condition</strong></td><td>One named rule that can end a trade; the exit answer is their OR.</td><td><code>evaluate_exit_conditions</code></td><td><code>stop</code>, <code>target</code>.</td></tr>
+<tr><td><strong>Exit level</strong></td><td>The price an exit condition compares the close with.</td><td><code>exit_condition_level</code></td><td>The stop price.</td></tr>
+<tr><td><strong>Exit inputs / freeze / release</strong></td><td>Values marked to be held at their entry-bar value for the whole trade; frozen on the entry-decision bar, released when flat.</td><td><code>freeze_exit_inputs</code>, <code>release_exit_inputs</code></td><td>A stop derived from a calculation at entry.</td></tr>
+<tr><td><strong>Signal snapshot</strong></td><td>A log row of the signal's values every N bars.</td><td><code>Strategy.signal_snapshot</code></td><td>—</td></tr>
+</tbody></table></div>
+
+<h3>Execution and orders</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Term</th><th>Definition</th><th>Code</th><th>Example</th></tr></thead>
+<tbody>
+<tr><td><strong>Phase</strong></td><td>The execution state machine's current state. Outside code never reads it; it asks <code>is_processing_order()</code>.</td><td><code>strategy_executions.Phase</code></td><td>IN_POSITION_ACTIVITY.</td></tr>
+<tr><td><strong>Protected slot</strong></td><td>A slot whose execution class rests broker-side exit orders after each entry.</td><td><code>ProtectedStrategyExecution</code></td><td>Stop STP + target LMT.</td></tr>
+<tr><td><strong>OCA group</strong></td><td>One-cancels-all: broker orders sharing a group name, where one filling cancels or reduces the rest. Type 2 is used.</td><td><code>OrderManager.place_group</code></td><td>—</td></tr>
+<tr><td><strong>Leg</strong></td><td>One order of a protective group.</td><td>—</td><td>The STP leg.</td></tr>
+<tr><td><strong>Masking</strong></td><td>Not sending a bar-close market exit for a condition a working leg already covers.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>Joining the group</strong></td><td>Sending a market exit carrying the trade's OCA group, so the broker either fills it and cancels the legs or refuses it.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>Fallback</strong></td><td>A protected trade that lost a leg, judged at bar close from then on.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>Round trip</strong></td><td>One entry and its exit, counted when the slot is flat again.</td><td><code>RoundTripStore</code></td><td>—</td></tr>
+<tr><td><strong>Daily cap</strong></td><td>The most round trips a slot may complete in one trading date.</td><td><code>SignalParams.max_trades_per_day</code></td><td>—</td></tr>
+<tr><td><strong>Flatten</strong></td><td>Cancel every order, wait until each is final, then one market order for any remaining position.</td><td><code>request_flatten</code>, <code>flatten_wanted</code></td><td>Session-end cutoff.</td></tr>
+<tr><td><strong>Order state</strong></td><td>The life of one order: SUBMITTED, OPEN, PARTIALLY_FILLED, CANCELLING, CANCEL_REJECTED, FILLED, CANCELLED, REJECTED.</td><td><code>managers.OrderState</code></td><td>—</td></tr>
+<tr><td><strong>Closed status</strong></td><td>Filled, Cancelled or Rejected; terminal.</td><td><code>order_manager.CLOSED</code></td><td>—</td></tr>
+<tr><td><strong>Cancelling</strong></td><td>An open order the slot sent a cancel for, with no answer yet.</td><td><code>OrderState.CANCELLING</code></td><td>—</td></tr>
+<tr><td><strong>FSM repair</strong></td><td>Safety re-creating fills or rejects a slot missed during an outage, from broker executions, by order id.</td><td><code>safety.repair_stuck_strategies</code></td><td>—</td></tr>
+<tr><td><strong>Golden sample</strong></td><td>The one frozen synthetic run every component is tested against.</td><td>—</td><td>Long on L-cross, exit at T.</td></tr>
+</tbody></table></div>
+</section>
+</div>
+</body>
+</html>

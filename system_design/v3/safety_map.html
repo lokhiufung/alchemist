@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alchemist Safety map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="docs.css?v=5">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="index.html">Alchemist · v3</a>
+  <a href="system_map.html">System map</a>
+  <div class="dropdown">
+    <button type="button">Components ▾</button>
+    <div class="menu">
+      <a href="gateway_map.html">Gateway</a>
+      <a href="event_loop_map.html">Event Loop</a>
+      <a href="aux_data_map.html">Aux Data</a>
+      <a href="strategy_map.html">Strategy</a>
+      <a href="strategy_signal_map.html">StrategySignal</a>
+      <a href="strategy_execution_map.html">StrategyExecution</a>
+      <a href="order_manager_map.html">Order Manager</a>
+      <a href="safety_map.html" class="active">Safety</a>
+    </div>
+  </div>
+  <a href="explainers/index.html">Explainers</a>
+  <a href="glossary.html">Glossary</a>
+</nav>
+<div class="wrap">
+<header>
+<div class="eyebrow">Component map · SAFETY_MAP · Alchemist v3</div>
+<h1>Safety</h1>
+<div class="lede"><p>The watchdog. It keeps checking that the broker connection and the price feed are alive, climbs a ladder of fixes when they are not, and afterwards repairs any strategy left waiting on an order whose outcome it missed.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong> Behaviours 1–9 and decisions 1–4 are settled. Behaviour 10 is proposed. Multi-asset: the feed watchdog arms on every configured exchange's data session.</p></div>
+</header>
+
+<section id="goal">
+<div class="eyebrow">Safety · Goal</div>
+<h2>Goal</h2>
+<p>Keep watching the broker socket and the market-data feed; run escalating recovery steps and exponential-backoff reconnects when they fail; and repair strategies stranded during a disconnection by attributing and re-creating the fills they missed, from the broker's executions.</p>
+<p>Owns, from the System map:</p>
+<blockquote><p>Detecting a lost broker connection or a frozen process, reconnecting, and un-sticking any strategy left waiting on an order whose fill happened during the outage.</p></blockquote>
+<div class="table-wrap"><table>
+<thead><tr><th>Not Safety's job</th><th>Owned by</th></tr></thead>
+<tbody>
+<tr><td>Talking to the broker directly</td><td><a href="gateway_map.html">Gateway</a></td></tr>
+<tr><td>Deciding what to trade</td><td><a href="strategy_map.html">Strategy</a>, <a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>Normal event delivery</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="what-this-component-does">
+<div class="eyebrow">Safety · What this component does</div>
+<h2>What this component does</h2>
+<p>Safety runs its own asynchronous heartbeat loop with two layers of checks:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Layer</th><th>Checks</th><th>How often</th></tr></thead>
+<tbody>
+<tr><td>Layer 0 — socket</td><td>The Gateway socket answers.</td><td>Every 5 seconds.</td></tr>
+<tr><td>Layer 1 — feed</td><td>Market data is fresh: a tick within 45 s.</td><td>While an exchange's data session is open.</td></tr>
+</tbody></table></div>
+<p>When a check fails it climbs a recovery ladder, cheapest step first:</p>
+<ol>
+<li>resubscribe in place, with backoff;</li>
+<li>full socket reconnect, with exponential backoff that never stops;</li>
+<li>restart the broker gateway process — only inside the maintenance window.</li>
+</ol>
+<p>After reconnecting it re-establishes the Gateway subscriptions and runs <strong>repair</strong>: it asks the broker for executions and open orders by order id, and puts any missing Filled or Rejected order update into the Event Loop's buffer, freeing any strategy parked waiting on an order.</p>
+</section>
+
+<section id="sample">
+<div class="eyebrow">Safety · Sample</div>
+<h2>Sample</h2>
+<p>The system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>, combined with a component-level outage test.</p>
+<div class="table-wrap"><table>
+<thead><tr><th></th><th>Golden sample (clean run)</th><th>Outage injection</th></tr></thead>
+<tbody>
+<tr><th>Input</th><td>Clean feed, no socket disconnect. Safety watches and does nothing.</td><td>The broker socket drops for 10 seconds while a strategy is in PROCESSING_ENTRY_ORDER with order id 42; the broker executes the order at 5000.0; the socket reconnects.</td></tr>
+<tr><th>Expected</th><td>Exactly zero reconnect attempts, zero repairs, clean monitoring.</td><td>Detects the socket failure within 5 s; starts reconnecting; asks for broker executions on reconnect; finds order 42 filled at 5000.0; puts a Filled order update (order 42, average price 5000.0) into the event buffer; the parked strategy moves to IN_POSITION_ACTIVITY.</td></tr>
+</tbody></table></div>
+<p><strong>Passes when</strong> the socket drop triggers an exponential-backoff reconnect without crashing; repair fetches executions, matches order 42 and enqueues a re-created fill event; and clean runs produce no duplicate fills or false repairs.</p>
+<p><strong>Fails when</strong> a cut connection is not noticed within the heartbeat thresholds; the reconnect loop stops retrying after repeated failures; a stranded strategy stays frozen waiting on an order for good; or a fill is attributed to the wrong strategy.</p>
+</section>
+
+<section id="behaviours">
+<div class="eyebrow">Safety · Behaviours</div>
+<h2>Behaviours</h2>
+
+<div class="behaviour"><h3><span class="num">1</span>Socket heartbeat (Layer 0)</h3><dl class="gmi">
+<dt>Given</dt><dd>A watchdog timer firing every 5 seconds.</dd>
+<dt>Must</dt><dd>Call <code>gateway.heartbeat()</code>; if the probe fails, start the socket-dead reconnect loop at once.</dd>
+<dt>Invariant</dt><dd>A socket failure is caught within one heartbeat interval plus the timeout; the failure counter only goes up until the connection is restored.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">2</span>Feed liveness (Layer 1)</h3><dl class="gmi">
+<dt>Given</dt><dd>An active session where ticks are expected.</dd>
+<dt>Must</dt><dd>Check that <code>now − gateway.last_tick_ts</code> is under 45 s; if not, start the escalating feed-recovery ladder.</dd>
+<dt>Invariant</dt><dd>Staleness is checked only while the continuous data session of at least one configured exchange is open, from its exchange profile — for CME, Sunday 18:00 → Friday 17:00 New York less the daily break and early closes; for Eurex, its own trading hours on the Frankfurt clock — so a day-session-only book is still watched overnight, and there are no false alarms when every configured exchange is in its break or weekend. The Gateway's last-tick time likewise counts only instruments whose exchange is open (Gateway behaviour 2).</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">3</span>Escalating recovery ladder</h3><dl class="gmi">
+<dt>Given</dt><dd>The tick feed stays silent during an active session.</dd>
+<dt>Must</dt><dd>Climb the rungs in order:
+<ol><li>resubscribe with exponential backoff (up to 4 attempts);</li><li>full socket reconnect;</li><li>broker gateway process restart (only inside the nightly maintenance window).</li></ol></dd>
+<dt>Invariant</dt><dd>Cheaper in-process rungs always come before any external process action; a process restart is strictly limited to the configured maintenance windows.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">4</span>Reconnect that never gives up</h3><dl class="gmi">
+<dt>Given</dt><dd>A confirmed socket disconnection.</dd>
+<dt>Must</dt><dd>Run a continuous reconnect loop with exponential backoff, <code>delay(n) = min(cap, base · 2^(n−1))</code>, logging CRITICAL on persistent failure without aborting.</dd>
+<dt>Invariant</dt><dd>The loop never gives up or ends until the connection is re-established.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">5</span>Restore subscriptions after reconnect</h3><dl class="gmi">
+<dt>Given</dt><dd>A successful socket reconnect.</dd>
+<dt>Must</dt><dd>Call the reconnect callbacks to restore streaming ticks for every instrument, order execution updates and account subscriptions.</dd>
+<dt>Invariant</dt><dd>Every Gateway data and order feed the engine needs is confirmed restored before normal monitoring resumes.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">6</span>Order attribution and repair</h3><dl class="gmi">
+<dt>Given</dt><dd>After a reconnect, the strategies with submitted, open or cancelling orders (asked through Strategy — Order Manager's answer). This is not gated on the execution phase, so a resting stop that filled while the slot held a position is repaired too. Each order is repaired on its own. The steady-state audit (Event Loop behaviour 6) calls the same repair but hands it only the strategies whose <code>is_processing_order()</code> is true.</dd>
+<dt>Must</dt><dd>Match pending order ids against broker executions from <code>gateway.get_executions()</code>; on a match, create a Filled order update and append it to the event buffer.</dd>
+<dt>Invariant</dt><dd>Attribution is strictly by unique order id. Fills are never inferred from net position, so assignment stays correct when several strategies trade the same instrument.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">7</span>Dead orders become Rejected</h3><dl class="gmi">
+<dt>Given</dt><dd>A pending order older than 120 s that is confirmed absent from both the broker's executions and its open orders.</dd>
+<dt>Must</dt><dd>Put a terminal Rejected order update into the event buffer to free the waiting strategy.</dd>
+<dt>Invariant</dt><dd>An order is declared dead only when it is confirmed absent from both the executed and open sets after the minimum-age grace window.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">8</span>Frozen-loop detection</h3><dl class="gmi">
+<dt>Given</dt><dd>The event loop blocked past the freeze threshold.</dd>
+<dt>Must</dt><dd>Dump every thread's stack once the loop has missed its check-ins for the threshold; a healthy check-in resets the counter.</dd>
+<dt>Invariant</dt><dd>A healthy loop never triggers a dump.</dd>
+</dl></div>
+
+<div class="behaviour"><h3><span class="num">9</span>Positions poll<span class="added">off by default</span></h3><dl class="gmi">
+<dt>Given</dt><dd>Positions polling enabled in config.</dd>
+<dt>Must</dt><dd>On the heartbeat loop, at most once per poll interval, fetch broker positions and enqueue them as position updates. A failing fetch is logged, swallowed and throttled.</dd>
+<dt>Invariant</dt><dd>When disabled, the heartbeat loop never polls. The poll never changes any strategy's position (monitoring only).</dd>
+</dl></div>
+
+<h3 id="proposed">Proposed · not agreed</h3>
+<div class="behaviour"><h3><span class="num">10</span>Membership read from the runtime book<span class="added">proposed · System map decision 34</span></h3><dl class="gmi">
+<dt>Given</dt><dd>A strategy committed to the Event Loop's runtime book after Safety was built.</dd>
+<dt>Must</dt><dd>Safety holds the book, not a copy of the strategy list: repair, periodic reconciliation, the positions poll and the data watchdog read the book's strategies when they run. A reconnect resubscribes the book's fed instruments, once per instrument.</dd>
+<dt>Invariant</dt><dd>A strategy added while running is repaired like one present at start.</dd>
+</dl></div>
+</section>
+
+<section id="skeleton-code">
+<div class="eyebrow">Safety · Skeleton code</div>
+<h2>Skeleton code</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Piece</th><th>Role</th><th>Behaviours</th></tr></thead>
+<tbody>
+<tr><td><code>SafetyMonitor</code></td><td>The heartbeat loop: socket probe, feed liveness, recovery ladder, reconnect, resubscribe, positions poll.</td><td>1–5, 9, 10</td></tr>
+<tr><td><code>repair_stuck_strategies()</code></td><td>Attribute broker executions to pending orders by id; synthesise Filled or Rejected updates.</td><td>6, 7</td></tr>
+<tr><td><code>FreezeDetector</code></td><td>Loop check-ins and the stack dump.</td><td>8</td></tr>
+</tbody></table></div>
+<details><summary>Full skeleton code<span class="count">python</span></summary>
+<pre><code>"""Skeleton contract for Safety (Alchemist v3, draft)."""
+
+from __future__ import annotations
+
+HEARTBEAT_INTERVAL_S = 5.0
+STALE_TICK_S = 45.0
+RESUBSCRIBE_MAX_ATTEMPTS = 4
+RESUBSCRIBE_WITHOUT_TICK_CAP = 3        # decision 3
+REJECT_SYNTHESIS_MIN_AGE_S = 120.0      # decision 4
+
+
+class SafetyMonitor:
+    def __init__(self, gateway, book, event_buffer, exchange_profiles,
+                 maintenance_windows, positions_poll_s: float | None = None): ...
+
+    async def run(self) -&gt; None:
+        """Behaviours 1-3, 9: heartbeat loop."""
+    async def reconnect_forever(self) -&gt; None:
+        """Behaviour 4: min(cap, base * 2**(n-1)), never gives up."""
+    async def restore_subscriptions(self) -&gt; None:
+        """Behaviour 5."""
+    def feed_expected(self, now: float) -&gt; bool:
+        """Behaviour 2: any configured exchange's data session open."""
+
+
+async def repair_stuck_strategies(strategies, gateway, event_buffer, now: float) -&gt; int:
+    """Behaviours 6-7: by order id only; returns the number of repaired orders."""
+
+
+class FreezeDetector:
+    def check_in(self) -&gt; None: ...
+</code></pre></details>
+</section>
+
+<section id="test-spec">
+<div class="eyebrow">Safety · Test spec</div>
+<h2>Test spec</h2>
+<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>.</p>
+<details><summary>Sample and behaviours 1–10<span class="count">10 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
+<tr><td><code>tests/safety/test_safety_sample.py::test_golden_session_requests_no_reconnect_and_repairs_nothing</code></td><td>Sample, clean run.</td></tr>
+<tr><td><code>test_outage_fill_repaired_by_order_id</code></td><td>Sample, outage injection.</td></tr>
+<tr><td><code>test_socket_failure_caught_within_interval</code></td><td>Behaviour 1.</td></tr>
+<tr><td><code>test_no_stale_alarm_when_every_exchange_in_break</code></td><td>Behaviour 2, CME and Eurex configured.</td></tr>
+<tr><td><code>test_day_only_book_still_watched_overnight</code></td><td>Behaviour 2.</td></tr>
+<tr><td><code>test_process_restart_only_in_maintenance_window</code></td><td>Behaviour 3.</td></tr>
+<tr><td><code>test_reconnect_never_gives_up</code></td><td>Behaviour 4.</td></tr>
+<tr><td><code>test_resting_stop_filled_while_in_position_repaired</code></td><td>Behaviour 6.</td></tr>
+<tr><td><code>test_dead_order_rejected_only_after_grace_and_absent_both</code></td><td>Behaviour 7.</td></tr>
+<tr><td><code>test_strategy_committed_after_start_is_repaired</code></td><td>Behaviour 10.</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="decisions-already-made">
+<div class="eyebrow">Safety · Decisions already made</div>
+<h2>Decisions already made</h2>
+<div class="decision"><h3><span class="num">1</span>Why two layers of watching?</h3><p class="q">Layer 0 watches socket responsiveness; Layer 1 watches tick-feed freshness — because the socket can stay alive while the feed is dead.</p></div>
+<div class="decision"><h3><span class="num">2</span>How are repaired fills attributed?</h3><p class="q">Strictly by order id, never by net position, so attribution stays correct even when several strategies trade the same instrument.</p></div>
+<div class="decision"><h3><span class="num">3</span>How is a resubscribe livelock avoided?</h3><p class="q">The broker's "connectivity restored" signals (at IBKR, 1101/1102) are capped at 3 consecutive resubscribes without a tick, then Safety falls through to a socket reconnect.</p></div>
+<div class="decision"><h3><span class="num">4</span>When is a missing order safely declared dead?</h3><p class="q">Only when it is older than 120 seconds and confirmed absent from both the execution history and the open-order snapshot — preventing races with orders still in flight.</p></div>
+</section>
+</div>
+</body>
+</html>
