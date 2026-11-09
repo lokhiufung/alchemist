@@ -34,8 +34,10 @@
 <div class="eyebrow">Glossary · GLOSSARY · Alchemist v3</div>
 <h1>Glossary</h1>
 <div class="lede"><p>The words this design uses, each with what it means, its name in code and one example. Reuse these words when you write a page, a map or code; add a new one only when no term below already covers the idea.</p></div>
-<div class="meta"><p>v3 draft, 2026-11-07.</p>
+<div class="meta"><p>v3 final, 2026-11-09.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — Latency is two measures: processing latency (the 5 ms budget) and feed latency. Aux Data is no longer proposed.</li>
+<li><strong>2026-11-09</strong> — New terms: tick update, bar update, quote update (reserved), market-data message type, runner, operator, broker journal. Bar now covers bar updates. Examples no longer use the L-cross run.</li>
 <li><strong>2026-11-07</strong> — New Code column: each term names its symbol in the skeleton code. Shared runtime terms added (configuration, strategy key, strat, account, warmup, intraday seed, readiness flags, recorded and deferring bars, fill engine, reserve, staging, deploy fingerprint, recorders, stores, order state). Renamed: Trading day → Trading date, Flush grace → Bar flush grace, Repair → FSM repair.</li>
 </ul></details></div>
 </header>
@@ -78,16 +80,19 @@
 <tr><td><strong>Event buffer</strong></td><td>The one shared queue the Event Loop drains: ticks, bars, order updates, balance and position updates, repaired fills, book operations, end of data.</td><td><code>event_buffer</code></td><td>—</td></tr>
 <tr><td><strong>Drain pass</strong></td><td>One run of the Event Loop over everything in the buffer.</td><td><code>EventLoop.run</code></td><td>—</td></tr>
 <tr><td><strong>Drain wake-up</strong></td><td>The signal a producer raises after appending, so a drain pass starts without waiting for a timer.</td><td><code>drain_wakeup</code></td><td>—</td></tr>
-<tr><td><strong>Tick</strong></td><td>One trade from the feed: timestamp, price and size.</td><td><code>Resampler.update_from_tick</code></td><td>—</td></tr>
-<tr><td><strong>Bar (OHLCV bar)</strong></td><td>A completed 1-second OHLCV bucket of one instrument.</td><td><code>event_loop.resampler.Resampler</code></td><td>—</td></tr>
+<tr><td><strong>Tick / tick update</strong></td><td>One trade from the feed: timestamp, price and size. The Gateway sends it as a <code>tick_update</code> message.</td><td><code>tick_update</code>, <code>Resampler.update_from_tick</code></td><td>The IBKR gateway sends ticks.</td></tr>
+<tr><td><strong>Bar update</strong></td><td>One completed OHLCV bar at a stated resolution, sent by a gateway whose broker serves bars (klines). The Event Loop takes it as a completed bar, without the Resampler.</td><td><code>bar_update</code></td><td>The simulated broker sends 1-second bars from its tape.</td></tr>
+<tr><td><strong>Quote update</strong></td><td>An order-book change. Reserved; out of scope for v3.</td><td><code>quote_update</code></td><td>—</td></tr>
+<tr><td><strong>Market-data message type</strong></td><td>The message type a gateway declares per instrument: <code>tick_update</code>, or <code>bar_update</code> with its resolution.</td><td><code>Gateway.market_data_type</code></td><td>MES on the simulated broker: <code>bar_update</code>, 1 s.</td></tr>
+<tr><td><strong>Bar (OHLCV bar)</strong></td><td>A completed 1-second OHLCV bucket of one instrument, built from ticks by the Resampler or taken from a bar update. Every bar enters dispatch through <code>emit_bar</code>.</td><td><code>event_loop.resampler.Resampler</code></td><td>—</td></tr>
 <tr><td><strong>Resampler</strong></td><td>The tick-to-bar builder; drops late and out-of-order ticks.</td><td><code>Resampler</code></td><td>—</td></tr>
 <tr><td><strong>Clock-driven bar flush</strong></td><td>A quiet bar forced out by the clock when no tick rolls it over.</td><td><code>EventLoop.fire_due_bars</code>, <code>Resampler.flush_due</code></td><td>—</td></tr>
 <tr><td><strong>Bar flush grace</strong></td><td>How long a quiet bar may wait before the clock-driven bar flush (1.0 s).</td><td><code>SystemConfig.bar_flush_grace_s</code></td><td>—</td></tr>
-<tr><td><strong>Clock</strong></td><td>Shared code giving the time: WallClock live, ReplayClock in replay, which moves forward on each bar close. Proposed.</td><td><code>clock.Clock</code>, <code>WallClock</code>, <code>ReplayClock</code></td><td>Session-end flatten reads <code>clock.now()</code>.</td></tr>
-<tr><td><strong>RunMode</strong></td><td>The run mode (replay, paper, live), built once by the runner to choose components and stand-ins. No component reads it. Proposed.</td><td><code>run_mode.RunMode</code></td><td>—</td></tr>
+<tr><td><strong>Clock</strong></td><td>Shared code giving the time: WallClock live, ReplayClock in replay, which moves forward on each bar close.</td><td><code>clock.Clock</code>, <code>WallClock</code>, <code>ReplayClock</code></td><td>Session-end flatten reads <code>clock.now()</code>.</td></tr>
+<tr><td><strong>RunMode</strong></td><td>The run mode (replay, paper, live), built once by the runner to choose components and stand-ins. No component reads it.</td><td><code>run_mode.RunMode</code></td><td>—</td></tr>
 <tr><td><strong>Warmup</strong></td><td>Seeding a slot's signal from history before it trades: daily bars, prior-session bars, auxiliary frames.</td><td><code>Strategy.warmup</code>, <code>event_loop.seeder.Seeder</code></td><td>—</td></tr>
 <tr><td><strong>Intraday seed</strong></td><td>The prior session's trailing 1-second bars, for calculations with a rolling intraday window.</td><td><code>Gateway.get_intraday_seed_bars</code></td><td>—</td></tr>
-<tr><td><strong>Seed state</strong></td><td>One value per slot: pending, ready, quarantined (recoverable) or quarantined (terminal). Proposed.</td><td><code>seeder.SeedState</code></td><td>A failed prior-session fetch leaves the slot pending until the retry lands.</td></tr>
+<tr><td><strong>Seed state</strong></td><td>One value per slot: pending, ready, quarantined (recoverable) or quarantined (terminal).</td><td><code>seeder.SeedState</code></td><td>A failed prior-session fetch leaves the slot pending until the retry lands.</td></tr>
 <tr><td><strong>warmup_ready / aux_ready / ready_to_arm</strong></td><td>The two readiness flags StrategyExecution holds, and their AND, which lets a slot arm.</td><td><code>StrategyExecution.warmup_ready</code>, <code>aux_ready</code>, <code>ready_to_arm</code></td><td>—</td></tr>
 <tr><td><strong>Recorded bars</strong></td><td>Today's bars already written to disk, replayed on a mid-session start.</td><td><code>BarRecorder</code>, <code>seeder.load_recorded_bars</code></td><td>—</td></tr>
 <tr><td><strong>Deferring bars</strong></td><td>Holding a slot's live bars aside while recorded bars replay, then stepping them in order.</td><td><code>Strategy.deferring_bars</code></td><td>—</td></tr>
@@ -98,12 +103,15 @@
 <tr><td><strong>Runtime book</strong></td><td>The one registry of strategies the process runs and the per-instrument resources serving them; changed only between events.</td><td><code>event_loop.book.RuntimeBook</code></td><td>—</td></tr>
 <tr><td><strong>Reserve</strong></td><td>Setting up an instrument's resampler, bar buffer, contract and recording partition before any slot on it is committed.</td><td><code>RuntimeBook.reserve_instrument</code></td><td>—</td></tr>
 <tr><td><strong>Book operation / commit boundary</strong></td><td>A change to the runtime book, handed to the drain loop and run between events.</td><td><code>enqueue_book_op</code>, <code>RuntimeBook.commit</code></td><td>Commit a new strategy.</td></tr>
-<tr><td><strong>Hot-add / deploy request</strong></td><td>Adding one strategy to a running paper or live process, asked for over a local socket.</td><td><code>DeployService</code>, <code>send_deploy_request</code></td><td><code>deploy_strategy.py --key KEY</code>.</td></tr>
+<tr><td><strong>Hot-add / deploy request</strong></td><td>Adding one strategy to a running paper or live process, asked for over the runner's local socket.</td><td><code>DeployService</code>, <code>send_deploy_request</code></td><td><code>deploy_strategy.py --key KEY</code>.</td></tr>
 <tr><td><strong>Staging / candidate</strong></td><td>A strategy built and prepared by a deploy request but not yet committed.</td><td><code>DeployService.stage_strategy</code>, <code>Candidate</code></td><td>—</td></tr>
+<tr><td><strong>Runner</strong></td><td>Shared code that builds, starts and stops the components in a fixed order and owns the deploy socket. Not a component.</td><td><code>run_strategies.py</code>, <code>runtime.Runtime</code></td><td><code>Runtime.build(cfg, mode)</code></td></tr>
+<tr><td><strong>Operator</strong></td><td>The person outside the system who sends deploy requests and receives status lines, alerts and CRITICAL logs.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>Broker journal</strong></td><td>The simulated broker's record of each order received and each fill sent, one JSON line each, written when <code>replay.journal</code> is set. The golden test compares it byte for byte.</td><td><code>replay.journal</code></td><td>BUY order, BUY fill, SELL order, SELL fill.</td></tr>
 <tr><td><strong>Deploy fingerprint</strong></td><td>The startup log line recording the config file's sha256 and the run's identity.</td><td><code>runtime.log_deploy_fingerprint</code></td><td>—</td></tr>
 <tr><td><strong>Quarantine</strong></td><td>A slot parked in ERROR after repeated failures; it sends no orders while the rest carry on.</td><td><code>Strategy.quarantine</code>, <code>release_quarantine</code></td><td>3 <code>on_bar</code> errors in a row.</td></tr>
 <tr><td><strong>Arming / arm session</strong></td><td>A group of slots becoming ready to trade a session once their auxiliary values for it have landed; the session a group arms for.</td><td><code>AuxArmGroup</code>, <code>AuxArmGroup.arm_session</code></td><td>—</td></tr>
-<tr><td><strong>Aux Data</strong></td><td>The component that owns auxiliary series, arming and aux columns. Proposed.</td><td><code>aux_data.AuxProvider</code></td><td>—</td></tr>
+<tr><td><strong>Aux Data</strong></td><td>The eighth component: it owns auxiliary series, arming and aux columns.</td><td><code>aux_data.AuxProvider</code></td><td>—</td></tr>
 <tr><td><strong>SafetyMonitor</strong></td><td>Safety's watcher of the broker socket and the feed; climbs the recovery ladder.</td><td><code>safety.SafetyMonitor</code></td><td>—</td></tr>
 <tr><td><strong>FreezeDetector</strong></td><td>A watchdog thread that detects a stalled event loop and dumps stacks; it does not recover.</td><td><code>safety.FreezeDetector</code></td><td>—</td></tr>
 <tr><td><strong>Gateway controller</strong></td><td>Restarts the broker gateway process, only inside a maintenance window.</td><td><code>safety.GatewayController</code></td><td>—</td></tr>
@@ -113,7 +121,8 @@
 <tr><td><strong>Slot cost</strong></td><td>Time one strategy spends on one bar.</td><td>—</td><td>—</td></tr>
 <tr><td><strong>Queue wait</strong></td><td>Time an event waits in the buffer before its drain pass takes it.</td><td>—</td><td>—</td></tr>
 <tr><td><strong>Dispatch latency</strong></td><td>Time from a bar's closing event entering the buffer to the last strategy on that instrument being done.</td><td>—</td><td>—</td></tr>
-<tr><td><strong>End-to-end latency</strong></td><td>R3's 5 ms budget: from the broker timestamp of the tick that closes a bar to that bar's order leaving the Gateway for the broker. Includes feed transit.</td><td>—</td><td>Closing tick stamped 10:00:01.002, order sent 10:00:01.006 → 4 ms.</td></tr>
+<tr><td><strong>Processing latency</strong></td><td>R3's 5 ms p99 budget: from a message's arrival (<code>recv_ts</code>), or the flush time of a bar the clock closed, to each strategy's final decision on it — an order or cancel handed to the Gateway, or no action.</td><td><code>recv_ts</code></td><td>Closing tick arrives 10:00:01.002, the strategy's order is handed to the Gateway at 10:00:01.006 → 4 ms.</td></tr>
+<tr><td><strong>Feed latency</strong></td><td>From the broker's timestamp on a message to its arrival in the engine (<code>recv_ts</code> − broker timestamp). Measured and logged, with the broker's timestamp precision; not budgeted.</td><td><code>recv_ts</code></td><td>—</td></tr>
 </tbody></table></div>
 
 <h3>Signal</h3>
@@ -122,8 +131,8 @@
 <tbody>
 <tr><td><strong>Calculation</strong></td><td>A registered kernel the signal steps every bar, from bars, params and other calculations; one node of the signal's DAG.</td><td><code>calculations.Calculation</code>, <code>register_calc</code></td><td><code>sma</code>, a 5-bar moving average.</td></tr>
 <tr><td><strong>SessionFixedCalculation</strong></td><td>A calculation whose value is fixed for the session and may be restored after a restart.</td><td><code>calculations.SessionFixedCalculation</code></td><td>Today's opening price.</td></tr>
-<tr><td><strong>SignalDag</strong></td><td>The Python class a signal is written as: typed params it holds itself, and a <code>build_graph()</code> that adds calculations, expressions, conditions and exits to the DAG. The strategy author writes it under <code>local/strategies/</code>.</td><td><code>strategy_builder.signal_dag.SignalDag</code>, <code>register_signal_dag</code></td><td><code>LevelCross</code></td></tr>
-<tr><td><strong>Rearm</strong></td><td>With <code>rearm_required</code>, entry fires only on the per-day rising edge of the entry logic.</td><td><code>SignalParams.rearm_required</code></td><td>A run of 4 bars above L gives one entry.</td></tr>
+<tr><td><strong>SignalDag</strong></td><td>The Python class a signal is written as: typed params it holds itself, and a <code>build_graph()</code> that adds calculations, expressions, conditions and exits to the DAG. The strategy author writes it under <code>local/strategies/</code>.</td><td><code>strategy_builder.signal_dag.SignalDag</code>, <code>register_signal_dag</code></td><td><code>MacdSignalDag</code></td></tr>
+<tr><td><strong>Rearm</strong></td><td>With <code>rearm_required</code>, entry fires only on the per-day rising edge of the entry logic.</td><td><code>SignalParams.rearm_required</code></td><td>A run of 4 bars with <code>macd_line &gt; macd_signal</code> gives one entry.</td></tr>
 <tr><td><strong>Strategy data</strong></td><td>Position data Strategy passes into each signal step: entry price, seconds since entry. Both <code>None</code> while flat.</td><td><code>Strategy.strategy_data</code></td><td>—</td></tr>
 <tr><td><strong>Warm</strong></td><td>Every warmup calculation has a value.</td><td><code>StrategySignal.is_warm</code></td><td>—</td></tr>
 <tr><td><strong>Cold rebuild</strong></td><td>Discarding the signal and building it afresh, then replaying seed bars; only while flat and idle.</td><td><code>Strategy.reset_signal</code>, <code>rebuild_intraday_state</code></td><td>Late auxiliary data arrives.</td></tr>

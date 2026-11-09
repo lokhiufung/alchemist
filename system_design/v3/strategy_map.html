@@ -34,8 +34,13 @@
 <div class="eyebrow">Component map · STRATEGY_MAP · Alchemist v3</div>
 <h1>Strategy</h1>
 <div class="lede"><p>The one object per slot that the Event Loop talks to. Strategy drives the slot's three parts (StrategySignal, StrategyExecution and Order Manager) with what the Event Loop delivers, and books the slot's own position from fills.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> Features and decisions are settled. The calls Strategy makes on StrategySignal use the v3 signal interface. Multi-asset: the position is booked in the execution instrument's currency (<a href="system_map.html#d39">System map decision 39</a>). Open questions are listed at the end.</p>
+<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. Features and decisions are settled. The calls Strategy makes on StrategySignal use the v3 signal interface. Multi-asset: the position is booked in the execution instrument's currency (<a href="system_map.html#d39">System map decision 39</a>).</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
+<li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (8 scenarios, proposed, not agreed).</li>
+<li><strong>2026-11-09</strong> — v3 finalized: the human accepted every proposed feature and decision.</li>
+<li><strong>2026-11-09</strong> — Open question decided: snapshot interval default 60 bars. Feature 3: late data during a trade is kept as a pending rebuild (System map decision 53); warmup-ready needs seed state READY and a warm signal (decision 52).</li>
+<li><strong>2026-11-09</strong> — Review fixes: a broker position update is logged, never booked (feature 2); aux-ready is set at build for a signal that reads no aux name (feature 3); the sample is the new golden run.</li>
 <li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 6 features (Need / Upstream gives / Algorithm / Parameters / Invariant), replacing behaviours 1 and 3–7; old behaviour 2 was a placeholder (the exit-input freeze belongs to StrategyExecution) and is dropped → quantified tests with parameter cases → open questions → reference. Algorithm map added.</li>
 <li><strong>2026-11-07</strong> — The strategy is registered with <code>register_strategy</code> and names its signal by registry name; the signal is built with <code>from_config()</code> and its params sit in the signal class; logs and snapshots read <code>values()</code> (decision 16).</li>
 </ul></details></div>
@@ -218,7 +223,7 @@
 <li>Forward each order update to Order Manager. If Order Manager returns no change, stop.</li>
 <li>Book the position from the returned change: size, average price, currency, entry timestamp = the entry-order bar.</li>
 <li>Pass the update to StrategyExecution. StrategyExecution asks Order Manager itself for anything more it needs.</li>
-<li>Apply a broker position update only for this slot's execution instrument. Take a balance update only for this slot's account and the instrument's currency.</li>
+<li>Log a broker position update for this slot's execution instrument and account; never book the position from it, because several slots can share one account and instrument. Take a balance update only for this slot's account and the instrument's currency.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Position currency</td><td>Fixed per instrument (exchange profile, <a href="system_map.html#d39">System map decision 39</a>)</td><td>USD (CME), EUR (Eurex)</td><td>—</td></tr>
@@ -231,7 +236,8 @@
 <dt>Upstream gives</dt><dd>Warmup history from the Event Loop (<a href="event_loop_map.html#f7">Event Loop feature 7</a>); ready or not ready with frames from Aux Data (<a href="aux_data_map.html#f4">Aux Data feature 4</a>), and frames again on request during a rebuild (<a href="aux_data_map.html#f8">Aux Data feature 8</a>); the signal's warm report.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>Rebuild only while flat and idle: no position, and Order Manager has no open or submitted order.</li>
-<li>Build the signal cold and replay the seed bars; then set StrategyExecution's warmup-ready and aux-ready.</li>
+<li>When late warmup history or late aux frames arrive while the slot is not flat and idle: keep them as a pending rebuild (a newer value replaces an older one) and clear the matching ready flag at once, so the slot makes no new entry. The open trade keeps its current signal and its exits. Run the pending rebuild at the first moment the slot is flat and idle. A pending rebuild still waiting at session end is logged at WARNING (<a href="system_map.html#d53">System map decision 53</a>).</li>
+<li>Build the signal cold and replay the seed bars; then set StrategyExecution's warmup-ready, only when the Event Loop's seed state is READY and the signal reports warm (<a href="system_map.html#d52">System map decision 52</a>). Set aux-ready when Aux Data reports ready; when the signal reads no auxiliary name, set aux-ready once, when the slot is built.</li>
 <li>During a mid-session replay, hold live bars back and step them afterwards, in order. Skip replayed bars outside the slot's session.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
@@ -272,7 +278,7 @@
 <li>Write the record on a logging thread, not on the Event Loop thread.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Snapshot interval N (bars)</td><td>Configurable</td><td>0 (off) or any positive count</td><td>not stated (<a href="#open-questions">Q1</a>)</td></tr>
+<tr><td>Snapshot interval N (bars)</td><td>Configurable per strategy (slot config)</td><td>0 (off) or any positive count</td><td>60 (once a minute at 1 s bars)</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>For every N: logging never changes what is traded.</dd>
 </dl></div>
@@ -285,9 +291,76 @@
 
 <details open><summary>End to end · the sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>tests/strategy/test_strategy.py::test_golden_round_trip_books_position</code></td></tr>
-<tr><th>Input</th><td>A synthetic price path that rises through level L on bar 10 and reaches target T on bar 20, with no outage; a fixed-rule long signal; scripted StrategySignal and StrategyExecution stubs; an Order Manager mock that returns each fill as an owned change (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
-<tr><th>Passes when</th><td>Every bar reaches the signal once and StrategyExecution once, in that order; the position is +1 between the two fills and 0 at the end; from the bar after the buy fill the signal gets entry price = fill price, and at the end entry price is None.</td></tr>
-<tr><th>Fails when</th><td>A bar reaches StrategyExecution before the signal was stepped with the bar; or the position moves on an update Order Manager did not return as a change.</td></tr>
+<tr><th>Input</th><td>The golden session's 23,400 bars for MES (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>), the real <code>macd_signal_dag</code> signal with default params, a StrategyExecution stub that sends BUY 1 MKT on the phase B entry bar and SELL 1 MKT on the target bar, and an Order Manager mock that returns each fill (at the bar close) as an owned change.</td></tr>
+<tr><th>Passes when</th><td>aux-ready is set at build; every bar reaches the signal once and StrategyExecution once, in that order; the position is +1 MES in USD between the two fills and 0 at the end; from the bar after the buy fill the signal gets entry price = fill price, and at the end entry price is None.</td></tr>
+<tr><th>Fails when</th><td>A bar reaches StrategyExecution before the signal was stepped with the bar; the position moves on an update Order Manager did not return as a change; or the slot waits for aux data that the signal does not read.</td></tr>
+</tbody></table></div></details>
+
+<h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
+<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/strategy/test_strategy_scenarios.py</code>. A signal stub records each step and its strategy data; a StrategyExecution stub records bars, updates and flatten calls and plays scripted decisions; an Order Manager stub returns scripted changes; a state store stub keeps records in memory.</p>
+<details><summary>S1. A bar goes to the signal, then to execution<span class="count">features 1</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_bar_order</code></td></tr>
+<tr><th>Given</th><td>A flat slot on MES; StrategyExecution steps the signal on every bar and sends BUY 1 MKT on bar 2, filled at 5001.00 on bar 2.</td></tr>
+<tr><th>When</th><td>Send bars 1 to 5.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>On every bar the signal is stepped once, before StrategyExecution decides. Strategy data is None on bars 1 and 2; from bar 3 on, entry price = 5001.00 and seconds since entry is counted from bar 2.</td></tr>
+<tr><th>Fails when</th><td>StrategyExecution decides before the signal step; two steps on one bar; strategy data while flat.</td></tr>
+</tbody></table></div></details>
+<details><summary>S2. The position is booked from fills only<span class="count">features 2</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_position_from_fills</code></td></tr>
+<tr><th>Given</th><td>A flat slot on MES (or FDAX).</td></tr>
+<tr><th>When</th><td>Send: BUY fill 1 @ 5001.00 (Order Manager returns a change); the same update again (no change); a broker position update for the same account and instrument; a balance update for another account; SELL fill 1 @ 5011.00.</td></tr>
+<tr><th>Parameter cases</th><td>instrument ∈ {MES → USD, FDAX → EUR}</td></tr>
+<tr><th>Passes when</th><td>Position +1 at 5001.00 in the instrument's currency after the BUY; no change on the repeat, the broker position update (logged only) and the other account's balance; flat after the SELL.</td></tr>
+<tr><th>Fails when</th><td>The position moves on a repeat or on a broker position update; the wrong currency; the other account's balance is taken.</td></tr>
+</tbody></table></div></details>
+<details><summary>S3. Late data while in position waits for flat<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_late_data_pending_rebuild</code></td></tr>
+<tr><th>Given</th><td>A slot in position, ready to arm.</td></tr>
+<tr><th>When</th><td>Send late warmup history, then a newer late warmup; send the exit fill; then a second case where the session ends before the slot is flat.</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {flat later in session; session ends in position}</td></tr>
+<tr><th>Passes when</th><td>Warmup-ready is cleared at the first late value, so no entry is made; exits stay live on the current signal; after the exit fill the signal is rebuilt once, from the newer value, and warmup-ready is set again. Session-end case: no rebuild runs and one WARNING is logged.</td></tr>
+<tr><th>Fails when</th><td>An entry while the flag is cleared; a rebuild while in position; the older value used; two rebuilds.</td></tr>
+</tbody></table></div></details>
+<details><summary>S4. No rebuild while an order works<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_rebuild_waits_for_orders</code></td></tr>
+<tr><th>Given</th><td>A flat slot with a submitted order.</td></tr>
+<tr><th>When</th><td>Send late warmup; then close the order.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>No rebuild while the order is submitted; one rebuild after the order closes.</td></tr>
+<tr><th>Fails when</th><td>A rebuild with a submitted, open or cancelling order.</td></tr>
+</tbody></table></div></details>
+<details><summary>S5. Aux readiness gates the slot<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_aux_ready_gate</code></td></tr>
+<tr><th>Given</th><td>Slot P's signal reads no auxiliary name; slot Q's signal reads X.</td></tr>
+<tr><th>When</th><td>Build both slots; seed both; then Aux Data reports Q ready.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>P has aux-ready at build and can arm after its seed; Q can arm only after Aux Data reports ready.</td></tr>
+<tr><th>Fails when</th><td>P waits for Aux Data; Q arms before Aux Data is ready.</td></tr>
+</tbody></table></div></details>
+<details><summary>S6. A flatten carries the booked position<span class="count">features 4</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_flatten_hand_off</code></td></tr>
+<tr><th>Given</th><td>A slot long 1; in a second case StrategyExecution reports "flatten wanted" after a failed exit.</td></tr>
+<tr><th>When</th><td>Send a flatten request (case request), or 3 bars (case flatten wanted).</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {flatten request, flatten wanted}</td></tr>
+<tr><th>Passes when</th><td>Request: StrategyExecution gets one flatten with position +1. Flatten wanted: one flatten with reason <code>exit_failed</code> on each of the 3 bars.</td></tr>
+<tr><th>Fails when</th><td>A flatten without the booked position; no flatten while flatten is wanted.</td></tr>
+</tbody></table></div></details>
+<details><summary>S7. Session-fixed values survive a restart<span class="count">features 5</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_restart_restore</code></td></tr>
+<tr><th>Given</th><td>A slot whose signal has one session-fixed value.</td></tr>
+<tr><th>When</th><td>Warm the signal; build a new slot on the same store. Repeat with a corrupt record, and with a quarantined slot.</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {normal, corrupt record, quarantined}</td></tr>
+<tr><th>Passes when</th><td>Normal: the state is persisted once and the new slot restores the value, with a loud log. Corrupt: nothing is restored and the slot starts normally. Quarantined: nothing is persisted.</td></tr>
+<tr><th>Fails when</th><td>A second persist; a crash on a corrupt record; a quarantined slot persists.</td></tr>
+</tbody></table></div></details>
+<details><summary>S8. Snapshots every N bars<span class="count">features 6</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_snapshots</code></td></tr>
+<tr><th>Given</th><td>A slot stepping 180 bars.</td></tr>
+<tr><th>When</th><td>Run the 180 bars; repeat with the slot quarantined in session.</td></tr>
+<tr><th>Parameter cases</th><td>N ∈ {0, 60}</td></tr>
+<tr><th>Passes when</th><td>N = 60: three snapshot rows, with instrument and event fields. N = 0: no row. Quarantined: rows are marked stale.</td></tr>
+<tr><th>Fails when</th><td>A row count other than 180 / N; a row when N = 0; a healthy row with stale keys.</td></tr>
 </tbody></table></div></details>
 
 <details><summary>1. The signal is stepped once per bar, before the decision<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -296,13 +369,15 @@
 <tr><td><code>test_no_step_outside_session_or_when_quarantined_out_of_session</code></td><td>—</td><td>steps before bar 0</td><td>0</td></tr>
 </tbody></table></div></details>
 
-<details><summary>2. The position is booked only from Order Manager's changes<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>2. The position is booked only from Order Manager's changes<span class="count">4 tests · 9 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_position_booked_only_from_order_manager_changes</code></td><td>update ∈ {owned change, not owned, duplicate}</td><td>position change</td><td>booked once; none; none</td></tr>
 <tr><td><code>test_position_booked_in_execution_instrument_currency</code></td><td>instrument ∈ {NQ, FDAX}</td><td>position currency</td><td>USD; EUR</td></tr>
-<tr><td><code>test_position_update_for_other_instrument_ignored</code></td><td>—</td><td>position change</td><td>none</td></tr>
+<tr><td><code>test_broker_position_update_never_books_position</code></td><td>update for ∈ {own instrument and account, other instrument}</td><td>position change</td><td>none; none</td></tr>
+<tr><td><code>test_aux_ready_set_at_build_when_no_aux_name</code></td><td>signal reads ∈ {no aux name, one aux name}</td><td>aux-ready after build</td><td>set; not set until Aux Data reports ready</td></tr>
 </tbody></table></div></details>
 
-<details><summary>3. A rebuild happens only while flat and idle<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>3. A rebuild happens only while flat and idle<span class="count">4 tests · 7 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_late_data_in_position_kept_pending_then_rebuilt_when_flat</code></td><td>late data ∈ {warmup history, aux frames}</td><td>new entries while pending; exits while pending; rebuilds; flag after the rebuild</td><td>0; live; 1, when flat and idle; set</td></tr>
 <tr><td><code>test_rebuild_refused_unless_flat_idle</code></td><td>state ∈ {position, open order, submitted order}</td><td>rebuilds</td><td>0</td></tr>
 <tr><td><code>test_rebuild_then_ready_when_flat_idle</code></td><td>—</td><td>ready flags after a rebuild</td><td>set only after the signal is warm</td></tr>
 <tr><td><code>test_live_bars_held_during_replay_then_stepped_in_order</code></td><td>—</td><td>live bars stepped during the replay; order afterwards</td><td>0; time order, none dropped</td></tr>
@@ -325,8 +400,9 @@
 <section id="open-questions">
 <div class="eyebrow">Strategy · Open questions</div>
 <h2>Open questions</h2>
+<p>All decided on 2026-11-09.</p>
 <ol>
-<li><strong>Snapshot interval (feature 6).</strong> What is the default N?</li>
+<li><strong>Snapshot interval (feature 6).</strong> Default N = 60 bars, configurable per strategy.</li>
 </ol>
 </section>
 
@@ -377,7 +453,7 @@
 <tr><td>Slot-state routing (decision 14)</td><td><code>is_processing_order()</code>, <code>quarantine()</code>, <code>release_quarantine()</code>, <code>is_quarantined()</code>, <code>warmup_ready</code>, <code>aux_ready</code>, <code>consume_trade_closed()</code>, <code>get_submitted_orders()</code>, <code>get_open_orders()</code>, <code>get_cancelling_orders()</code>. Code outside the slot asks only these and never reaches into Order Manager or StrategyExecution.</td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
-<pre><code>"""Skeleton contract for Strategy, the slot driver (Alchemist v3, draft)."""
+<pre><code>"""Skeleton contract for Strategy, the slot driver (Alchemist v3)."""
 
 from __future__ import annotations
 
@@ -462,7 +538,7 @@ class Strategy:
 <div class="decision"><h3><span class="num">11</span>Who logs the entry/exit decision's inputs?</h3><p class="q">StrategyExecution, when it evaluates the signal.</p></div>
 <div class="decision"><h3><span class="num">14</span>How does code outside the slot ask about it?</h3><p class="q">Only through Strategy: <code>is_processing_order()</code> forwards to StrategyExecution; <code>get_submitted_orders()</code> / <code>get_open_orders()</code> / <code>get_cancelling_orders()</code> forward to Order Manager under its own status names; <code>is_flat_idle()</code> is answered here; <code>is_quarantined()</code> too. Safety's repair picks slots by their submitted and open orders.</p><p class="rej">Rejected: names that are not order statuses ("pending", "working").</p></div>
 <div class="decision"><h3><span class="num">15</span>An unknown key in a slot's config?</h3><p class="q">Logged, never fatal. A bad execution block fails startup (StrategyExecution decision 21).</p></div>
-<div class="decision"><h3><span class="num">16</span>How is a strategy declared, and how is its signal built?</h3><p class="q">A strategy is a small declarative subclass in its folder's <code>strategy.py</code>, registered with <code>register_strategy(strat)</code>; the slot config names that strat. It names its signal by registry name (<code>signal_name</code>), not by import (<a href="system_map.html#d43">System map decision 43</a>). Strategy builds the signal with <code>get_signal_dag(signal_name).from_config(config)</code> at start and on every rebuild, and reads it only through the public signal interface (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading or writing the signal's value cache directly for logs or restore.</p><p class="when">proposed · v3 · 2026-11-07</p></div>
+<div class="decision"><h3><span class="num">16</span>How is a strategy declared, and how is its signal built?</h3><p class="q">A strategy is a small declarative subclass in its folder's <code>strategy.py</code>, registered with <code>register_strategy(strat)</code>; the slot config names that strat. It names its signal by registry name (<code>signal_name</code>), not by import (<a href="system_map.html#d43">System map decision 43</a>). Strategy builds the signal with <code>get_signal_dag(signal_name).from_config(config)</code> at start and on every rebuild, and reads it only through the public signal interface (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading or writing the signal's value cache directly for logs or restore.</p><p class="when">agreed 2026-11-09 · v3 · 2026-11-07</p></div>
 <p class="meta">Decisions 12 and 13 are not used; the numbers are kept so references stay valid.</p>
 </div>
 </section>

@@ -31,7 +31,7 @@
 </nav>
 <div class="wrap">
 <header>
-<div class="eyebrow">Documentation · v3 draft · 2026-11-06</div>
+<div class="eyebrow">Documentation · v3 final · 2026-11-09</div>
 <h1>Alchemist v3</h1>
 <div class="lede"><p>An execution engine for strategy books on futures, stocks and options, across exchanges and currencies: the same orders on a simulated broker, a paper account or a live account.</p></div>
 </header>
@@ -39,12 +39,12 @@
 <div class="eyebrow">Start here</div>
 <h2>Start here</h2>
 <div class="cards">
-<a class="card start" href="system_map.html"><div class="eyebrow">SYSTEM_MAP · v3 draft</div>
-<h3>System map</h3><p>Goal, boundary of all components (seven agreed, an eighth proposed), the golden sample and the decisions behind the split.</p></a>
+<a class="card start" href="system_map.html"><div class="eyebrow">SYSTEM_MAP · v3 final</div>
+<h3>System map</h3><p>Goal, boundary of all components (eight components), the golden sample and the decisions behind the split.</p></a>
 <a class="card" href="explainers/index.html"><div class="eyebrow">Plain language</div>
 <h3>Explainers</h3><p>Answers to questions about the system, as simple picture posts.</p></a>
-<a class="card" href="system_map.html#requirements"><div class="eyebrow">v3 · not agreed</div>
-<h3>Requirements and proposals</h3><p>Five requirements (multi-asset and multi-currency, extensible, 100 strategies with bar-to-order under 5 ms, one code path for sim and live, add a strategy without a restart) and proposed decisions 25–47.</p></a>
+<a class="card" href="system_map.html#requirements"><div class="eyebrow">v3 · agreed</div>
+<h3>Requirements and proposals</h3><p>Five requirements (multi-asset and multi-currency, extensible, 10–15 strategies with bar-to-order under 5 ms, one code path for sim and live, add a strategy without a restart) decisions 25–51 accepted at finalize, and decisions 52–58 that answer every open question.</p></a>
 <a class="card" href="glossary.html"><div class="eyebrow">GLOSSARY</div>
 <h3>Glossary</h3><p>Every term the design uses: meaning and an example.</p></a>
 </div>
@@ -92,12 +92,12 @@
   <text class="l" x="560" y="230">repaired fills</text>
 
   <!-- gateway -> event loop -->
-  <!-- outside data sources -> aux data (proposed) -->
+  <!-- outside data sources -> aux data -->
   <rect class="ext" x="40" y="150" width="170" height="36" rx="18"/>
   <text class="s" x="125" y="173">outside data sources</text>
   <path class="arr" d="M125,186 L125,206"/>
   <a href="aux_data_map.html"><rect class="box" x="40" y="208" width="170" height="56" rx="8"/>
-    <text class="t" x="125" y="232">Aux Data</text><text class="s" x="125" y="252">proposed: aux + arming</text></a>
+    <text class="t" x="125" y="232">Aux Data</text><text class="s" x="125" y="252">aux + arming</text></a>
   <path class="arr" d="M210,236 L238,236"/>
   <path class="arr" d="M125,264 L125,346 L238,346"/>
   <text class="l" x="132" y="300">ready,</text>
@@ -144,17 +144,17 @@
   <text class="l" x="26" y="440">orders,</text>
   <text class="l" x="26" y="456">cancels</text>
 </svg>
-<p class="caption">Click a box to open its component map. Orders leave through the Gateway; StrategyExecution asks StrategySignal directly for entry/exit answers. Aux Data (proposed) adds values to each bar before the Event Loop dispatches it.</p></div>
+<p class="caption">Click a box to open its component map. Orders leave through the Gateway; StrategyExecution asks StrategySignal directly for entry/exit answers. Aux Data adds values to each bar before the Event Loop dispatches it.</p></div>
 
 </section>
 <section id="components">
-<div class="eyebrow">Component maps · 7 + 1 proposed</div>
+<div class="eyebrow">Component maps · 8</div>
 <h2>Component maps</h2>
 <p>Each component has its own frozen contract: goal, behaviours, skeleton code and test spec.</p>
 <div class="cards">
 <a class="card" href="gateway_map.html"><div class="eyebrow">GATEWAY_MAP</div><h3>Gateway</h3></a>
 <a class="card" href="event_loop_map.html"><div class="eyebrow">EVENT_LOOP_MAP</div><h3>Event Loop</h3></a>
-<a class="card" href="aux_data_map.html"><div class="eyebrow">AUX_DATA_MAP · proposed</div><h3>Aux Data</h3></a>
+<a class="card" href="aux_data_map.html"><div class="eyebrow">AUX_DATA_MAP</div><h3>Aux Data</h3></a>
 <a class="card" href="strategy_map.html"><div class="eyebrow">STRATEGY_MAP</div><h3>Strategy</h3></a>
 <a class="card" href="strategy_signal_map.html"><div class="eyebrow">STRATEGY_SIGNAL_MAP</div><h3>StrategySignal</h3></a>
 <a class="card" href="strategy_execution_map.html"><div class="eyebrow">STRATEGY_EXECUTION_MAP</div><h3>StrategyExecution</h3></a>

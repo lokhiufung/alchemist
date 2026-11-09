@@ -34,8 +34,14 @@
 <div class="eyebrow">Component map · GATEWAY_MAP · Alchemist v3</div>
 <h1>Gateway</h1>
 <div class="lede"><p>The engine's only line to the broker. Prices come in through the Gateway, orders go out through the Gateway, and fills come back through the Gateway. In simulation, a simulated broker sits behind the same interface.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> Features 1–11 and decisions 1–6 are settled (features 2, 3 and 8 have proposed parts). Features 12–14 and decision 7 are proposed. Open questions are listed at the end. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3).</p>
+<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3).</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
+<li><strong>2026-11-09</strong> — Scenario questions decided: resting distance 2% of the last price; paper account from the test <code>.env</code>; test instruments from a test instrument config.</li>
+<li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (14 scenarios, proposed, not agreed).</li>
+<li><strong>2026-11-09</strong> — v3 finalized: the human accepted every proposed feature and decision.</li>
+<li><strong>2026-11-09</strong> — Open questions decided: order types fixed for v3; slippage default 0; history bar sizes per subclass; snapshot timeout 5 s; padding off by default; heartbeat timeout from Safety's config; NASDAQ stock profile added and options moved later; reader thread stamps <code>recv_ts</code>.</li>
+<li><strong>2026-11-09</strong> — Review fixes: feature 2 sends <code>tick_update</code> or <code>bar_update</code>, declared per instrument (System map decision 49); feature 4: Order Manager takes the order id before sending; feature 6: a MKT order fills on the decision bar; feature 12 writes the broker journal; the sample is the new golden run; open question 8 closed.</li>
 <li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 14 features (Need / Upstream gives / Algorithm / Parameters / Invariant), replacing behaviours 1–15; simulated fills are now their own feature → quantified tests with parameter cases → open questions → reference. Algorithm map added.</li>
 <li><strong>2026-11-07</strong> — New behaviour 15 and decision 7: the simulated broker prepares all replay data itself, on request; the runner writes no data files (<a href="system_map.html#d45">System map decision 45</a>).</li>
 </ul></details></div>
@@ -55,7 +61,7 @@
 <tr><td rowspan="3">Other components call the Gateway</td><td>Order Manager</td><td>Place an order; cancel an order</td><td>order: instrument, action, size, type (MKT, STP, LMT), price, OCA group and type; order id</td></tr>
 <tr><td>Event Loop</td><td>Resolve a contract; subscribe and unsubscribe ticks; declare instrument sessions; request daily history and intraday seed bars; show a bar (the simulated broker fills against the bar)</td><td>instrument, history window (months or dates) and session, bar</td></tr>
 <tr><td>Safety</td><td>Probe the socket; reconnect; read the last tick time; fetch executions, open orders and positions; take the resubscribe request</td><td>timeout, since-timestamp</td></tr>
-<tr><td rowspan="2">The Gateway calls other components</td><td>Event Loop</td><td>Push events into the event buffer and raise the drain wake-up</td><td>tick, order update, position update, balance update, <code>end_of_data</code></td></tr>
+<tr><td rowspan="2">The Gateway calls other components</td><td>Event Loop</td><td>Push events into the event buffer and raise the drain wake-up</td><td><code>tick_update</code> or <code>bar_update</code>, order update, position update, balance update, <code>end_of_data</code></td></tr>
 <tr><td>Broker (outside the system)</td><td>Send orders, cancels, subscriptions and requests through the broker's API</td><td>broker messages</td></tr>
 </tbody></table></div>
 
@@ -100,7 +106,7 @@
   <path class="ps-a" d="M595,110 H740"/><text class="ps-l" x="660" y="104">broker requests</text>
   <path class="ps-a" d="M740,170 H595"/><text class="ps-l" x="660" y="186">market data, fills</text>
 </svg>
-<p class="caption">The bar from the Event Loop and the contract and subscribe requests are in the features but not yet on the System map's Gateway <em>Receives</em> line (<a href="#open-questions">open question 8</a>).</p>
+<p class="caption">The System map's Gateway <em>Receives</em> and <em>Produces</em> lines list every operation on this page, including the bar from the Event Loop and the two market-data message types.</p>
 </div>
 </section>
 
@@ -222,21 +228,24 @@
 <dt>Invariant</dt><dd>After every successful connect or reconnect, the order-status, account and market-data streams are active for every instrument the process trades.</dd>
 </dl></div>
 
-<div class="behaviour" id="f2"><h3><span class="num">2</span>Ticks reach the event buffer in time order<span class="added">settled; wake-up proposed · was behaviours 2, 12 · System map decision 26</span></h3><dl class="gmi">
-<dt>Need</dt><dd>The Event Loop builds bars from ticks and needs every tick, in time order, as soon as the broker sends it. Safety needs the time of the last tick to judge whether the feed is alive.</dd>
-<dt>Upstream gives</dt><dd>The broker sends tick-by-tick data (time, price, size) for each subscribed contract on the broker's reader thread. Each exchange has its own data session; a closed exchange sends no ticks.</dd>
+<div class="behaviour" id="f2"><h3><span class="num">2</span>Market data reaches the event buffer in time order<span class="added">settled · was behaviours 2, 12 · System map decisions 26, 49</span></h3><dl class="gmi">
+<dt>Need</dt><dd>The Event Loop needs every market-data message, in time order, as soon as the broker sends it: trades to build bars from, or completed bars. Safety needs the time of the last market-data message to judge whether the feed is alive.</dd>
+<dt>Upstream gives</dt><dd>A broker gives one of two kinds of market data per contract: tick-by-tick trades (time, price, size), or completed OHLCV bars (klines) at a fixed resolution. The IBKR broker sends ticks on its reader thread. The simulated broker gives 1-second bars from its tape (<a href="#f12">feature 12</a>). Each exchange has its own data session; a closed exchange sends nothing.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>For each tick: build a tick event with instrument, time, price and size, and append the tick event to the event buffer.</li>
-<li>Raise the Event Loop's drain wake-up through the loop's thread-safe call. The reader thread changes no loop state directly.</li>
-<li>Update the last tick time only for instruments whose exchange data session is open, so a closed Eurex feed does not look dead while CME trades.</li>
+<li>Declare, per instrument, which message type the gateway gives: <code>tick_update</code>, or <code>bar_update</code> with its resolution (<a href="#f14">feature 14</a>).</li>
+<li>For each trade: build a <code>tick_update</code> with instrument, time, price and size. For each completed bar: build a <code>bar_update</code> with instrument, resolution, open, high, low, close, volume and the bar's broker timestamp. Append the message to the event buffer.</li>
+<li>Stamp <code>recv_ts</code> (monotonic clock) on each message on the reader thread, when the message arrives; the 5 ms budget starts there (<a href="system_map.html#d55">System map decision 55</a>).</li>
+<li>Raise the Event Loop's drain wake-up through the loop's thread-safe call. A reader thread changes no loop state directly.</li>
+<li>Update the last tick time, from either message type, only for instruments whose exchange data session is open, so a closed Eurex feed does not look dead while CME trades.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Market data type</td><td>Open (<a href="#open-questions">Q1</a>)</td><td>tick-by-tick</td><td>tick-by-tick</td></tr>
+<tr><td>Market data message type</td><td>Fixed per gateway subclass and instrument (the broker decides)</td><td><code>tick_update</code>; <code>bar_update</code> (<code>quote_update</code> reserved, out of scope)</td><td>IBKR: <code>tick_update</code>; simulated broker: <code>bar_update</code></td></tr>
+<tr><td>Bar resolution of a <code>bar_update</code></td><td>Fixed per gateway subclass</td><td>1 s</td><td>1 s</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>Tick events keep their price, size and instrument, and their timestamps never go backwards in the buffer.</dd>
+<dt>Invariant</dt><dd>Market-data messages keep their prices, sizes and instrument, and their timestamps never go backwards in the buffer. One instrument's feed carries one message type only.</dd>
 </dl></div>
 
-<div class="behaviour" id="f3"><h3><span class="num">3</span>Contracts come from the exchange profile<span class="added">settled; profile proposed · was behaviour 13 and the contract rules · System map decisions 31, 37</span></h3><dl class="gmi">
+<div class="behaviour" id="f3"><h3><span class="num">3</span>Contracts come from the exchange profile<span class="added">settled · was behaviour 13 and the contract rules · System map decisions 31, 37</span></h3><dl class="gmi">
 <dt>Need</dt><dd>Orders, subscriptions, history, fills and positions need the broker's exact contract for each engine instrument. Two products can share one broker symbol: at IBKR, FDAX, FDXM and FDXS all appear as DAX.</dd>
 <dt>Upstream gives</dt><dd>The broker answers a contract request with contract details (contract id, minimum tick, trading class). The exchange profile gives the venue, currency, broker contract identity, roll rule and session clocks of each exchange.</dd>
 <dt>Algorithm</dt><dd><ol>
@@ -245,8 +254,8 @@
 <li>Every later operation (subscribe, order, history, fill, position) looks the contract up by instrument.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Asset class</td><td>Configurable per instrument</td><td>future, stock (options open, System map open questions)</td><td>—</td></tr>
-<tr><td>Exchange profile</td><td>Configurable per instrument</td><td>CME, Eurex</td><td>—</td></tr>
+<tr><td>Asset class</td><td>Configurable per instrument</td><td>future, stock (options in a later version, <a href="system_map.html#d54">System map decision 54</a>)</td><td>—</td></tr>
+<tr><td>Exchange profile</td><td>Configurable per instrument</td><td>CME, Eurex, NASDAQ</td><td>—</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>Two instruments that share a broker symbol never share a contract, a tick subscription, a fill or a position. A new exchange needs a new exchange profile, not a Gateway change.</dd>
 </dl></div>
@@ -257,14 +266,14 @@
 <dt>Algorithm</dt><dd><ol>
 <li><strong>Check.</strong> Reject locally, before sending, a priced order whose price is missing, zero, negative or not a number, an order for a contract with no known minimum tick, and an order with an OCA group but no valid OCA type. The caller always chooses the OCA type; the Gateway has no default.</li>
 <li><strong>Round.</strong> Round STP and LMT prices to the minimum tick: BUY STP and SELL LMT round up, SELL STP and BUY LMT round down. Write the rounded price back into the order. The simulated broker uses the same rounding helper.</li>
-<li><strong>Number.</strong> Give the order the next order id, under a lock.</li>
+<li><strong>Number.</strong> Order Manager takes the order id from <code>next_order_id()</code> (under a lock) before it sends the order. <code>place_order</code> sends the order with that id and never numbers the order again.</li>
 <li><strong>Send.</strong> Send the order with the time in force and the outside-regular-hours flag, and put the resulting order update on the event buffer.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Order types</td><td>Open (<a href="#open-questions">Q2</a>)</td><td>MKT, STP, LMT</td><td>—</td></tr>
+<tr><td>Order types</td><td>Fixed for v3 (<a href="system_map.html#d56">System map decision 56</a>)</td><td>MKT, STP, LMT</td><td>—</td></tr>
 <tr><td>OCA type</td><td>Chosen by the caller per order</td><td>1, 2, 3</td><td>none (required)</td></tr>
-<tr><td>Time in force</td><td>Open (<a href="#open-questions">Q2</a>)</td><td>DAY</td><td>DAY</td></tr>
-<tr><td>Outside regular hours</td><td>Open (<a href="#open-questions">Q2</a>)</td><td>allowed</td><td>allowed</td></tr>
+<tr><td>Time in force</td><td>Fixed for v3 (<a href="system_map.html#d56">System map decision 56</a>)</td><td>DAY</td><td>DAY</td></tr>
+<tr><td>Outside regular hours</td><td>Fixed for v3 (<a href="system_map.html#d56">System map decision 56</a>)</td><td>allowed</td><td>allowed</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>Every placed order gets a distinct, increasing order id and ends FILLED, CANCELLED or REJECTED. Every STP and LMT price sent to the broker is on the contract's tick.</dd>
 </dl></div>
@@ -288,7 +297,7 @@
 <dt>Need</dt><dd>A replay must produce the same order updates as a paper or live run, so the rest of the engine runs unchanged (<a href="system_map.html#d6">System map decision 6</a>).</dd>
 <dt>Upstream gives</dt><dd>In replay there is no broker. The Event Loop shows the simulated broker each completed bar before the strategies see the bar.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Fill a MKT order at the reference price of the current bar, plus slippage.</li>
+<li>Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the Event Loop shows bar N to the simulated broker before the strategies, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.</li>
 <li>Rest STP and LMT orders and emit OPEN. On each later bar of the instrument: a touch fills at the level, a gap fills at the bar's open.</li>
 <li>When both legs of an OCA group fire on one bar, the stop wins; the other legs become CANCELLED.</li>
 <li>Reject an order into an OCA group that already filled. A MKT order into a working group cancels the group's legs first.</li>
@@ -296,7 +305,7 @@
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>MKT reference price</td><td>Configurable</td><td>bar close</td><td>bar close</td></tr>
-<tr><td>Slippage (ticks)</td><td>Configurable</td><td>not stated (<a href="#open-questions">Q3</a>)</td><td>not stated</td></tr>
+<tr><td>Slippage (ticks)</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any integer ≥ 0</td><td>0</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>For every supported reference price and slippage: the simulated broker emits the same order statuses, in the same order, as the broker gateway would for the same fills.</dd>
 </dl></div>
@@ -312,7 +321,7 @@
 <dt>Invariant</dt><dd>Every execution row carries its order id, so each fill traces to exactly one order.</dd>
 </dl></div>
 
-<div class="behaviour" id="f8"><h3><span class="num">8</span>History and seed bars in broker-neutral units<span class="added">settled; units proposed · was behaviours 7, 11 · System map decisions 30, 45</span></h3><dl class="gmi">
+<div class="behaviour" id="f8"><h3><span class="num">8</span>History and seed bars in broker-neutral units<span class="added">settled · was behaviours 7, 11 · System map decisions 30, 45</span></h3><dl class="gmi">
 <dt>Need</dt><dd>The Event Loop seeds each strategy with daily history and prior-session intraday bars before the strategy trades. The Event Loop must not know any broker's duration format.</dd>
 <dt>Upstream gives</dt><dd>The broker returns intraday bars for a contract and a duration in the broker's own units. Near a roll, the new contract's history is thin.</dd>
 <dt>Algorithm</dt><dd><ol>
@@ -323,7 +332,7 @@
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>History window unit</td><td>Chosen by the caller per request</td><td>months; start and end dates</td><td>—</td></tr>
-<tr><td>Intraday bar size of the source</td><td>Open (<a href="#open-questions">Q4</a>)</td><td>not stated</td><td>—</td></tr>
+<tr><td>Intraday bar size of the source</td><td>Fixed per subclass</td><td>IBKR: daily frame from 1-minute bars, seed bars as 1-second bars; simulated broker: its 1-second tape</td><td>as supported</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>History arrives in time order, with no bar after the requested window. A value the frame cannot serve exactly is never served silently.</dd>
 </dl></div>
@@ -338,7 +347,7 @@
 <li>The simulated broker reports from its simulated book.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Position snapshot timeout</td><td>Open (<a href="#open-questions">Q5</a>)</td><td>not stated</td><td>—</td></tr>
+<tr><td>Position snapshot timeout</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any positive seconds</td><td>5 s</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>Every update carries its account, and every money amount carries its currency. A timed-out snapshot leaves no waiter behind.</dd>
 </dl></div>
@@ -366,12 +375,12 @@
 <li>Return True when the broker answers within the timeout, otherwise False.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Heartbeat timeout</td><td>Configurable per call</td><td>any positive seconds</td><td>3.0 s</td></tr>
+<tr><td>Heartbeat timeout</td><td>Configurable per call; Safety passes its config value</td><td>any positive seconds</td><td>3.0 s</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>For every timeout value: the heartbeat returns True if and only if the socket answers within that timeout.</dd>
 </dl></div>
 
-<div class="behaviour" id="f12"><h3><span class="num">12</span>The simulated broker prepares its own replay data<span class="added">proposed · was behaviour 15 · System map decision 45 · decision 7</span></h3><dl class="gmi">
+<div class="behaviour" id="f12"><h3><span class="num">12</span>The simulated broker prepares its own replay data<span class="added">settled · was behaviour 15 · System map decision 45 · decision 7</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A replay needs ticks, daily history and seed bars with the same definitions as the broker's. The runner must write no data files and must read no strategy before the strategy exists.</dd>
 <dt>Upstream gives</dt><dd>The config names a tape source, a replay date and a session. The tape is a file (or a synthetic generator) much larger than one day.</dd>
 <dt>Algorithm</dt><dd><ol>
@@ -380,15 +389,17 @@
 <li>Answer daily history and seed-bar requests from the tape, like the broker gateway; return an empty list when the tape has no prior session.</li>
 <li>Pad the replay window before and after the session with flat bars, when the option is on.</li>
 <li>A synthetic generator is a second tape source behind the same simulated broker.</li>
+<li>Send each replay bar as one <code>bar_update</code> (<a href="#f2">feature 2</a>).</li>
+<li>When the config sets <code>replay.journal</code>, write the broker journal: one row per order received and one row per fill sent, in the journal format of the <a href="system_map.html#golden-end-to-end">golden sample</a>.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Tape source</td><td>Configurable</td><td>Parquet file, synthetic generator</td><td>—</td></tr>
-<tr><td>Flat-bar padding</td><td>Configurable</td><td>on, off (length not stated, <a href="#open-questions">Q6</a>)</td><td>not stated</td></tr>
+<tr><td>Flat-bar padding before / after the session</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>) (<code>replay.pad_before_s</code>, <code>replay.pad_after_s</code>)</td><td>any seconds ≥ 0; 0 means off</td><td>0 (off)</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>The runner writes no data file. Replay history has the same definitions as broker history (<a href="#f8">feature 8</a>).</dd>
 </dl></div>
 
-<div class="behaviour" id="f13"><h3><span class="num">13</span>Serve a strategy added while running<span class="added">proposed · was behaviour 14 · System map decisions 34–36</span></h3><dl class="gmi">
+<div class="behaviour" id="f13"><h3><span class="num">13</span>Serve a strategy added while running<span class="added">settled · was behaviour 14 · System map decisions 34–36</span></h3><dl class="gmi">
 <dt>Need</dt><dd>The Event Loop adds a strategy to a running paper or live process (<a href="event_loop_map.html#f12">Event Loop feature 12</a>), and the strategies already running must keep their feeds.</dd>
 <dt>Upstream gives</dt><dd>The broker accepts new subscriptions and cancels existing ones while the connection is up.</dd>
 <dt>Algorithm</dt><dd><ol>
@@ -401,12 +412,12 @@
 <dt>Invariant</dt><dd>Adding a strategy never subscribes again, or drops, a feed that a running strategy uses.</dd>
 </dl></div>
 
-<div class="behaviour" id="f14"><h3><span class="num">14</span>One explicit interface, picked by name<span class="added">proposed · was behaviour 10 · System map decision 30</span></h3><dl class="gmi">
+<div class="behaviour" id="f14"><h3><span class="num">14</span>One explicit interface, picked by name<span class="added">settled · was behaviour 10 · System map decision 30</span></h3><dl class="gmi">
 <dt>Need</dt><dd>The runner chooses a broker by config, and a new broker must plug in without changes to the Event Loop, Order Manager or Safety. A broker subclass that misses an operation must fail at start, not return nothing during trading.</dd>
 <dt>Upstream gives</dt><dd>Brokers differ in capability: some report feed liveness, commissions or roll mismatches, and some do not.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>Declare required operations (connect, disconnect, reconnect, orders, cancels, contracts, subscriptions, history, executions, positions) with no body; building a subclass that misses one fails at once.</li>
-<li>Declare capabilities with a safe default: feed liveness, the resubscribe request, market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal. A subclass overrides a capability only when the broker has it.</li>
+<li>Declare capabilities with a safe default: the market-data message type per instrument (<a href="#f2">feature 2</a>; default <code>tick_update</code>), feed liveness, the resubscribe request, market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal. A subclass overrides a capability only when the broker has it.</li>
 <li>Register each subclass under a name; the runner picks the subclass by that name.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
@@ -422,11 +433,126 @@
 <p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. "Both subclasses" means the case runs on the IBKR gateway (against a broker stub) and on the simulated broker. No Gateway test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
 
 <details open><summary>End to end · the sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
-<tr><th>Test</th><td><code>tests/gateway/test_gateway_sample.py::test_golden_replay_delivers_every_tick_then_end_of_data_and_fills_two_orders</code></td></tr>
-<tr><th>Input</th><td>The system golden sample on the simulated broker: a synthetic session of ticks for one instrument that rises through level L and later reaches target T. BUY 1 MKT when L is crossed, SELL 1 MKT when T is reached, then end of data (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
+<tr><th>Test</th><td><code>tests/gateway/test_gateway_sample.py::test_golden_replay_delivers_every_bar_then_end_of_data_and_fills_two_orders</code></td></tr>
+<tr><th>Input</th><td>The system golden sample on the simulated broker: the <code>golden_session</code> synthetic tape for MES on 2026-04-15 (NY_RTH, 60 prior sessions), and two scripted MKT orders, a BUY 1 and a SELL 1, sent on the phase B entry bar and the target bar (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
 <tr><th>Parameter cases</th><td>subclass ∈ {simulated broker}</td></tr>
-<tr><th>Passes when</th><td>Every synthetic tick is in the buffer with time never going backwards, followed by <code>end_of_data</code>; exactly two orders produce two FILLED order updates; the executions query returns two rows whose order ids match the two orders; the heartbeat returns True.</td></tr>
-<tr><th>Fails when</th><td>A tick is dropped, duplicated or out of order; an order produces no order update; an execution row has no order id; or the heartbeat returns True for a disconnected socket.</td></tr>
+<tr><th>Passes when</th><td>Daily history gives ATR(14) = 20.00 from the 60 prior sessions; 23,400 <code>bar_update</code> messages are in the buffer with time never going backwards, followed by <code>end_of_data</code>; each MKT order fills at the close of the bar it was sent on; exactly two FILLED order updates; the executions query returns two rows whose order ids match the two orders; the journal has the 4 rows in the journal format of the golden sample.</td></tr>
+<tr><th>Fails when</th><td>A bar is dropped, duplicated or out of order; an order fills on another bar; an order produces no order update; an execution row has no order id; or a journal row breaks the journal format.</td></tr>
+</tbody></table></div></details>
+
+<h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
+<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/gateway/test_gateway_scenarios.py</code>. A recording event buffer stands in for the Event Loop; the test plays Order Manager (it takes each id from <code>next_order_id()</code>) and Safety. IBKR cases run on an IBKR paper account, only while the instrument's session is open, under the test marker <code>ibkr_paper</code>, outside the default test run. The paper account comes from the test <code>.env</code> file, and the test instruments (MES, FDAX, FDXM, ES and the NASDAQ stock) come from a test instrument config. A resting LMT or STP order sits the distance away from the last price: 2% of the last price, in whole ticks, so the order does not fill during the rest check. Waits (configurable in the test config): the first-message wait (30 s) is how long the test waits for the first market-data message after a subscribe; the fill wait (30 s) is how long the test waits for FILLED after a marketable order; the rest check (10 s) is how long the test watches a far-away order stay OPEN with no fill. Simulated cases run on a scripted tape in the default test run. A fill price on the paper account is not known in advance, so an IBKR case checks the order status sequence, quantities, ids and tick alignment; a simulated case also checks the exact price.</p>
+<details><summary>S1. Subscribe to a market-data stream<span class="count">features 1, 2, 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_subscribe_stream</code></td></tr>
+<tr><th>Given</th><td>Connected. The instrument's exchange data session is open (IBKR), or a scripted tape of 10 one-second bars is loaded (simulated).</td></tr>
+<tr><th>When</th><td>Resolve the contract for the instrument, subscribe market data, and wait up to the first-message wait.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper → <code>tick_update</code>, simulated broker → <code>bar_update</code>} × instrument ∈ {MES (CME future), one NASDAQ stock named in the test config}</td></tr>
+<tr><th>Passes when</th><td>IBKR: at least one <code>tick_update</code> for the instrument arrives; every price is a whole multiple of the contract's minimum tick; every size is &gt; 0; <code>recv_ts</code> never goes backwards; the last tick time moves forward. Simulated: exactly 10 <code>bar_update</code> messages at resolution 1 s, in time order, then <code>end_of_data</code>.</td></tr>
+<tr><th>Fails when</th><td>No message within the first-message wait while the session is open; a price off the tick; a message carries another instrument; <code>recv_ts</code> or bar time goes backwards; a simulated bar is missing or repeated.</td></tr>
+</tbody></table></div></details>
+<details><summary>S2. Resolve contracts from the exchange profile<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_resolve_contracts</code></td></tr>
+<tr><th>Given</th><td>Connected to the IBKR paper account.</td></tr>
+<tr><th>When</th><td>Resolve MES, FDAX, FDXM and the NASDAQ stock.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper}</td></tr>
+<tr><th>Passes when</th><td>MES resolves to the contract that the CME roll rule names for today; FDAX and FDXM get different contract ids although both appear as DAX at IBKR; the stock resolves to its one listing; each contract has a known minimum tick.</td></tr>
+<tr><th>Fails when</th><td>Two instruments share a contract id; a future resolves to a contract other than the roll rule's; a contract has no minimum tick.</td></tr>
+</tbody></table></div></details>
+<details><summary>S3. Place a market order<span class="count">features 4, 6, 7, 9</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_market_order_fills</code></td></tr>
+<tr><th>Given</th><td>Connected; the paper account is flat on the instrument (IBKR), or bar N of the tape is being shown (simulated).</td></tr>
+<tr><th>When</th><td>Take id A; place BUY 1 MKT with id A; wait up to the fill wait. Then take id B; place SELL 1 MKT with id B; wait up to the fill wait.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker} × instrument ∈ {MES, NASDAQ stock}; simulated slippage ∈ {0, 2 ticks}</td></tr>
+<tr><th>Passes when</th><td>The order updates for A end in FILLED, filled quantity 1, average price &gt; 0 and on the tick; the same for B. B &gt; A. Executions read after the fills: exactly one row for A (BUY, 1, currency USD) and one for B (SELL, 1), each with its order id. Position updates for the account: +1 after A, 0 after B. Simulated: each fill price is the reference price (bar close) of bar N with the configured slippage, and the fill time is the end time of bar N.</td></tr>
+<tr><th>Fails when</th><td>No FILLED within the fill wait; a filled quantity other than 1; more or fewer than one execution row per order; a row without order id; the position is not +1 then 0; a simulated fill on another bar or at another price.</td></tr>
+</tbody></table></div></details>
+<details><summary>S4. Place a resting limit order<span class="count">features 4, 7</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_limit_order_rests_rounded</code></td></tr>
+<tr><th>Given</th><td>Connected; the last price L is known.</td></tr>
+<tr><th>When</th><td>Place BUY LMT 1 at L less the distance, plus 0.4 tick (off the tick); place SELL LMT 1 at L plus the distance, plus 0.4 tick. Wait the rest check. Read open orders.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker (tape never reaches either price)} × instrument ∈ {MES, NASDAQ stock}</td></tr>
+<tr><th>Passes when</th><td>The BUY price sent is rounded down to the tick and the SELL price rounded up. Each order gets an OPEN update and no fill. The open-orders read lists both ids with the rounded prices. (Cleanup: the cancel scenario.)</td></tr>
+<tr><th>Fails when</th><td>A price sent off the tick, or rounded the wrong way; no OPEN update; a fill; an order missing from the open-orders read.</td></tr>
+</tbody></table></div></details>
+<details><summary>S5. Place a limit order that fills<span class="count">features 4, 6</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_limit_order_fills</code></td></tr>
+<tr><th>Given</th><td>Connected; the last price L is known.</td></tr>
+<tr><th>When</th><td>IBKR: place BUY LMT 1 at L + 5 ticks (marketable), then close with SELL 1 MKT. Simulated: place BUY LMT 1 at level P; the next bar touches P (case touch) or opens below P (case gap).</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker} × simulated case ∈ {touch, gap}</td></tr>
+<tr><th>Passes when</th><td>IBKR: FILLED 1 at an average price ≤ the limit, with one execution row for the id. Simulated: the order is OPEN on its bar and FILLED on the next bar, at P (touch) or at that bar's open (gap).</td></tr>
+<tr><th>Fails when</th><td>No fill; a fill above the limit; a simulated fill at another price or on the order's own bar.</td></tr>
+</tbody></table></div></details>
+<details><summary>S6. Place a stop order<span class="count">features 4, 5, 6</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_stop_order</code></td></tr>
+<tr><th>Given</th><td>Connected; long 1 for the SELL case (simulated: after a scripted BUY fill).</td></tr>
+<tr><th>When</th><td>IBKR: place SELL STP 1 at L less the distance, less 0.4 tick, and BUY STP 1 at L plus the distance, plus 0.4 tick; wait the rest check; then cancel both. Simulated: place SELL STP 1 at S; the next bar touches S (case touch) or opens below S (case gap).</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker} × simulated case ∈ {touch, gap}</td></tr>
+<tr><th>Passes when</th><td>IBKR: the SELL STP price is rounded down and the BUY STP price up; both orders are OPEN with no fill; each cancel ends in one CANCELLED. Simulated: FILLED at S (touch) or at the bar's open (gap), on the bar after placement.</td></tr>
+<tr><th>Fails when</th><td>A stop price off the tick or rounded the wrong way; a fill while the market is away from the stop (IBKR); a simulated fill at another price or bar.</td></tr>
+</tbody></table></div></details>
+<details><summary>S7. Cancel a resting order<span class="count">features 5, 7</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_cancel_resting_order</code></td></tr>
+<tr><th>Given</th><td>A resting LMT order with id A (from the resting-limit scenario).</td></tr>
+<tr><th>When</th><td>Cancel A; wait the rest check; read open orders.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker}</td></tr>
+<tr><th>Passes when</th><td>Exactly one CANCELLED update for A; no pending-cancel status in the buffer; no fill for A after the CANCELLED; the open-orders read no longer lists A.</td></tr>
+<tr><th>Fails when</th><td>No CANCELLED, or two; a pending-cancel status forwarded; a fill for A after the cancel.</td></tr>
+</tbody></table></div></details>
+<details><summary>S8. Cancel a filled order<span class="count">features 5, 10</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_cancel_filled_order</code></td></tr>
+<tr><th>Given</th><td>A MKT order with id A that is FILLED (from the market-order scenario).</td></tr>
+<tr><th>When</th><td>Cancel A.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker}</td></tr>
+<tr><th>Passes when</th><td>IBKR: exactly one CANCEL_REJECTED update for A (refusal code 10147, 10148 or 161) and no CANCELLED. Simulated: no event for A.</td></tr>
+<tr><th>Fails when</th><td>A CANCELLED update for A; the engine stops; any simulated event for A.</td></tr>
+</tbody></table></div></details>
+<details><summary>S9. Place an OCA group<span class="count">features 4, 6</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_oca_group</code></td></tr>
+<tr><th>Given</th><td>Long 1 (after a BUY 1 MKT fill).</td></tr>
+<tr><th>When</th><td>Place SELL STP 1 (far below) and SELL LMT 1 (far above) with one OCA group and OCA type 2. IBKR: wait the rest check, cancel both legs, then close with SELL 1 MKT. Simulated: play the case.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker} × simulated case ∈ {LMT touched; both legs touched on one bar; MKT into the working group; new order into a group that already filled}</td></tr>
+<tr><th>Passes when</th><td>IBKR: both legs OPEN with the same OCA group; each cancel ends in one CANCELLED; the position ends at 0. Simulated: LMT touched → LMT FILLED at its level and STP CANCELLED; both touched → STP FILLED and LMT CANCELLED; MKT into the group → both legs CANCELLED before the MKT is FILLED; order into a filled group → REJECTED.</td></tr>
+<tr><th>Fails when</th><td>A leg without the OCA group; two legs of one group filled; a MKT filled while a leg of its group still works; an order into a filled group accepted.</td></tr>
+</tbody></table></div></details>
+<details><summary>S10. Refuse an invalid order before sending<span class="count">features 4</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_invalid_order_refused_locally</code></td></tr>
+<tr><th>Given</th><td>Connected.</td></tr>
+<tr><th>When</th><td>Place each invalid order of the case.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker} × case ∈ {LMT price missing, 0, −1, NaN; OCA group with no OCA type; contract with no known minimum tick}</td></tr>
+<tr><th>Passes when</th><td>Each place call raises; nothing reaches the broker (the open-orders read is unchanged; the simulated journal has no new row); no order update is put on the buffer.</td></tr>
+<tr><th>Fails when</th><td>A place call returns normally; the broker or the journal sees the order; an order update appears.</td></tr>
+</tbody></table></div></details>
+<details><summary>S11. Read positions and balances<span class="count">features 9</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_positions_and_balances</code></td></tr>
+<tr><th>Given</th><td>Long 1 MES after a BUY 1 MKT fill at average price P.</td></tr>
+<tr><th>When</th><td>Ask for a position snapshot for the configured accounts. Read the balance updates.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker}; snapshot timeout ∈ {5 s}</td></tr>
+<tr><th>Passes when</th><td>The snapshot returns +1 MES with average price P for the account within the timeout. Each balance update carries its account and the currency USD.</td></tr>
+<tr><th>Fails when</th><td>The snapshot times out while connected; a size other than +1; a balance update without account or currency.</td></tr>
+</tbody></table></div></details>
+<details><summary>S12. Fetch history and seed bars<span class="count">features 8, 12</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_history_and_seed_bars</code></td></tr>
+<tr><th>Given</th><td>Connected (IBKR) or the golden tape loaded (simulated).</td></tr>
+<tr><th>When</th><td>Request daily history for MES over the window; request seed bars for the prior session.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper, simulated broker} × window ∈ {2 months, start and end dates}; simulated tape ∈ {golden tape, tape with no prior session}</td></tr>
+<tr><th>Passes when</th><td>Daily bars are in time order with dates in UTC; the last daily bar is the last completed session; no bar falls after the window. Seed bars are 1-second bars inside the prior session. Simulated golden tape: daily ATR(14) = 20.00. Tape with no prior session: seed bars are an empty list.</td></tr>
+<tr><th>Fails when</th><td>A bar out of order or after the window; a daily bar for a session that is not complete; a seed bar outside the prior session; a simulated ATR(14) other than 20.00.</td></tr>
+</tbody></table></div></details>
+<details><summary>S13. Heartbeat and reconnect<span class="count">features 1, 11</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_heartbeat_and_reconnect</code></td></tr>
+<tr><th>Given</th><td>Connected, streaming MES, with the last order id K.</td></tr>
+<tr><th>When</th><td>Heartbeat with the timeout; reconnect; wait up to the first-message wait; place BUY 1 MKT and SELL 1 MKT. Then disconnect and heartbeat again.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper}; heartbeat timeout ∈ {3.0 s}</td></tr>
+<tr><th>Passes when</th><td>The first heartbeat returns True within the timeout. After the reconnect: MES ticks arrive again, both orders give order updates and fills, the first new order id is &gt; K, and no event carries the old connection generation. After the disconnect the heartbeat returns False within the timeout.</td></tr>
+<tr><th>Fails when</th><td>True from a disconnected socket, or False from a connected one; a stream missing after the reconnect; an order id ≤ K; an event from the old generation.</td></tr>
+</tbody></table></div></details>
+<details><summary>S14. Add an instrument while streaming<span class="count">features 13</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_add_instrument_while_streaming</code></td></tr>
+<tr><th>Given</th><td>Connected, streaming MES.</td></tr>
+<tr><th>When</th><td>Resolve and subscribe ES; wait up to the first-message wait. Then release the ES subscription.</td></tr>
+<tr><th>Parameter cases</th><td>subclass ∈ {IBKR paper}</td></tr>
+<tr><th>Passes when</th><td>ES ticks arrive; MES is subscribed exactly once during the whole run and its ticks keep arriving. After the release no ES tick arrives and MES still streams.</td></tr>
+<tr><th>Fails when</th><td>MES is subscribed again or stops; no ES tick; an ES tick after the release.</td></tr>
 </tbody></table></div></details>
 
 <details><summary>1. Connect and reconnect<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -435,14 +561,15 @@
 <tr><td><code>test_order_ids_never_regress_on_reconnect</code></td><td>—</td><td>first order id after reconnect</td><td>&gt; last order id before</td></tr>
 </tbody></table></div></details>
 
-<details><summary>2. Ticks reach the event buffer in time order<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_ticks_appended_in_time_order</code></td><td>subclass ∈ {IBKR, simulated}</td><td>timestamps in the buffer</td><td>never decreasing; price, size, instrument unchanged</td></tr>
+<details><summary>2. Market data reaches the event buffer in time order<span class="count">4 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_market_data_appended_in_time_order</code></td><td>subclass ∈ {IBKR (<code>tick_update</code>), simulated (<code>bar_update</code>)}</td><td>timestamps in the buffer</td><td>never decreasing; prices, sizes, instrument unchanged</td></tr>
+<tr><td><code>test_declared_message_type_matches_messages_sent</code></td><td>—</td><td>messages of a type other than the declared one, per instrument</td><td>0</td></tr>
 <tr><td><code>test_reader_thread_wakes_loop_through_thread_safe_call</code></td><td>—</td><td>loop state written from the reader thread</td><td>0 writes; one wake-up call per burst</td></tr>
 <tr><td><code>test_last_tick_ts_ignores_instrument_whose_data_session_is_closed</code></td><td>—</td><td>last tick time while Eurex is closed and CME trades</td><td>follows CME ticks only</td></tr>
 </tbody></table></div></details>
 
 <details><summary>3. Contracts come from the exchange profile<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_contract_resolved_from_exchange_profile</code></td><td>exchange ∈ {CME, Eurex} × asset class ∈ {future}</td><td>venue, currency, trading class of the resolved contract</td><td>equal to the exchange profile</td></tr>
+<tr><td><code>test_contract_resolved_from_exchange_profile</code></td><td>(exchange, asset class) ∈ {(CME, future), (Eurex, future), (NASDAQ, stock)}</td><td>venue, currency, trading class of the resolved contract</td><td>equal to the exchange profile</td></tr>
 <tr><td><code>test_shared_symbol_instruments_keyed_apart</code></td><td>pair ∈ {FDAX/FDXS, FDAX/FDXM}</td><td>contracts, subscriptions, fills, positions that collide</td><td>0</td></tr>
 </tbody></table></div></details>
 
@@ -463,7 +590,7 @@
 <tr><td><code>test_sim_resting_order_fills_on_touch_or_gap</code></td><td>case ∈ {touch, gap}</td><td>fill price</td><td>touch → level; gap → bar open</td></tr>
 <tr><td><code>test_sim_stop_wins_when_both_legs_touch</code></td><td>—</td><td>filled leg; other leg's status</td><td>stop; CANCELLED</td></tr>
 <tr><td><code>test_sim_order_into_filled_group_rejected</code></td><td>—</td><td>status of the new order</td><td>REJECTED</td></tr>
-<tr><td><code>test_sim_market_fill_at_reference_price_plus_slippage</code></td><td>reference ∈ {bar close} × slippage (values open, Q3)</td><td>fill price</td><td>reference ± slippage × tick, exact</td></tr>
+<tr><td><code>test_sim_market_fill_at_reference_price_plus_slippage</code></td><td>reference ∈ {bar close} × slippage ∈ {0, 1, 2} ticks</td><td>fill price</td><td>reference ± slippage × tick, exact</td></tr>
 </tbody></table></div></details>
 
 <details><summary>7. Executions and open orders on request<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -511,15 +638,22 @@
 <div class="eyebrow">Gateway · Open questions</div>
 <h2>Open questions</h2>
 <p>Gaps found while writing the features. Each one needs a human answer; the answer goes into the feature's Parameters or Algorithm.</p>
+<p>All decided on 2026-11-09.</p>
 <ol>
-<li><strong>Market data type (feature 2).</strong> Tick-by-tick is the only supported type. Options have no tick-by-tick data at IBKR. Which other feed types must the Gateway support, and when?</li>
-<li><strong>Order types and time in force (feature 4).</strong> MKT, STP and LMT, DAY, and outside regular hours: fixed for v3, or configurable per strategy? Are more types (for example stop-limit) planned?</li>
-<li><strong>Simulated slippage (feature 6).</strong> Which slippage values in ticks are supported, and what is the default?</li>
-<li><strong>History source bar size (feature 8).</strong> Which intraday bar size does each subclass request to build the daily frame and the seed bars?</li>
-<li><strong>Position snapshot timeout (feature 9).</strong> Value not stated. Fixed or configurable?</li>
-<li><strong>Flat-bar padding (feature 12).</strong> How long is the padding before and after the session, and is padding on by default?</li>
-<li><strong>Heartbeat timeout (feature 11).</strong> The default is 3.0 s per call. Is the timeout set by Safety's config, or fixed?</li>
-<li><strong>Boundary (Goal and scope).</strong> The bar from the Event Loop and the contract, subscribe and unsubscribe requests are not on the System map's Gateway <em>Receives</em> line. Add them there?</li>
+<li><strong>Market data type (feature 2).</strong> <code>tick_update</code> and <code>bar_update</code>. Options and their feed move to a later version, and <code>quote_update</code> comes into scope with them (<a href="system_map.html#d54">System map decision 54</a>).</li>
+<li><strong>Order types and time in force (feature 4).</strong> MKT, STP, LMT; DAY; outside regular hours allowed. Fixed for v3; no stop-limit (<a href="system_map.html#d56">System map decision 56</a>).</li>
+<li><strong>Simulated slippage (feature 6).</strong> Any integer ≥ 0 ticks, configurable per process; default 0.</li>
+<li><strong>History source bar size (feature 8).</strong> IBKR builds the daily frame from 1-minute bars and serves seed bars as 1-second bars; the simulated broker uses its 1-second tape.</li>
+<li><strong>Position snapshot timeout (feature 9).</strong> Configurable per process; default 5 s.</li>
+<li><strong>Flat-bar padding (feature 12).</strong> <code>replay.pad_before_s</code> and <code>replay.pad_after_s</code>, any seconds ≥ 0; default 0 (off).</li>
+<li><strong>Heartbeat timeout (feature 11).</strong> Set by Safety's config (<code>heartbeat_timeout_s</code>); default 3.0 s.</li>
+</ol>
+
+<h3>Open questions on the end-to-end scenarios</h3>
+<ol>
+<li><strong>Scenario waits (End-to-end scenarios).</strong> Decided 2026-11-09: first-message wait 30 s, fill wait 30 s, rest check 10 s; configurable in the test config with these defaults.</li>
+<li><strong>Resting distance (End-to-end scenarios).</strong> Decided 2026-11-09: 2% of the last price, in whole ticks.</li>
+<li><strong>Paper account and stock (End-to-end scenarios).</strong> Decided 2026-11-09: the account comes from the test <code>.env</code> file; the instruments come from a test instrument config.</li>
 </ol>
 </section>
 
@@ -583,7 +717,7 @@
 <tr><td>14. Hot-add</td><td><code>unsubscribe_tick()</code></td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
-<pre><code>"""Skeleton contract for the Gateway component (Alchemist v3, draft)."""
+<pre><code>"""Skeleton contract for the Gateway component (Alchemist v3)."""
 
 from __future__ import annotations
 
@@ -601,7 +735,8 @@ class Gateway(ABC):
     event_buffer: deque
     #   the one shared queue the Event Loop drains; entries are
     #   {'event_type', 'data', 'enqueued_at'} with event_type in
-    #   tick, order_update, position_update, balance_update, end_of_data
+    #   tick_update, bar_update, order_update, position_update,
+    #   balance_update, end_of_data
 
     # ---- required (Behaviours 1-9) ----
     @abstractmethod
@@ -678,6 +813,9 @@ class Gateway(ABC):
     def set_instrument_sessions(self, sessions: dict[Instrument, str]) -&gt; None:
         """Behaviours 2, 14: which data session judges each instrument's feed."""
 
+    def market_data_type(self, instrument: Instrument) -&gt; tuple[str, float | None]:
+        """Feature 2: ('tick_update', None) or ('bar_update', resolution_s)."""
+        return ("tick_update", None)
     def market_data_ready(self) -&gt; bool:
         return True
 
@@ -728,11 +866,11 @@ GATEWAYS: dict[str, type[Gateway]] = {}   # Behaviour 10: picked by name
 <div class="decision"><h3><span class="num">6</span>What about the broker's pending-cancel status and refused cancels?</h3>
 <p class="q">Pending-cancel is dropped: Order Manager learns of a cancel only from the final Cancelled. A refused cancel becomes a CANCEL_REJECTED update by order id.</p></div>
 
-<h3>Proposed · not agreed</h3>
+<h3>Agreed at finalize · 2026-11-09</h3>
 <div class="decision"><h3><span class="num">7</span>Who prepares replay data?</h3>
 <p class="q">The simulated broker (<code>SimulationGateway</code>), on request, from a tape source (<a href="#f12">feature 12</a>). The runner only names the tape, the date and the session in config.</p>
 <p class="rej">Rejected: the runner slicing the tape and writing history files before start (a second history path beside the Gateway, and it must read strategies before they exist to know which columns to build).</p>
-<p class="when">proposed · 2026-11-07</p></div>
+<p class="when">agreed 2026-11-09 · 2026-11-07</p></div>
 </div>
 </section>
 </div>

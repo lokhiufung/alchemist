@@ -34,8 +34,13 @@
 <div class="eyebrow">Component map · ORDER_MANAGER_MAP · Alchemist v3</div>
 <h1>Order Manager</h1>
 <div class="lede"><p>The slot's order clerk. Order Manager builds every order, sends each order to the Gateway exactly once, and follows each order from submission to a closed status, so the slot can always ask which orders are the slot's own, which orders still work, and how much each order filled.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> Features 1–5 and decisions 2–16 are settled. Multi-asset: every order carries its instrument (System map decision 37). Open questions are listed at the end.</p>
+<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. Features 1–5 and decisions 2–16 are settled. Multi-asset: every order carries its instrument (System map decision 37).</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
+<li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (7 scenarios, proposed, not agreed).</li>
+<li><strong>2026-11-09</strong> — v3 finalized: the human accepted every proposed feature and decision.</li>
+<li><strong>2026-11-09</strong> — Open question decided: order types fixed for v3.</li>
+<li><strong>2026-11-09</strong> — Review fixes: feature 1 takes the order id from the Gateway and records the order before the send; Sample G uses the new golden run.</li>
 <li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 5 features (Need / Upstream gives / Algorithm / Parameters / Invariant; same numbers as the old behaviours) → quantified tests with parameter cases, samples G and C as end-to-end tests → open questions → reference. Algorithm map added.</li>
 </ul></details></div>
 </header>
@@ -174,12 +179,12 @@
 <dt>Need</dt><dd>StrategyExecution sends entry and exit orders and must never send one order twice. Every slot sees every update, so the slot must know which orders are the slot's own.</dd>
 <dt>Upstream gives</dt><dd>StrategyExecution gives an order request: type, side, quantity, instrument, and a stop or limit price for STP and LMT. The Gateway gives the next order id (<a href="gateway_map.html#f4">Gateway feature 4</a>).</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Take a new order id; stamp the slot's account, the instrument and the slot tag.</li>
-<li>Send the order to the Gateway exactly once.</li>
-<li>Record the order in the submitted store as owned by the slot.</li>
+<li>Take the next order id from the Gateway (<code>next_order_id()</code>); stamp the id, the slot's account, the instrument and the slot tag.</li>
+<li>Record the order in the submitted store as owned by the slot, before the send, so an update that arrives at once finds its owner.</li>
+<li>Send the order with that id to the Gateway exactly once. The Gateway does not number the order again.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Order types</td><td>Open (same as <a href="gateway_map.html#open-questions">Gateway Q2</a>)</td><td>MKT, STP, LMT</td><td>—</td></tr>
+<tr><td>Order types</td><td>Fixed for v3 (<a href="system_map.html#d56">System map decision 56</a>)</td><td>MKT, STP, LMT</td><td>—</td></tr>
 <tr><td>Quantity per entry</td><td>Fixed by <a href="system_map.html#d24">System map decision 24</a></td><td>1 unit</td><td>1 unit</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>Every order the Gateway receives from this slot is owned by this slot, and no order id is sent twice.</dd>
@@ -249,8 +254,8 @@
 
 <details open><summary>End to end · Sample G, the system golden sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_golden_two_market_orders</code></td></tr>
-<tr><th>Input</th><td>A BUY 1 MKT request, then broker updates Submitted and Filled 1; later a SELL 1 MKT request, then Submitted and Filled 1 (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
-<tr><th>Passes when</th><td>The Gateway received exactly two orders, each once; both are reported closed, Filled with filled 1; the working-order answer is empty.</td></tr>
+<tr><th>Input</th><td>The two orders of the golden run for MES: a BUY 1 MES MKT request, then broker updates Submitted and Filled 1 at the bar close; later a SELL 1 MES MKT request, then Submitted and Filled 1 (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
+<tr><th>Passes when</th><td>Each order id came from <code>next_order_id()</code> and was recorded before the send; the Gateway received exactly two orders, each once; both are reported closed, Filled with filled 1; the working-order answer is empty.</td></tr>
 <tr><th>Fails when</th><td>An order is sent to the Gateway twice; an order is still reported working after its Filled; or a second Filled update for an already filled order is returned as a change.</td></tr>
 </tbody></table></div></details>
 
@@ -259,6 +264,65 @@
 <tr><th>Input</th><td>(a) BUY 1 MKT, Submitted, Filled 1 @ P. (b) A group of STP SELL 1 and LMT SELL 1, OPEN for both. (c) Cancel the group; LMT Cancelled (0 filled), later STP Filled 1. (d) Cancel the filled entry.</td></tr>
 <tr><th>Passes when</th><td>Three orders were sent; the two group orders share one fresh name with OCA type 2 and DAY. Right after (c) both group orders are cancelling and the group is not closed; after LMT Cancelled the group is still not closed; after STP Filled the group is closed, STP filled 1, LMT filled 0, nothing open or cancelling. (d) returns CANCEL_REJECTED_INTERNALLY and sends nothing.</td></tr>
 <tr><th>Fails when</th><td>The group or an order is reported closed because of the cancel request alone, or after only one order's closed status; a cancelling order is reported open; a cancel is sent for an order that is not open; the two orders carry different names; or the name equals an earlier name.</td></tr>
+</tbody></table></div></details>
+
+<h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
+<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/order_manager/test_order_manager_scenarios.py</code>. A Gateway fake gives order ids and records every order and cancel; the test plays Strategy (order updates, ownership checks) and StrategyExecution (orders, cancels, queries).</p>
+<details><summary>S1. Market order life<span class="count">features 1, 3, 4</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_market_order_life</code></td></tr>
+<tr><th>Given</th><td>A slot with account SIM and slot tag T.</td></tr>
+<tr><th>When</th><td>Submit BUY 1 MKT; send Submitted, then Filled 1 @ P, then Filled again.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>One send, with the Gateway's id, account SIM, the instrument and tag T; the order is in the submitted store before the send. Filled: the order is closed with filled quantity 1 at P, and the change carries a fill delta of 1. The repeated Filled returns nothing. The status query answers FILLED, 1, P.</td></tr>
+<tr><th>Fails when</th><td>Two sends; the order not owned when the first update arrives; a change returned for the repeat.</td></tr>
+</tbody></table></div></details>
+<details><summary>S2. Limit order cancelled<span class="count">features 3, 5</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_limit_order_cancel</code></td></tr>
+<tr><th>Given</th><td>A LMT order, OPEN.</td></tr>
+<tr><th>When</th><td>Cancel it; send Cancelled (case cancelled) or CANCEL_REJECTED (case refused).</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {cancelled, refused}</td></tr>
+<tr><th>Passes when</th><td>One cancel sent; the order is cancelling. Cancelled: closed with filled 0. Refused: open again.</td></tr>
+<tr><th>Fails when</th><td>Two cancels; a cancelling order reported open; a refused cancel closes the order.</td></tr>
+</tbody></table></div></details>
+<details><summary>S3. Cancel of an order that is not open<span class="count">features 5</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_cancel_not_open</code></td></tr>
+<tr><th>Given</th><td>Orders in each state of the case.</td></tr>
+<tr><th>When</th><td>Cancel each by id.</td></tr>
+<tr><th>Parameter cases</th><td>state ∈ {unknown id, submitted, cancelling, closed}</td></tr>
+<tr><th>Passes when</th><td>Each call returns CANCEL_REJECTED_INTERNALLY, sends nothing, changes nothing and logs one warning.</td></tr>
+<tr><th>Fails when</th><td>A cancel sent; a state change.</td></tr>
+</tbody></table></div></details>
+<details><summary>S4. Group with a fill race (Sample C)<span class="count">features 2, 3, 4, 5</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_group_cancel_race_fill_wins</code></td></tr>
+<tr><th>Given</th><td>See the end-to-end Sample C above.</td></tr>
+<tr><th>When</th><td>As Sample C, plus three groups in a row.</td></tr>
+<tr><th>Parameter cases</th><td>slot name length ∈ {1, 40, 100} characters</td></tr>
+<tr><th>Passes when</th><td>As Sample C; the three group names differ and each has at most 48 characters.</td></tr>
+<tr><th>Fails when</th><td>As Sample C; a repeated name; a name over 48 characters.</td></tr>
+</tbody></table></div></details>
+<details><summary>S5. A cancel the slot did not ask for<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_unrequested_cancel</code></td></tr>
+<tr><th>Given</th><td>An OPEN leg of a group.</td></tr>
+<tr><th>When</th><td>Send Cancelled for it (the OCA sibling filled).</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>The leg is closed directly, with filled 0.</td></tr>
+<tr><th>Fails when</th><td>The leg stays open or moves to cancelling.</td></tr>
+</tbody></table></div></details>
+<details><summary>S6. Updates for other slots are ignored<span class="count">features 3, 4</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_foreign_update</code></td></tr>
+<tr><th>Given</th><td>Two slots, each with one open order.</td></tr>
+<tr><th>When</th><td>Send slot 2's Filled to slot 1.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>Slot 1 returns nothing, logs nothing and changes nothing; an ownership check for that id answers not owned.</td></tr>
+<tr><th>Fails when</th><td>Slot 1 changes or logs anything.</td></tr>
+</tbody></table></div></details>
+<details><summary>S7. A rejected order closes<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_rejected_order</code></td></tr>
+<tr><th>Given</th><td>A submitted BUY 1 MKT.</td></tr>
+<tr><th>When</th><td>Send Rejected.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>The order is closed with filled 0; one log line in the owning slot only; no retry is sent.</td></tr>
+<tr><th>Fails when</th><td>A retry; a log line in another slot.</td></tr>
 </tbody></table></div></details>
 
 <details><summary>1. Every order is sent once and owned<span class="count">1 test · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -294,8 +358,9 @@
 <section id="open-questions">
 <div class="eyebrow">Order Manager · Open questions</div>
 <h2>Open questions</h2>
+<p>All decided on 2026-11-09.</p>
 <ol>
-<li><strong>Order types (feature 1).</strong> Order Manager supports the order types the Gateway supports (<a href="gateway_map.html#open-questions">Gateway open question 2</a>). Same answer for both pages?</li>
+<li><strong>Order types (feature 1).</strong> Same answer as the Gateway: MKT, STP and LMT, fixed for v3 (<a href="system_map.html#d56">System map decision 56</a>).</li>
 </ol>
 </section>
 
@@ -339,7 +404,7 @@
 <tr><td>the four stores</td><td>Submitted, open, cancelling, closed — by order id.</td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
-<pre><code>"""Skeleton contract for Order Manager (Alchemist v3, draft)."""
+<pre><code>"""Skeleton contract for Order Manager (Alchemist v3)."""
 
 from __future__ import annotations
 

@@ -34,8 +34,13 @@
 <div class="eyebrow">Component map · STRATEGY_EXECUTION_MAP · Alchemist v3</div>
 <h1>StrategyExecution</h1>
 <div class="lede"><p>The decision state machine inside each slot. StrategyExecution knows which phase the slot is in, asks the signal only the question that phase needs, sends only the orders that phase allows, and decides what each order event means.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> Features 1–12 and decisions 1–22 are settled. The calls on the signal use the v3 signal interface. Open questions are listed at the end.</p>
+<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. Features 1–12 and decisions 1–22 are settled. The calls on the signal use the v3 signal interface.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
+<li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (10 scenarios, proposed, not agreed).</li>
+<li><strong>2026-11-09</strong> — v3 finalized: the human accepted every proposed feature and decision.</li>
+<li><strong>2026-11-09</strong> — Open question decided: error reminder interval 300 s. Feature 8: entries need <code>ready_to_arm</code> (System map decision 52).</li>
+<li><strong>2026-11-09</strong> — Review fixes: the signal is stepped on every in-session bar in every phase (feature 1); entries need warmup-ready and aux-ready (feature 8); Sample G is the new golden run.</li>
 <li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 12 features (Need / Upstream gives / Algorithm / Parameters / Invariant; same numbers as the old behaviours) with the phase table under the algorithm map → quantified tests with parameter cases, samples G and P as end-to-end tests → open questions → reference. Algorithm map added.</li>
 <li><strong>2026-11-07</strong> — Startup checks and the entry log read the signal only through its public methods (decision 23).</li>
 </ul></details></div>
@@ -228,6 +233,7 @@
 <dt>Need</dt><dd>A slot must never have two orders in flight, never trade past its daily cap, and must keep its exit levels fixed at the entry bar for the whole trade.</dd>
 <dt>Upstream gives</dt><dd>Bars from Strategy, the signal's entry and exit answers (<a href="strategy_signal_map.html#f3">StrategySignal feature 3</a>), and order outcomes from Order Manager (<a href="order_manager_map.html#f4">Order Manager feature 4</a>).</dd>
 <dt>Algorithm</dt><dd><ol>
+<li>On every in-session bar, in every phase (including DONE, ERROR and SESSION_END_FLATTENING), call the step-signal callback exactly once, before the phase logic. The signal then holds that bar's values, and the rearm gate sees every bar.</li>
 <li>While flat, ask for the entry answer on each in-session bar; on true, freeze the signal's exit inputs, then send one entry order.</li>
 <li>On the entry fill, be in position. On a bar-close exit answer, send one exit order.</li>
 <li>On the exit fill, be flat, count the round trip, release the frozen inputs, and go to DONE at the daily cap.</li>
@@ -324,7 +330,7 @@
 <dt>Need</dt><dd>A slot must not enter before the signal is warm or outside its session, and must get its daily quota back on each new trading date.</dd>
 <dt>Upstream gives</dt><dd>Warmup-ready and aux-ready from Strategy (<a href="strategy_map.html#f3">Strategy feature 3</a>), and the instrument's exchange profile with sessions, holidays and the overnight session roll.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Seek entries only while warmup is ready and the bar is in session. A half-session holiday counts as closed; if the calendar is unavailable, fall back to open.</li>
+<li>Seek entries only while <code>ready_to_arm</code> (warmup-ready AND aux-ready) holds and the bar is in session. Strategy is the only writer of both flags (<a href="system_map.html#d52">System map decision 52</a>). A half-session holiday counts as closed; if the calendar is unavailable, fall back to open.</li>
 <li>On the first bar of a new trading date (overnight sessions: at the session roll, not midnight), reset the round-trip count and let a DONE slot trade again, without disturbing an open position.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
@@ -352,7 +358,7 @@
 <li>On release, restart from WAITING_FOR_WORKING_HOURS, except a slot quarantined while DONE, which returns to DONE on the same trading date.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Reminder interval</td><td>Open (<a href="#open-questions">Q1</a>)</td><td>not stated</td><td>—</td></tr>
+<tr><td>Reminder interval</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any positive seconds</td><td>300 s</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>An ERROR slot never sends an order; a quarantine and release never lets the slot exceed its daily cap.</dd>
 </dl></div>
@@ -363,7 +369,7 @@
 <dt>Algorithm</dt><dd><ol>
 <li>Enter SESSION_END_FLATTENING. On each call: cancel every open order; while Order Manager has a submitted, open or cancelling order, wait; when flat, go to DONE; otherwise send one market order for the booked position, with no OCA group.</li>
 <li>Do not resend a rejected flatten order on the same trading date, even across a quarantine.</li>
-<li>While flattening, handle no bar and let no order update change the phase; the flatten fill counts no round trip.</li>
+<li>While flattening, step the signal (<a href="#f1">feature 1</a>) but take no other action on a bar, and let no order update change the phase; the flatten fill counts no round trip.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>No market order while an order of the slot may still fill; at most one flatten market order per trading date; the same rule for every class.</dd>
@@ -388,10 +394,10 @@
 <p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. Inputs are scripted bars and order updates; the Order Manager mock's answers are scripted with them. No StrategyExecution test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
 
 <details open><summary>End to end · Sample G, the system golden sample (base class)<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
-<tr><th>Test</th><td><code>tests/execution/test_execution_sample.py::test_level_cross_entry_then_target_exit</code></td></tr>
-<tr><th>Input</th><td>Synthetic bars rising through L and later reaching T; a long-1 fixed-rule signal stub (entry true on the L-cross bar, exit true on the T bar); a fill for each order sent (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
-<tr><th>Passes when</th><td>Exactly one entry and one exit order reach Order Manager, on those bars; "processing an order?" is true only between each order's submission and its fill.</td></tr>
-<tr><th>Fails when</th><td>An order is sent before the L-cross bar; a second buy is sent while the first is pending; or an order is sent after the exit fill.</td></tr>
+<tr><th>Test</th><td><code>tests/execution/test_execution_sample.py::test_golden_macd_entry_then_target_exit</code></td></tr>
+<tr><th>Input</th><td>The golden session's 23,400 bars for MES (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>), a scripted signal stub that answers entry true on one phase B bar and exit <code>target</code> true on the target bar, daily cap 1, warmup-ready and aux-ready set before the first bar, and a fill at the bar close for each order sent.</td></tr>
+<tr><th>Passes when</th><td>The signal is stepped once on every bar, in every phase; exactly one BUY 1 MKT and one SELL 1 MKT reach Order Manager, on those bars; "processing an order?" is true only between each order's submission and its fill; the slot is DONE after the exit fill and sends nothing in phase C.</td></tr>
+<tr><th>Fails when</th><td>An order is sent before the entry bar; a second buy is sent while the first is pending or after the daily cap; a bar is not stepped; or an order is sent after the exit fill.</td></tr>
 </tbody></table></div></details>
 
 <details open><summary>End to end · Sample P, component-level protected sample<span class="count">1 test · 6 cases</span></summary><div class="table-wrap"><table><tbody>
@@ -400,6 +406,89 @@
 <tr><th>Parameter cases</th><td>case ∈ {A: STP fills, then LMT Cancelled → flat, one round trip, no market order; B: end-of-day cutoff bar, MKT fills, legs Cancelled → one MKT SELL 1 carrying G, no cancel, one round trip; B2: STP fills, then the joined MKT is Rejected → as B, round trip is the STP's, no second MKT; C: STP Rejected at placement, LMT OPEN, later a stop bar → fallback, no new group, one MKT SELL 1 into G; D: STP fills before the LMT is acknowledged → flat, one round trip, no market order; E: session-end flatten → both legs cancelled, once both are final one MKT outside G for the remaining position (none if a leg filled), DONE, no round trip}</td></tr>
 <tr><th>Passes when</th><td>Every signal market exit of the trade carries G; no cancel comes before a signal market exit; at most one group per trade; the slot ends flat with one round trip per trade; no second exit fills.</td></tr>
 <tr><th>Fails when</th><td>A market exit is sent without G while a leg may still fill; a cancel comes before a market exit; a second group is placed in one trade; a leg fill that makes the slot flat is not counted; or a selected condition is skipped while no working leg covers it.</td></tr>
+</tbody></table></div></details>
+
+<h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
+<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/strategy_execution/test_execution_scenarios.py</code>. A signal stub plays scripted entry and exit answers and levels; an Order Manager fake records orders and cancels and plays scripted order updates; a state store stub keeps the round-trip count in memory.</p>
+<details><summary>S1. A bar-close round trip<span class="count">features 1</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_bar_close_round_trip</code></td></tr>
+<tr><th>Given</th><td>A base-class slot, flat, ready to arm, in session.</td></tr>
+<tr><th>When</th><td>Entry is true on bar 3; BUY fills on bar 3; exit is true on bar 7; SELL fills on bar 7; entry is true again on bar 8.</td></tr>
+<tr><th>Parameter cases</th><td>daily cap ∈ {1, 2}</td></tr>
+<tr><th>Passes when</th><td>The signal is stepped once on every bar. Bar 3: exit inputs frozen, then one BUY 1 MKT. Bar 7: one SELL 1 MKT. After the SELL fill: flat, count 1, inputs released. Cap 1: DONE and no order on bar 8. Cap 2: a second BUY on bar 8.</td></tr>
+<tr><th>Fails when</th><td>An order before the freeze; a second entry while in position; an order on bar 8 at cap 1; a skipped step.</td></tr>
+</tbody></table></div></details>
+<details><summary>S2. A dead entry returns to seeking<span class="count">features 1</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_dead_entry</code></td></tr>
+<tr><th>Given</th><td>As above.</td></tr>
+<tr><th>When</th><td>Entry true on bar 3; the BUY is REJECTED; entry true on bar 5.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>After the reject: entry seeking, inputs released, no other order on bar 3 or 4; one new BUY on bar 5.</td></tr>
+<tr><th>Fails when</th><td>A resend on the reject; inputs still frozen; no BUY on bar 5.</td></tr>
+</tbody></table></div></details>
+<details><summary>S3. Entries wait for readiness and the session<span class="count">features 8</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_ready_and_session_gate</code></td></tr>
+<tr><th>Given</th><td>A flat slot.</td></tr>
+<tr><th>When</th><td>Bars with <code>ready_to_arm</code> false, an out-of-session bar, then a new trading date for a DONE slot.</td></tr>
+<tr><th>Parameter cases</th><td>session ∈ {NY_RTH, overnight (roll at the session roll)}</td></tr>
+<tr><th>Passes when</th><td>No entry question while not ready or out of session; on the first bar of the new trading date the count resets and the DONE slot seeks entries again.</td></tr>
+<tr><th>Fails when</th><td>An entry while not ready or out of session; a reset at midnight for an overnight session.</td></tr>
+</tbody></table></div></details>
+<details><summary>S4. "Processing an order?" in every phase<span class="count">features 2</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_processing_answer</code></td></tr>
+<tr><th>Given</th><td>A protected slot driven through every phase.</td></tr>
+<tr><th>When</th><td>Ask the question in each phase.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>True in PROCESSING_ENTRY_ORDER, PROCESSING_EXIT_ORDER and PROCESSING_PROTECTION_ORDERS; in SESSION_END_FLATTENING only while an order may still fill; false in every other phase, including IN_POSITION_PROTECTED.</td></tr>
+<tr><th>Fails when</th><td>Any phase answers otherwise.</td></tr>
+</tbody></table></div></details>
+<details><summary>S5. Protected trades (Sample P)<span class="count">features 3, 4, 5, 6, 7</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_protected_sample</code></td></tr>
+<tr><th>Given</th><td>See the end-to-end Sample P above.</td></tr>
+<tr><th>When</th><td>The six cases of Sample P, plus a stop-loss-class slot.</td></tr>
+<tr><th>Parameter cases</th><td>class ∈ {protected, stop-loss}; stop-loss offset ∈ {2 points}</td></tr>
+<tr><th>Passes when</th><td>As Sample P. Stop-loss class: one STP leg at the node level moved 2 points against the trade (long: below), and every condition judged at bar close in every phase.</td></tr>
+<tr><th>Fails when</th><td>As Sample P; a stop-loss leg on the wrong side; a masked condition in the stop-loss class.</td></tr>
+</tbody></table></div></details>
+<details><summary>S6. No level means no protection<span class="count">features 3</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_unprotected_fallback</code></td></tr>
+<tr><th>Given</th><td>A protected slot after an entry fill.</td></tr>
+<tr><th>When</th><td>The signal gives no level (case a), or the latest close already crossed the stop (case b).</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {no level, stop crossed}</td></tr>
+<tr><th>Passes when</th><td>No group is placed; the slot stays IN_POSITION_ACTIVITY and judges every exit at bar close.</td></tr>
+<tr><th>Fails when</th><td>A group is placed.</td></tr>
+</tbody></table></div></details>
+<details><summary>S7. A failed exit is never resent<span class="count">features 12</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_failed_exit</code></td></tr>
+<tr><th>Given</th><td>A slot in position.</td></tr>
+<tr><th>When</th><td>Exit true; the SELL is REJECTED; next bar; the flatten MKT is REJECTED too; next bar.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>After the first reject: CRITICAL, no new exit, "flatten wanted" reported. After the flatten reject: CRITICAL and no resend on any later bar.</td></tr>
+<tr><th>Fails when</th><td>Any resend of an exit or of the flatten order.</td></tr>
+</tbody></table></div></details>
+<details><summary>S8. Session-end flatten<span class="count">features 11</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_session_end_flatten</code></td></tr>
+<tr><th>Given</th><td>A protected slot in position with two working legs.</td></tr>
+<tr><th>When</th><td>Flatten calls on three bars: legs cancelled on the first, final on the second; the flatten MKT fills on the third. Second case: the flatten MKT is REJECTED, the slot is quarantined and released the same date.</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {fills, rejected then quarantined}</td></tr>
+<tr><th>Passes when</th><td>Every open order is cancelled; no market order while an order is submitted, open or cancelling; then one MKT for the booked position with no OCA group; DONE after the fill; the fill counts no round trip. Rejected case: no second flatten order on that date, even after the release.</td></tr>
+<tr><th>Fails when</th><td>A MKT while a leg works; an OCA group on the flatten; a round trip counted; a resend on the same date.</td></tr>
+</tbody></table></div></details>
+<details><summary>S9. A quarantined slot sends nothing<span class="count">features 10</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_quarantine</code></td></tr>
+<tr><th>Given</th><td>A slot quarantined while seeking (case a) or while DONE (case b).</td></tr>
+<tr><th>When</th><td>Run 700 s of bars with entry true; release.</td></tr>
+<tr><th>Parameter cases</th><td>reminder interval ∈ {300 s}</td></tr>
+<tr><th>Passes when</th><td>No order on any bar; reminders at most once per 300 s (3 reminders in 700 s at most); on release case a restarts from WAITING_FOR_WORKING_HOURS and case b returns to DONE on the same date.</td></tr>
+<tr><th>Fails when</th><td>An order while in ERROR; more reminders than the interval allows; a DONE slot trades again on the same date.</td></tr>
+</tbody></table></div></details>
+<details><summary>S10. The round-trip count survives a restart<span class="count">features 9</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_count_restart</code></td></tr>
+<tr><th>Given</th><td>Count 1 persisted today; cap 1.</td></tr>
+<tr><th>When</th><td>Restart in session today; restart on the next trading date; restart with no store.</td></tr>
+<tr><th>Parameter cases</th><td>case ∈ {same day, next day, no store}</td></tr>
+<tr><th>Passes when</th><td>Same day: parked in DONE. Next day: count 0, seeking. No store: count 0.</td></tr>
+<tr><th>Fails when</th><td>A trade on the same day; a count carried to the next day.</td></tr>
 </tbody></table></div></details>
 
 <details><summary>1. One trade at a time, up to the daily cap<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -436,8 +525,9 @@
 <tr><td><code>test_lost_leg_falls_back_without_replacement</code></td><td>leg ends ∈ {Rejected, Cancelled}</td><td>phase; new groups; CRITICAL logs</td><td>IN_POSITION_ACTIVITY; 0; 1</td></tr>
 </tbody></table></div></details>
 
-<details><summary>8. Trade only while warm and in session; reset each day<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_no_entry_when_not_warm_or_out_of_session</code></td><td>case ∈ {not warm, out of session, half-session holiday}</td><td>entry orders</td><td>0</td></tr>
+<details><summary>8. Trade only while warm and in session; reset each day<span class="count">3 tests · 12 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_no_entry_when_not_warm_or_out_of_session</code></td><td>case ∈ {not warm, aux not ready, out of session, half-session holiday}</td><td>entry orders</td><td>0</td></tr>
+<tr><td><code>test_signal_stepped_once_per_in_session_bar_in_every_phase</code></td><td>phase ∈ {ENTRY_LOOP_ACTIVITY, PROCESSING_ENTRY_ORDER, IN_POSITION_ACTIVITY, PROCESSING_EXIT_ORDER, SESSION_END_FLATTENING, DONE, ERROR}</td><td>step-signal calls per in-session bar; order vs. phase logic</td><td>1; before</td></tr>
 <tr><td><code>test_daily_reset_at_overnight_session_roll</code></td><td>—</td><td>time of the count reset</td><td>at the session roll, not midnight</td></tr>
 </tbody></table></div></details>
 
@@ -464,8 +554,9 @@
 <section id="open-questions">
 <div class="eyebrow">StrategyExecution · Open questions</div>
 <h2>Open questions</h2>
+<p>All decided on 2026-11-09.</p>
 <ol>
-<li><strong>Error reminder interval (feature 10).</strong> Value not stated. What is the interval, and is the interval configurable?</li>
+<li><strong>Error reminder interval (feature 10).</strong> 300 s; configurable per process.</li>
 </ol>
 </section>
 
@@ -512,7 +603,7 @@
 <tr><td><code>entry_order_bar_ts</code></td><td>The bar that submitted the entry order; Strategy anchors the entry timestamp to it.</td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
-<pre><code>"""Skeleton contract for StrategyExecution (Alchemist v3, draft)."""
+<pre><code>"""Skeleton contract for StrategyExecution (Alchemist v3)."""
 
 from __future__ import annotations
 
@@ -586,7 +677,7 @@ class StopLossProtectedStrategyExecution(ProtectedStrategyExecution):
 <div class="decision"><h3><span class="num">20</span>Is the session-end flatten a signal exit?</h3><p class="q">No. Signal exits come from the signal (the protected class joins the OCA group); the flatten comes from outside the strategy (cancel all → wait for final → MKT → DONE, the same for every class). A rejected flatten order is not retried; the shutdown flat check is the backstop.</p></div>
 <div class="decision"><h3><span class="num">21</span>How does a slot pick its execution class?</h3><p class="q">Explicitly, by name, in the slot's execution block: <code>execution: {class: ProtectedStrategyExecution, resting_exits: {...}}</code>. The other keys are that class's options; no block builds the base class. Anything invalid fails startup naming the slot.</p><p class="rej">Rejected: inferring the class from an option; dropping an invalid block with a log line — a slot believed protected at the broker but not is exactly the risk the feature exists to remove.</p></div>
 <div class="decision"><h3><span class="num">22</span>A disaster stop without masking?</h3><p class="q"><code>StopLossProtectedStrategyExecution</code>: one STP at a named level ± an offset in points. Every exit stays a bar-close market order that joins the group; the stop is there for when the server is down.</p></div>
-<div class="decision"><h3><span class="num">23</span>What does StrategyExecution read from the signal besides its answers?</h3><p class="q">Only public methods: <code>entry_conditions()</code> for the entry log; <code>exit_condition_names()</code>, <code>condition_names()</code> and <code>has_level()</code> to check the execution block at startup; <code>params</code> for session, direction and the daily quota. It never reads the signal's private state (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading the signal's logic structure or value cache directly.</p><p class="when">proposed · v3 · 2026-11-07</p></div>
+<div class="decision"><h3><span class="num">23</span>What does StrategyExecution read from the signal besides its answers?</h3><p class="q">Only public methods: <code>entry_conditions()</code> for the entry log; <code>exit_condition_names()</code>, <code>condition_names()</code> and <code>has_level()</code> to check the execution block at startup; <code>params</code> for session, direction and the daily quota. It never reads the signal's private state (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading the signal's logic structure or value cache directly.</p><p class="when">agreed 2026-11-09 · v3 · 2026-11-07</p></div>
 <p class="meta">Decisions 1 and 12 are not used; the numbers are kept so references stay valid.</p>
 </div>
 </section>
