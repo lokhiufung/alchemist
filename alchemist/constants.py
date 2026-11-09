@@ -1,1 +1,0 @@
-LOGGING_DIR = './logs'
