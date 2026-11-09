@@ -10,6 +10,9 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _calcs: dict[str, dict[str, tuple[type, str]]] = {}
 _signal_dags: dict[str, tuple[type, str]] = {}
 _strategies: dict[str, tuple[type, str]] = {}
+_gateways: dict[str, tuple[type, str]] = {}
+_tapes: dict[str, tuple[type, str]] = {}
+_aux_sources: dict[str, tuple[type, str]] = {}
 
 
 def _caller_file(depth: int) -> Path:
@@ -51,8 +54,14 @@ def register_signal_dag(name: str) -> Callable[[type], type]:
     return _decorator(lambda f: _signal_dags, name)
 
 
+def lookup(table: dict[str, tuple[type, str]], kind: str, name: str) -> type:
+    if name not in table:
+        raise KeyError(f"no {kind} named {name!r}; known: {sorted(table)}")
+    return table[name][0]
+
+
 def get_signal_dag(name: str) -> type:
-    return _signal_dags[name][0]
+    return lookup(_signal_dags, "signal dag", name)
 
 
 def register_strategy(name: str) -> Callable[[type], type]:
@@ -60,7 +69,31 @@ def register_strategy(name: str) -> Callable[[type], type]:
 
 
 def get_strategy(name: str) -> type:
-    return _strategies[name][0]
+    return lookup(_strategies, "strategy", name)
+
+
+def register_gateway(name: str) -> Callable[[type], type]:
+    return _decorator(lambda f: _gateways, name)
+
+
+def get_gateway(name: str) -> type:
+    return lookup(_gateways, "gateway", name)
+
+
+def register_tape(name: str) -> Callable[[type], type]:
+    return _decorator(lambda f: _tapes, name)
+
+
+def get_tape(name: str) -> type:
+    return lookup(_tapes, "tape", name)
+
+
+def register_aux_source(name: str) -> Callable[[type], type]:
+    return _decorator(lambda f: _aux_sources, name)
+
+
+def get_aux_source(name: str) -> type:
+    return lookup(_aux_sources, "aux source", name)
 
 
 def scope_of_class(cls: Any) -> str:
