@@ -196,3 +196,45 @@ async def drive_to(slot: "Slot", phase: str) -> None:
         execution.quarantine("test")
     else:
         raise ValueError(phase)
+
+
+PROTECTED_BLOCK = {"class": "ProtectedStrategyExecution", "resting_exits": {"stop": "STP", "target": "LMT"}}
+STOP_LOSS_BLOCK = {"class": "StopLossProtectedStrategyExecution", "level_name": "swing_low", "offset_points": 2.0}
+
+
+def protected_signal(direction="long", cap=1):
+    signal = ScriptedSignal(direction=direction, cap=cap, exit_names=("stop", "target", "end_of_day"))
+    signal.levels = {"stop": 98.0, "target": 110.0}
+    signal.node_levels = {"swing_low": 95.0}
+    return signal
+
+
+def protected_slot(block=None, direction="long", cap=1, **kwargs):
+    return Slot(protected_signal(direction, cap), execution_config=block or PROTECTED_BLOCK, **kwargs)
+
+
+class Trade:
+    """Handles to the orders of one protected trade."""
+
+    def __init__(self, slot) -> None:
+        self.slot = slot
+
+    @property
+    def legs(self) -> dict[str, int]:
+        return {o["order_type"]: o["order_id"] for o in self.slot.orders if o["oca_group"] and o["order_type"] != "MKT"}
+
+    @property
+    def group(self) -> str | None:
+        return next((o["oca_group"] for o in self.slot.orders if o["oca_group"]), None)
+
+
+async def enter_protected(slot, fill_price=100.0, ack_legs=True) -> Trade:
+    slot.signal.entries = {1}
+    await slot.bar(1)
+    await slot.fill_last(fill_price)
+    await slot.bar(2)
+    trade = Trade(slot)
+    if ack_legs:
+        for order_id in trade.legs.values():
+            await slot.update(order_id, "OPEN")
+    return trade

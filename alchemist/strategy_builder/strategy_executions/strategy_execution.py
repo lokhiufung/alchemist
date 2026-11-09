@@ -216,6 +216,7 @@ class StrategyExecution:
     def send_entry(self, bar: dict) -> None:
         logger.info("[%s] entry decision, conditions=%s", self.slot, self.signal.entry_conditions())
         self.signal.freeze_exit_inputs(bar)
+        self.reset_trade_state()
         self.entry_order_bar_ts = bar["start_ts"]
         self.entry_order_id = None
         self.set_phase(Phase.PROCESSING_ENTRY_ORDER)
@@ -225,14 +226,16 @@ class StrategyExecution:
         order = await self.om.place_order(self.instrument, self.entry_side, 1, "MKT")
         self.entry_order_id = order["order_id"]
 
-    def judge_in_position(self, bar: dict) -> None:
+    def handle_failed_exit(self) -> bool:
         if self.exit_failed_pending:
             self.exit_failed_pending = False
             self.flatten_needed = True
             logger.critical("[%s] exit failed and the slot is still in position; no further exit, flatten wanted",
                             self.slot)
-            return
-        if self.flatten_needed or self.trade_qty <= 0:
+        return self.flatten_needed
+
+    def judge_in_position(self, bar: dict) -> None:
+        if self.handle_failed_exit() or self.trade_qty <= 0:
             return
         answers = self.signal.evaluate_exit_conditions()
         if any(answers.values()):
@@ -296,7 +299,11 @@ class StrategyExecution:
             self.exit_failed_pending = True
             self.set_phase(Phase.IN_POSITION_ACTIVITY)
 
+    def reset_trade_state(self) -> None:
+        return None
+
     def complete_round_trip(self) -> None:
+        self.reset_trade_state()
         self.trade_qty = 0
         self.entry_order_id = None
         self.exit_failed_pending = False
@@ -393,12 +400,3 @@ class StrategyExecution:
 
 
 EXECUTION_CLASSES[StrategyExecution.__name__] = StrategyExecution
-
-
-class ProtectedStrategyExecution(StrategyExecution):
-    resting_exits: dict[str, str] = {}
-
-
-class StopLossProtectedStrategyExecution(ProtectedStrategyExecution):
-    level_name: str
-    offset_points: float

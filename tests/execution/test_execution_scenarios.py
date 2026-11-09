@@ -205,3 +205,37 @@ async def test_scenario_count_restart(case):
         assert slot.execution.state.value == "DONE" and not slot.orders
     else:
         assert slot.execution.state.value == "PROCESSING_ENTRY_ORDER" and len(slot.orders) == 1
+
+
+from exec_helpers import enter_protected, protected_slot
+
+PROTECTED_PHASES = [("PROCESSING_PROTECTION_ORDERS", True), ("IN_POSITION_PROTECTED", False),
+                    ("IN_POSITION_ACTIVITY", False), ("PROCESSING_EXIT_ORDER", True)]
+
+
+@pytest.mark.parametrize("phase,expected", PROTECTED_PHASES)
+async def test_scenario_processing_answer_protected_phases(phase, expected):
+    slot = protected_slot()
+    trade = await enter_protected(slot, ack_legs=phase != "PROCESSING_PROTECTION_ORDERS")
+    if phase == "IN_POSITION_ACTIVITY":
+        await slot.update(trade.legs["STP"], "REJECTED")
+    if phase == "PROCESSING_EXIT_ORDER":
+        slot.signal.exits = {3: {"end_of_day": True}}
+        await slot.bar(3)
+    assert slot.execution.state.value == phase
+    assert slot.execution.is_processing_order() is expected
+
+
+@pytest.mark.parametrize("case", ["no_level", "stop_crossed"])
+async def test_scenario_unprotected_fallback(case):
+    slot = protected_slot()
+    slot.signal.entries = {1}
+    if case == "no_level":
+        slot.signal.levels = {"stop": None, "target": 110.0}
+    await slot.bar(1)
+    await slot.fill_last(100.0)
+    await slot.bar(2, close=97.0 if case == "stop_crossed" else 100.0)
+    assert len(slot.orders) == 1 and slot.execution.state.value == "IN_POSITION_ACTIVITY"
+    slot.signal.exits = {3: {"target": True}}
+    await slot.bar(3)
+    assert slot.sides()[-1] == ("SELL", "MKT", 1) and slot.orders[-1]["oca_group"] is None
