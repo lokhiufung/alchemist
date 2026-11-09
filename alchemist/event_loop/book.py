@@ -24,13 +24,28 @@ class RuntimeBook:
     sessions_by_execution_instrument: dict[Instrument, str]
     retry_tasks: dict[str, list[asyncio.Task]]
 
-    def __init__(self) -> None: ...
-    def reserve_instrument(self, instrument: Instrument, contract: Any, fed: bool) -> None: ...
-    def release_instrument(self, instrument: Instrument) -> None: ...
-    def commit(self, strategy, retry_tasks: list[asyncio.Task]) -> None:
-        """Synchronous; raises on a duplicate strategy key and leaves the book unchanged."""
+    def __init__(self) -> None:
+        self.strategies = []
+        self.resamplers = {}
+        self.bars = {}
+        self.contracts = {}
+        self.fed_instruments = set()
+        self.sessions_by_instrument = {}
+        self.sessions_by_strategy = {}
+        self.sessions_by_execution_instrument = {}
+        self.retry_tasks = {}
 
-    def strategies_for(self, instrument: Instrument) -> list: ...
+    def reserve_instrument(self, instrument: Instrument, contract: Any, fed: bool) -> None:
+        raise NotImplementedError
+
+    def release_instrument(self, instrument: Instrument) -> None:
+        raise NotImplementedError
+
+    def commit(self, strategy, retry_tasks: list[asyncio.Task]) -> None:
+        raise NotImplementedError
+
+    def strategies_for(self, instrument: Instrument) -> list:
+        return [s for s in self.strategies if s.signal_instrument == instrument]
 
 
 async def enqueue_book_op(event_buffer: deque, drain_wakeup: Callable[[], None],

@@ -57,8 +57,20 @@ class SafetyConfig:
 class EventLoopConfig:
     bar_flush_grace_s: float = 1.0
     drain_timeout_s: float = 0.020
+    drain_batch_budget_s: float = 0.002
     backlog_alert: int = 5000
     on_bar_error_quarantine: int = 3
+    gil_switch_interval_s: float = 0.0005
+    cutoff_offset_s: float = 60.0
+    flatten_timeout_s: float = 10.0
+    scale_trigger_s: float = 0.003
+    rebuild_yield_budget_s: float = 0.001
+    seed_backoff_base_s: float = 5.0
+    seed_backoff_max_s: float = 300.0
+    seed_backoff_jitter: float = 0.2
+    warmup_min_trading_days: int = 1
+    warmup_max_calendar_days: int = 400
+    seed_fetch_ttl_s: float = 300.0
 
 
 @dataclass(frozen=True)
