@@ -1,2 +1,4 @@
-from alchemist.gateways.mock_gateway import MockGateway
-from alchemist.gateways.ib_gateway import IbGateway
+from alchemist.gateways.gateway import GATEWAYS, Gateway, register_gateway
+from alchemist.gateways.simulation_gateway import OrderFillingEngine, SimulationGateway
+
+__all__ = ["GATEWAYS", "Gateway", "OrderFillingEngine", "SimulationGateway", "register_gateway"]
