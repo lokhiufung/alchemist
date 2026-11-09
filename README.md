@@ -1,217 +1,122 @@
-# Alchemist - A Ray-based High-Performance Automated Trading System
+# Alchemist trading engine
 
-## **What is Alchemist?**
+## Objective
 
-**Alchemist** is a high-performance, distributed **automated trading system** designed to seamlessly transition **quantitative research into fully automated algorithmic trading strategies**.
+Deploy your trading idea
 
-Built on **Ray**, Alchemist provides a scalable infrastructure for strategy execution, real-time order management, and seamless integration with market data and broker connections. Whether you’re a **quantitative researcher, algorithmic trader, or hedge fund**, Alchemist helps you **deploy, manage, and scale trading strategies efficiently**.
+## version
 
-## **Why Alchemist?**
+v3
 
-🚀 **Fast and Scalable** – Built with **Ray** to handle large-scale trading strategies across multiple processes and nodes.
 
-🔌 **Seamless Integration** – Connects easily to market data providers, brokers, and exchanges.
+## Getting started
 
-📈 **Backtesting & Live Trading** – Develop strategies, backtest them, and switch to live trading **without rewriting code**.
+### 1. Install
 
-⚡ **Real-Time Order Management** – Handles execution, risk management, and portfolio exposure dynamically.
-
-🔧 **Customizable Strategy Framework** – A modular system that allows users to develop and optimize their own strategies.
-
-Alchemist is **part of a broader quantitative trading ecosystem**, providing a structured way to move from **strategy research** to **live trading** with minimal friction.
-
-## **Why Do You Need Alchemist?**
-
-### **Problem: Gap from Research to Execution**
-
-Quantitative traders often struggle with the transition from **research to live deployment** due to:
-
-- **Scalability Issues** – Traditional execution frameworks cannot handle large-scale strategies efficiently.
-- **Infrastructure Complexity** – Research environments are often disconnected from live market execution.
-- **Computational Bottlenecks** – High-performance backtesting and execution require **parallelized, distributed computing**.
-- **Integration Challenges** – Many systems lack easy connectivity with brokers, exchanges, and real-time market data.
-
-### **Solution**
-
-Alchemist **eliminates these roadblocks** by providing a fully integrated, high-performance framework that **connects research, backtesting, and execution in one system**.
-
-Whether you’re working on **statistical arbitrage, market-making, or machine learning-based trading**, Alchemist ensures your strategies can transition **from development to live execution seamlessly**
-
----
-
-## Quick Start
-
-### 1. Setup
-
-Install the dependencies using [Poetry](https://python-poetry.org/):
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-poetry install
+uv sync
 ```
 
-### 2. Create Your Strategy Configuration File
+### 2. Write a deployment config
+
+A config is one YAML file. `${VAR}` values resolve from the environment (`.env` is loaded at start). Each slot under `strategies:` is one running strategy; the slot name is its strategy key, `strat` is the registered strategy name. A slot names one `signal_instrument` (market data it reads) and one `execution_instrument` (where its orders and position live).
+
 ```yaml
-products:
-  - type: alchemist.products.StockProduct
-    name: test_pdt
-    base_currency: USD
-    exch: test_exch
-  # - type: FutureProduct
-  #   name: 'YM'
-  #   base_currency: 'USD'
-  #   exch: 'CBOT'
-  #   contract_month: '2024-09'
+system:
+  bot_id: my_bot
+  log_path: logs/my_bot            # logs and the deploy socket live here
+  strategies_root: local/strategies
 
-# TODO: this actually hard-coded for IB. Need to make it more generic. Will make updates to the Account class.
-accounts:
-  - name: 'ib_account'
-    client_id: 999
-    host: "127.0.0.1"
-    port: 4002
-    acc: DU1474528
+gateway:
+  # gateway name and connection settings
 
-data_cards:
-  - product: test_pdt  # this should match the product name to one of the products defined above
-    freq: "1m"
-    aggregation: ohlcv
-
-order_ports: [5555, 5556]
-
-# this is optional. monitor is default to be None
-# monitor:
-#   type: TimescaleDBMonitor
-#   db_url: TIMESCALEDB_URI
-  # flush_interval: 15.0
-
-gateways:
-  test_gateway:
-    type: alchemist.gateways.MockGateway
-    subscriptions: ["bar"]
-    zmq_send_port: 5557
-    zmq_recv_ports: [5555, 5556]
-  # Uncomment and configure as needed
-  # ib_gateway:
-  #   type: IbGateway
-  #   subscriptions: ["tick"]
-  #   zmq_send_port: 5558
-  #   zmq_recv_ports: [5555]
-  #   accounts: [/* list account names or details if applicable */]
+safety: {}
+aux_sources: {}
 
 strategies:
-  sma_strategy:
-      type: alchemist.strategies.MovingAverageStrategy
-      name: sma_strategy
-      zmq_send_port: 5555
-      zmq_recv_ports: [5557]
-      # zmq_recv_ports: [5557, 5558]
-      n_replicas: 1
+  macd_rsi_rth_long:
+    strat: macd_rsi_rth_long
+    account_id: ${ACCOUNT_ID}
+    signal_instrument: NQ
+    execution_instrument: NQ
+
+replay:                            # replay mode only: tape, date, session
 ```
 
-### 3. Run the Automated Trading System using Ray Serve
-```bash
-serve run run_strategies:management_service
-```
+See [configs/replay_config.yaml](configs/replay_config.yaml) for an example.
 
-## Version of TWS
-```text
-latest 10.35.1e 20250324
-```
----
-
-## Backtesting
-
-Alchemist now supports backtesting. Here is an example of how to run a backtest:
-
-```python
-import ray
-
-from alchemist.strategies.moving_average_strategy.moving_average_strategy import MovingAverageStrategy
-from alchemist.data_pipelines.data_pipeline import DataPipeline
-from alchemist.data_card import DataCard
-from alchemist.products.future_product import FutureProduct
-
-
-product = FutureProduct('MES', 'USD', 'CME', '2025-06')
-data_cards= [
-    DataCard(product, '1m', 'ohlcv', False)    
-]
-
-strategy_actors = [
-    MovingAverageStrategy.remote(
-        name='sma_strategy',
-        zmq_send_port=12345,
-        zmq_recv_ports=[12346],
-        products=[product],
-        data_cards=data_cards,
-        is_backtesting=True
-    )
-    for _ in range(1)
-]
-
-data_pipeline = DataPipeline(
-    data_source='ib'
-)
-
-result = ray.get([strategy_actor.start_backtesting.remote(
-    data_pipeline=data_pipeline,
-    start_date='2025-02-01',
-    end_date='2025-05-01',
-    initial_cash=10000.0,
-    export_data=True,
-    path_prefix='test',
-) for strategy_actor in strategy_actors])
-```
-
-## Developer Guide
-
-Please visit the [full documentation](https://boulder-submarine-0ae.notion.site/Alchemist-A-Ray-based-High-Performance-Automated-Trading-System-1ace87b87fa4803cb9ade11517148d65?pvs=4) for detailed information on setup, configuration, and advanced usage.
-
-
-### Running tests
+### 3. Start the system
 
 ```bash
-pytest tests
-# Run tests with coverage report and generate report in html
-pytest --cov=alchemist --cov-report=html
-# Run tests with coverage report and generate report in console
-pytest --cov=alchemist --cov-report=term
+uv run python run_strategies.py --config configs/replay_config.yaml --mode replay
 ```
 
-## Interactive Brokers
+`--mode` is one of:
 
-### Volume is scaled by 100 for U.S. stocks
-For U.S. equities, IB reports the exchange volume divided by 100. So if 3 410 shares traded in that 5s window, IB sends 34.10. [source](https://ibridgepy.com/ib-api-knowledge-base/#step1-2-1)
+| Mode     | Broker                                   | Deploy socket |
+|----------|------------------------------------------|---------------|
+| `replay` | simulated broker that replays a tape     | no            |
+| `paper`  | real gateway, paper account              | yes           |
+| `live`   | real gateway, live account               | yes           |
 
-### `averagePrice` field includes the commission fee in `updatePortfolio`
-The TWS “Avg Price” field (which maps to the API’s averageCost) is defined as:
-“Average price is calculated by dividing your cost (execution price + commission) by the quantity of your position.”
+At start the runner imports every folder under `local/strategies/` and builds one strategy per config slot.
 
-### `realtimeBars` is only available in `5s`
-Trader Workstation provides only 5 secs bars for real time. Therefore, the LOWEST resolution in `IBGateway` is `5s`.
-That means if you want to trade exactly `1m` bars, you need to configure **2 data cards** - 1 for `5s` bars and the other for `1m` bars. Otherwise, `next` will be called for every `5s` bar. (`next` will be called only at syncronization of `5s` and `1m` bars. Hence every `1m`.)
+## Add a strategy without a restart
 
-### Simultaneously logging into `paper` and `live` account is not allowed
-[Reference](https://support.quantrocket.com/t/error-code-162-tws-session-is-connected-from-a-different-ip-address/595)
+In `paper` and `live` mode you can add one new strategy to a running process. The strategies that already trade keep their connection, positions, orders, indicators and partly built bars.
 
+### 1. Write the strategy
 
-## Star History
+Make a new folder under `local/strategies/<folder>/` with these files:
 
-[![Star History Chart](https://api.star-history.com/svg?repos=lokhiufung/alchemist&type=Date)](https://www.star-history.com/#lokhiufung/alchemist&Date)
+- `calculations.py`: custom calculations, `@register_calc("name")`. Optional.
+- `strategy_signal.py`: a `SignalDag` subclass, `@register_signal_dag("name")`. Its `Params` dataclass holds the strategy params.
+- `strategy.py`: a `Strategy` subclass, `@register_strategy("name")`, with `signal_dag = "<signal name>"`.
 
+The files do not import each other. They connect by registry names. Use [local/strategies/macd_rsi_rth_long/](local/strategies/macd_rsi_rth_long/) as a template.
 
-## Code Attribution and Origin
+### 2. Add a slot to the same config file
 
-Alchemist is an independent, high-performance automated trading system built using Ray. While some architectural concepts were inspired by previous open-source projects I was involved in, this system has been built from the ground up with a redesigned architecture.
+Add the new slot under `strategies:` in the config file that the running process uses. Do not change anything else in the file. The next cold start then also runs this strategy.
 
-This project is not affiliated with or derived from any specific open-source repository, and any similarities reflect common design patterns in algorithmic trading systems.
+```yaml
+strategies:
+  macd_rsi_rth_long:
+    ...
+  my_new_strategy:                 # new strategy key
+    strat: my_new_strategy
+    account_id: ${ACCOUNT_ID}      # must be an account a running strategy already uses
+    signal_instrument: ES
+    execution_instrument: ES
+```
 
+### 3. Send a deploy request
 
-## Third-Party Code Attribution
+```bash
+uv run python deploy_strategy.py --config configs/live_config.yaml --key my_new_strategy
+```
 
-This project includes code adapted from an open-source project licensed under **Apache License 2.0**:
+The client sends the key and the sha256 of the config file to the socket in `system.log_path`. It prints one status line per step and exits with the terminal status:
 
-- The file **`zeromq.py`** is adapted from [PFund](https://github.com/PFund-Software-Ltd/pfund), an open-source trading system.
-- Modifications have been made to fit the architecture of **Alchemist**.
-- The original **Apache 2.0 license notice is retained in `zeromq.py`** in accordance with open-source licensing requirements.
+| Status       | Meaning                                                    |
+|--------------|------------------------------------------------------------|
+| `preparing`  | in progress                                                |
+| `registered` | strategy added; it enters first at its next session open   |
+| `noop`       | nothing to do                                              |
+| `rejected`   | refused before anything changed (reason is printed)        |
+| `failed`     | failed after staging; only the candidate is cleaned up     |
 
-Alchemist is **not affiliated with or endorsed by the authors of Pfund**. Any concerns regarding code attribution are welcome, and I am committed to maintaining transparency and compliance with open-source licensing.
+### Rules
+
+A deploy request only adds one new strategy key. It is rejected when:
+
+- the config differs anywhere but the new slot (`config_drift`, `stale_config`)
+- the key is not in the config (`unknown_key`) or already runs (`conflict`)
+- the strategy code does not import or its params are invalid (`import_error`, `params_invalid`)
+- the strategy's session is open now (`session_open`), or its next session closes after the process exits (`after_process_exit`)
+- no running strategy uses its account (`unknown_account_route`)
+- a position or order on its execution instrument belongs to no running strategy (`unmanaged_exposure`)
+
+To change, remove or reload a running strategy, restart the process.
