@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="docs.css?v=5">
+<link rel="stylesheet" href="docs.css?v=6">
 </head>
 <body>
 <nav class="topnav">
@@ -33,132 +33,73 @@
 <header>
 <div class="eyebrow">Component map · STRATEGY_SIGNAL_MAP · Alchemist v3</div>
 <h1>StrategySignal</h1>
-<div class="lede"><p>The slot's signal: a DAG of calculations built in Python by a <code>SignalDag</code> subclass, and the entry and exit logic over them. It is pure — bars and position data in, answers out — so it can be tested alone, one bar at a time.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong> A signal is a <code>SignalDag</code> subclass: typed params it holds itself, and a DAG of registered calculations it builds in code, behind an abstract interface. Behaviours 1–5 and decisions 1–4 are settled; behaviour 6, the interface and decisions 5–9 are proposed.</p>
+<div class="lede"><p>The slot's signal: a DAG of calculations built in Python by a <code>SignalDag</code> subclass, and the entry and exit logic over them. The signal is pure (bars and position data in, answers out), so the signal can be tested alone, one bar at a time.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> A signal is a <code>SignalDag</code> subclass: typed params the class holds, and a DAG of registered calculations it builds in code, behind an abstract interface. Features 1–5 and decisions 1–4 are settled; feature 6, the interface and decisions 5–9 are proposed. Open questions are listed at the end.</p>
 <details><summary>Change history</summary><div class="details-body">
+<p>2026-11-09 — Page reordered: Goal and scope (with public interface, place in the system, and How a signal is written) → 6 features (Need / Upstream gives / Algorithm / Parameters / Invariant; same numbers as the old behaviours) → quantified tests with parameter cases, the component sample as the end-to-end test → open questions → reference. Algorithm map added.</p>
 <p>2026-11-07 — Decision 5 changed: a signal is a Python <code>SignalDag</code> subclass that holds its params (decision 9); the definition file is dropped. <code>build(definition_path, instrument)</code> becomes <code>from_config(strategy_config)</code>. The interface gains <code>entry_conditions()</code>, <code>exit_condition_names()</code>, <code>condition_names()</code> and <code>values()</code> (decision 8). Calculations use <code>setup()</code> and <code>step()</code>; the registries are <code>register_calc</code> and <code>register_signal_dag</code>. The Sample is rewritten as a class. Calculation names are scoped per strategy folder (System map decision 43).</p>
 <p>2026-11-06 — The open question "how is a signal written" is closed by proposed decision 5: a declarative definition over a calculation registry. The Python-class option is dropped. Added the calculation registry, the rising-edge rearm, three-valued null logic and failed-step handling.</p>
 <p>2026-11-06 — First v3 draft. The boundary was fixed and the way a signal is written was left open.</p>
 </div></details></div>
 </header>
 
-<section id="goal">
-<div class="eyebrow">StrategySignal · Goal</div>
-<h2>Goal</h2>
-<p>Turn a stream of bars (plus the position data Strategy passes in) into deterministic entry and exit answers: the same signal class and the same bars always give the same answers. Report when it has enough history to be trusted, and be able to rebuild itself from scratch.</p>
+<section id="goal-and-scope">
+<div class="eyebrow">StrategySignal · 1 · Goal and scope</div>
+<h2>Goal and scope</h2>
+<p><strong>What it is.</strong> StrategySignal is the slot's signal: an abstract interface, and one shipped implementation, <code>SignalDag</code>. A strategy author writes a <code>SignalDag</code> subclass that holds typed params and builds a DAG of registered calculations, with entry and exit logic over the DAG's nodes. The signal is pure: bars and position data go in, answers come out, with no I/O, no clock and no knowledge of orders.</p>
+<p><strong>Why it exists.</strong> Most warmup and signal bugs live in the calculations and the entry and exit logic. A pure signal with its own boundary can be tested alone, one bar at a time, from bars in to answers out (<a href="system_map.html#d19">System map decision 19</a>). Strategy decides when the signal steps and rebuilds; StrategyExecution decides when to ask for an answer and when to freeze the exit inputs; the signal only computes.</p>
+<p><strong>Goal.</strong> Turn a stream of bars, plus the position data Strategy passes in, into deterministic entry and exit answers: the same signal class and the same bars always give the same answers. Report when the signal has enough history to be trusted, and rebuild from scratch on request.</p>
+
+<h3>Public interface</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
+<tbody>
+<tr><td rowspan="3">Other components call StrategySignal</td><td>Strategy</td><td>Build cold from the slot config; ask for warmup requirements; seed with history; ask "warm?"; step with bars and strategy data; snapshot and restore session-fixed values; read all node values</td><td>config, history frames, bars, strategy data (entry price, seconds since entry)</td></tr>
+<tr><td>StrategyExecution</td><td>Ask for the entry answer, the exit answer, and each exit condition's answer; read a condition's level or any node's level; list condition names; ask "rearm required?"</td><td>condition or node name → answer, level</td></tr>
+<tr><td>StrategyExecution</td><td>Freeze the exit inputs at the entry-decision bar; release them when flat</td><td>bar</td></tr>
+<tr><td>StrategySignal calls</td><td colspan="2">No other component. A signal reads only the calculation registry and the instrument's exchange profile, at build.</td><td>—</td></tr>
+</tbody></table></div>
+
+<h3>Scope</h3>
 <p>Owns, from the System map:</p>
 <blockquote><p>The slot's signal: its calculation DAG and params, stepping the calculations on each bar in dependency order, evaluating the entry and exit logic, reporting whether it is warm, and how to rebuild itself cold by replaying seed bars.</p></blockquote>
 <div class="table-wrap"><table>
 <thead><tr><th>Not StrategySignal's job</th><th>Owned by</th></tr></thead>
 <tbody>
-<tr><td>When it is stepped or rebuilt; the position</td><td><a href="strategy_map.html">Strategy</a></td></tr>
-<tr><td>When its exit inputs are frozen and released, and acting on its answers</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>When the signal is stepped or rebuilt; the position</td><td><a href="strategy_map.html">Strategy</a></td></tr>
+<tr><td>When the exit inputs are frozen and released; acting on the answers</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
 <tr><td>Orders</td><td><a href="order_manager_map.html">Order Manager</a></td></tr>
 <tr><td>Fetching history</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
 <tr><td>Writing a strategy's <code>SignalDag</code> subclass and its params</td><td>The strategy author (code under <code>local/strategies/</code>)</td></tr>
 </tbody></table></div>
-</section>
 
-<section id="what-this-component-does">
-<div class="eyebrow">StrategySignal · What this component does</div>
-<h2>What this component does</h2>
-<div class="table-wrap"><table>
-<thead><tr><th>When</th><th>What happens</th></tr></thead>
-<tbody>
-<tr><td>Once, at build</td><td>The subclass's params are type-checked and its <code>build_graph()</code> runs, adding nodes to a DAG. Each node is a market-data or strategy-data leaf, a calculation taken from the registry by name, an inline Python expression, a named condition, or a named exit. A bad signal is refused before anything trades.</td></tr>
-<tr><td>Before trading</td><td>It says which calculations need history (daily, prior-session intraday, auxiliary), is seeded from that history, and reports whether every warmup calculation has a value.</td></tr>
-<tr><td>Every bar</td><td>Strategy hands it the bar history and strategy data (entry price, seconds since entry). It steps every calculation and inline expression once, in dependency order.</td></tr>
-<tr><td>When asked</td><td>It evaluates the entry logic and each named exit condition over this bar's values.</td></tr>
-<tr><td>Entry decision → flat</td><td>StrategyExecution freezes the inputs of the exit-side steps at the entry bar, and releases them when the trade is over.</td></tr>
-<tr><td>Cold rebuild</td><td>A fresh build from the same class, which Strategy then replays seed bars through.</td></tr>
-</tbody></table></div>
-<p>It is pure: no I/O, no clock, and no knowledge of orders or position beyond what is passed in.</p>
-</section>
-
-<section id="sample">
-<div class="eyebrow">StrategySignal · Sample</div>
-<h2>Sample</h2>
-<p>This component has its own sample, separate from the system golden sample. The golden sample reaches it only as "entry true on the L-cross bar, exit true on the T bar", so it exercises neither warmup, rearm nor the exit-input freeze. This sample is a hand-made list of bars. Its signal class is written out in full under <a href="#skeleton-code">Skeleton code</a>.</p>
-<div class="table-wrap"><table><tbody>
-<tr><th>Input</th><td>A signal class with:
-<ul>
-<li>one warmup calculation: <code>sma5</code>, a 5-bar simple moving average of the close, seeded from 5 prior bars;</li>
-<li>entry logic: close &gt; L, with <code>rearm_required = True</code> in its params, so entry fires only on the rising edge;</li>
-<li>an exit-side step <code>stop_px = sma5 − 2 ticks</code>, which is an <strong>exit input</strong>;</li>
-<li>exit condition <code>stop</code>: close &lt; <code>stop_px</code>;</li>
-<li>exit condition <code>target</code>: close ≥ T.</li>
-</ul>
-Five seed bars, then 10 synthetic bars. The close crosses L on bar 3 and keeps rising on bars 4–6, so <code>sma5</code> rises. On bar 8 it falls below the bar-3 <code>stop_px</code> without reaching T. StrategyExecution freezes on bar 3; Strategy passes the entry price from bar 3 on.</td></tr>
-<tr><th>Expected</th><td>Warm after the seed; entry true on bar 3 only; <code>stop_px</code> holds its bar-3 value on bars 4–8; <code>stop</code> true on bar 8 only; <code>target</code> never true; <code>exit_condition_level("stop")</code> equals the bar-3 <code>stop_px</code>.</td></tr>
-<tr><th>Passes when</th><td>Over bars 1–10 entry is true exactly once, on bar 3; exit is true exactly once, on bar 8, from <code>stop</code>; and <code>stop_px</code> read on bars 4–8 equals its bar-3 value.</td></tr>
-<tr><th>Fails when</th><td>Entry is also true on bars 4–6 (the sustained run fired again, so the rising-edge gate is broken); or <code>stop_px</code> on bar 5 differs from bar 3 because it followed the live <code>sma5</code> (the freeze is broken); or the signal reports warm before the seed.</td></tr>
-</tbody></table></div>
-</section>
-
-<section id="behaviours">
-<div class="eyebrow">StrategySignal · Behaviours</div>
-<h2>Behaviours</h2>
-<p>Each says what the signal is given, what it must do, and what must always stay true. Any implementation of the interface must meet all six.</p>
-
-<div class="behaviour"><h3><span class="num">1</span>Build cold</h3><dl class="gmi">
-<dt>Given</dt><dd>A <code>SignalDag</code> subclass and the slot's deployment config (for the signal instrument).</dd>
-<dt>Must</dt><dd><ul>
-<li>Build the DAG by running <code>build_graph(g, params)</code>: take every calculation from the registry by name and wire the inputs the graph passes it (market data, strategy data, other nodes). A node can only read nodes added before it, so the graph has no cycle.</li>
-<li>Refuse a bad signal at build: a param value that does not match its type hint; an unregistered calculation name; a duplicate node name; no entry condition, or no exit; an unknown session; an unregistered market-data name, or one the session cannot supply; a non-bool <code>rearm_required</code>; a node named <code>entry</code> while rearm is on.</li>
-<li>Resolve the params' session label (for example <code>regular</code>) to the instrument's session name from its exchange profile.</li>
-<li>Tell each calculation that reads auxiliary history which market-data names its inputs read, so it picks its own series when an instrument carries more than one.</li>
-<li>Start cold: no stepped values, no rising edge, no frozen inputs.</li>
-</ul></dd>
-<dt>Invariant</dt><dd>A refused signal leaves no state behind for the next build, and two builds of the same class share nothing. Within one scope, a registry name is bound to exactly one class. A calculation name resolves in the signal's folder scope first, then in the built-in library.</dd>
-</dl></div>
-
-<div class="behaviour"><h3><span class="num">2</span>Step</h3><dl class="gmi">
-<dt>Given</dt><dd>The bar history up to this bar, and strategy data.</dd>
-<dt>Must</dt><dd><ul>
-<li>Step every calculation and inline expression once, in dependency order, so each step reads its inputs' values from this same bar. Warmup calculations stay at their seeded value.</li>
-<li>Skip an inline step that cannot be evaluated yet (a missing input, or the entry price while flat); it is unavailable for this bar.</li>
-<li>A step that fails on this bar is null for this bar. Its previous value is dropped, never carried, and it is remembered as stale, so <code>level()</code> and <code>exit_condition_level()</code> answer <code>None</code> for it.</li>
-</ul></dd>
-<dt>Invariant</dt><dd>The values for a bar depend only on the signal class, the bars, the seed and the strategy data given so far.</dd>
-</dl></div>
-
-<div class="behaviour"><h3><span class="num">3</span>Evaluate entry/exit</h3><dl class="gmi">
-<dt>Given</dt><dd>A stepped bar.</dd>
-<dt>Must</dt><dd><ul>
-<li>Answer entry and exit from the signal's conditions over this bar's values.</li>
-<li><strong>Rearm.</strong> With <code>rearm_required</code>, entry is true only on the per-day rising edge of the entry logic. The edge is tracked on every bar, in position too.</li>
-<li><strong>Nulls.</strong> Logic is three-valued (Kleene): a null leg does not block an OR whose other leg is true, an AND with a false leg is false, and a result that is still null reads as false. With rearm on, a null entry is warned once per trading date, naming the missing refs. Any evaluation error other than a missing ref is raised.</li>
-<li><strong>Exit per condition.</strong> <code>evaluate_exit_conditions()</code> answers each exit condition by name, in the order the exits were added; the exit answer is their OR. Every condition is reported as evaluated — the signal knows nothing of resting broker exits.</li>
-<li><strong>Exit level.</strong> <code>exit_condition_level(name)</code> reports the level a condition of the shape <code>close &lt;op&gt; step</code> compares against: that step's value on the last stepped bar. It is <code>None</code> for any other shape, or while the value is unavailable.</li>
-<li><strong>Step level.</strong> <code>level(name)</code> reports any step's last value as a price; <code>None</code> for an unknown step, a value not computed yet, a step that failed on the last bar, or NaN. <code>has_level(name)</code> says whether the signal has that node. Reading any of these changes nothing.</li>
-<li><strong>Names and values.</strong> <code>entry_conditions()</code> answers each entry condition by name on the last stepped bar (<code>None</code> when it has no value). <code>exit_condition_names()</code> and <code>condition_names()</code> list names without evaluating, so they are correct before the first bar. <code>values()</code> returns a copy of every node's value on the last stepped bar (decision 8).</li>
-</ul></dd>
-<dt>Invariant</dt><dd>With rearm on, a sustained run of true entry logic gives one entry, and the gate stays closed until the signal is warm. Evaluating has no side effect: asking twice on the same bar gives the same answers.</dd>
-</dl></div>
-
-<div class="behaviour"><h3><span class="num">4</span>Warm report and history needs</h3><dl class="gmi">
-<dt>Given</dt><dd>History frames from Strategy (daily, prior-session intraday, auxiliary).</dd>
-<dt>Must</dt><dd>Say which calculations need intraday, daily or auxiliary history, and how many months of daily bars. Seed the warmup calculations and report warm only when every one has a value. Let session-fixed calculations snapshot and restore their value; a restore also puts each restored value back, so the logic reads it before the next bar.</dd>
-<dt>Invariant</dt><dd>A calculation whose history was empty or too short is never reported warm. A restored session-fixed value equals the one snapshotted.</dd>
-</dl></div>
-
-<div class="behaviour"><h3><span class="num">5</span>Exit-input freeze/release</h3><dl class="gmi">
-<dt>Given</dt><dd>A freeze at the entry-decision bar, and later a release.</dd>
-<dt>Must</dt><dd>After a freeze, exit-side steps read the calculation and market inputs captured at that bar, while the close, strategy data and every other step stay live. After a release they read live inputs again. Each freeze replaces the previous one. An exit-side step is one that reads strategy data, or one wrapped in <code>g.freeze_at_entry()</code> (decision 6).</dd>
-<dt>Invariant</dt><dd>An input missing at the entry bar stays unavailable for the whole trade. A signal with no exit-side nodes is unaffected by freeze and release.</dd>
-</dl></div>
-
-<div class="behaviour"><h3><span class="num">6</span>Cold rebuild</h3><dl class="gmi">
-<dt>Given</dt><dd>A rebuild request from Strategy (only ever while flat and idle).</dd>
-<dt>Must</dt><dd>Build afresh from the same class, discarding every value, the rearm state and any freeze; Strategy then replays seed bars through it.</dd>
-<dt>Invariant</dt><dd>After a rebuild and the same replay, the signal's values equal those of a fresh process given the same bars.</dd>
-</dl></div>
-</section>
-
-<section id="signal-definition">
-<div class="eyebrow">StrategySignal · How a signal is written</div>
-<h2>How a signal is written</h2>
-<p>A strategy author writes one <code>SignalDag</code> subclass in Python, in the strategy's folder under <code>local/strategies/</code>, and registers it by name with <code>register_signal_dag</code>. It has two parts:</p>
+<h3>Place in the system</h3>
+<div class="diagram">
+<svg viewBox="0 0 900 220" role="img" aria-label="StrategySignal between Strategy on the left and StrategyExecution on the right." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .ps-core { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .ps-ext { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.3; }
+    .ps-t { fill: var(--ink); font: 600 14px var(--sans); text-anchor: middle; }
+    .ps-x { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .ps-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .ps-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
+    .ps-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#sgpsah); }
+  </style>
+  <defs><marker id="sgpsah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
+  <rect class="ps-core" x="370" y="30" width="180" height="160" rx="10"/>
+  <text class="ps-t" x="460" y="104">StrategySignal</text><text class="ps-r" x="460" y="124">pure: bars in,</text><text class="ps-r" x="460" y="140">answers out</text>
+  <rect class="ps-ext" x="20" y="50" width="150" height="120" rx="24"/><text class="ps-x" x="95" y="115">Strategy</text>
+  <path class="ps-a" d="M170,76 H370"/><text class="ps-l" x="270" y="70">build, seed, step</text>
+  <path class="ps-a" d="M370,140 H170"/><text class="ps-l" x="270" y="156">warm?, values</text>
+  <rect class="ps-ext" x="730" y="50" width="150" height="120" rx="24"/><text class="ps-x" x="805" y="108">Strategy</text><text class="ps-x" x="805" y="124">Execution</text>
+  <path class="ps-a" d="M730,76 H550"/><text class="ps-l" x="640" y="70">questions, freeze</text>
+  <path class="ps-a" d="M550,140 H730"/><text class="ps-l" x="640" y="156">answers, levels</text>
+</svg>
+<p class="caption">Neither the Event Loop nor Order Manager talks to the signal (<a href="system_map.html#d20">System map decision 20</a>).</p>
+</div>
+<div id="signal-definition">
+<h3>How a signal is written (interface for strategy authors)</h3>
+<p>A strategy author writes one <code>SignalDag</code> subclass in Python, in the strategy's folder under <code>local/strategies/</code>, and registers it by name with <code>register_signal_dag</code>. The subclass has two parts:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Part</th><th>What it holds</th></tr></thead>
 <tbody>
@@ -181,11 +122,251 @@ Five seed bars, then 10 synthetic bars. The close crosses L on bar 3 and keeps r
 <tr><td><code>g.exit(name, left, op, right)</code></td><td>A named exit condition. The exit answer is the OR of the exits, in the order they were added.</td></tr>
 </tbody></table></div>
 <p>Every node has a name: <code>level()</code>, <code>has_level()</code>, the condition methods and <code>values()</code> use it. A variant with other values is a subclass that overrides <code>Params</code>. A new calculation is one class registered with <code>register_calc</code> in the strategy folder's <code>calculations.py</code> (System map R2). It is bound in that folder's scope, so another folder may use the same name; <code>g.calc()</code> looks a name up in the folder's scope first, then in the built-in library (System map decision 43). The <code>SignalDag</code> base class implements the whole interface, so a signal holds no stepping, evaluation, freeze, warmup or rebuild code. A different implementation can still plug in through the interface (decision 7).</p>
+</div>
 </section>
 
-<section id="skeleton-code">
-<div class="eyebrow">StrategySignal · Skeleton code</div>
-<h2>Skeleton code</h2>
+<section id="features">
+<div class="eyebrow">StrategySignal · 2 · Features</div>
+<h2>Features</h2>
+<p>Each feature says which component needs it and why, what the upstream can give, and how the signal closes the gap. Every number is a parameter with its supported values. Click a box in the map to jump to its feature.</p>
+
+<h3>Algorithm map</h3>
+<div class="diagram">
+<svg viewBox="0 0 1000 600" role="img" aria-label="StrategySignal steps: build the DAG from the class and config, seed the warmup calculations from history, step every node in dependency order with exit-side inputs frozen while in a trade, evaluate entry with the rising-edge gate, evaluate each exit condition, and return node values." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .q-stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+    .q-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .q-st { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 5 4; }
+    .q-ext { fill: none; stroke: var(--ink-3); stroke-width: 1.2; }
+    .q-t { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .q-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .q-x { fill: var(--ink-2); font: 12px var(--sans); text-anchor: middle; }
+    .q-l { fill: var(--ink-2); font: 12px var(--mono); }
+    .q-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#qah); }
+    .q-w { stroke: var(--accent); stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; marker-end: url(#qah2); }
+  </style>
+  <defs>
+    <marker id="qah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker>
+    <marker id="qah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+  </defs>
+  <rect class="q-ext" x="10" y="30" width="140" height="72" rx="20"/><text class="q-x" x="80" y="70">Strategy</text>
+  <rect class="q-main" x="380" y="40" width="220" height="52" rx="8"/><text class="q-t" x="490" y="62">Build DAG</text><text class="q-r" x="490" y="80">refuse a bad signal</text>
+  <path class="q-a" d="M150,52 H380"/><text class="q-l" x="265" y="46" text-anchor="middle">class + config</text>
+  <path class="q-a" d="M150,80 H380"/><text class="q-l" x="265" y="96" text-anchor="middle">rebuild</text>
+  <path class="q-a" d="M490,92 V120"/><text class="q-l" x="498" y="110">nodes</text>
+  <rect class="q-st" x="380" y="120" width="220" height="40" rx="6"/><text class="q-r" x="490" y="144">[ DAG: nodes in order ]</text>
+  <path class="q-a" d="M490,160 V190"/><text class="q-l" x="498" y="180">warmup nodes</text>
+
+  <rect class="q-ext" x="10" y="190" width="140" height="52" rx="20"/><text class="q-x" x="80" y="220">Strategy</text>
+  <rect class="q-main" x="380" y="190" width="220" height="52" rx="8"/><text class="q-t" x="490" y="212">Seed warmup nodes</text><text class="q-r" x="490" y="230">warm when all have values</text>
+  <path class="q-a" d="M150,206 H380"/><text class="q-l" x="265" y="200" text-anchor="middle">history frames</text>
+  <path class="q-a" d="M380,228 H150"/><text class="q-l" x="265" y="244" text-anchor="middle">warm?</text>
+  <path class="q-a" d="M490,242 V270"/><text class="q-l" x="498" y="260">seeded values</text>
+
+  <rect class="q-ext" x="10" y="270" width="140" height="52" rx="20"/><text class="q-x" x="80" y="300">Strategy</text>
+  <rect class="q-main" x="380" y="270" width="220" height="52" rx="8"/><text class="q-t" x="490" y="292">Step in dependency order</text><text class="q-r" x="490" y="310">failed step → null</text>
+  <path class="q-a" d="M150,296 H380"/><text class="q-l" x="265" y="290" text-anchor="middle">bars + strategy data</text>
+  <rect class="q-st" x="650" y="276" width="190" height="40" rx="6"/><text class="q-r" x="745" y="300">[ frozen exit inputs ]</text>
+  <path class="q-w" d="M650,296 H600"/>
+  <rect class="q-ext" x="880" y="270" width="110" height="52" rx="20"/><text class="q-x" x="935" y="293">Strategy</text><text class="q-x" x="935" y="309">Execution</text>
+  <path class="q-a" d="M880,296 H840"/><text class="q-l" x="860" y="264" text-anchor="middle">freeze</text>
+  <path class="q-a" d="M490,322 V350"/><text class="q-l" x="498" y="340">this bar's values</text>
+
+  <rect class="q-main" x="380" y="350" width="220" height="52" rx="8"/><text class="q-t" x="490" y="372">Evaluate entry</text><text class="q-r" x="490" y="390">rising edge, 3-valued</text>
+  <rect class="q-ext" x="880" y="350" width="110" height="52" rx="20"/><text class="q-x" x="935" y="373">Strategy</text><text class="q-x" x="935" y="389">Execution</text>
+  <path class="q-a" d="M880,364 H600"/><text class="q-l" x="740" y="358" text-anchor="middle">entry?</text>
+  <path class="q-a" d="M600,390 H880"/><text class="q-l" x="740" y="406" text-anchor="middle">entry answer</text>
+
+  <rect class="q-main" x="380" y="430" width="220" height="52" rx="8"/><text class="q-t" x="490" y="452">Evaluate exits</text><text class="q-r" x="490" y="470">per condition; exit = OR</text>
+  <rect class="q-ext" x="880" y="430" width="110" height="52" rx="20"/><text class="q-x" x="935" y="453">Strategy</text><text class="q-x" x="935" y="469">Execution</text>
+  <path class="q-a" d="M880,444 H600"/><text class="q-l" x="740" y="438" text-anchor="middle">exit?</text>
+  <path class="q-a" d="M600,470 H880"/><text class="q-l" x="740" y="486" text-anchor="middle">answers, levels</text>
+
+  <rect class="q-ext" x="10" y="510" width="140" height="52" rx="20"/><text class="q-x" x="80" y="540">Strategy</text>
+  <rect class="q-stp" x="380" y="510" width="220" height="52" rx="8"/><text class="q-t" x="490" y="532">Read values</text><text class="q-r" x="490" y="550">a copy, no side effect</text>
+  <path class="q-a" d="M380,548 H150"/><text class="q-l" x="265" y="564" text-anchor="middle">values</text>
+  <path class="q-a" d="M380,312 H360 V524 H380"/><path class="q-a" d="M360,456 H380"/>
+  <text class="q-l" x="352" y="440" text-anchor="middle" transform="rotate(-90 352 440)">same bar values</text>
+
+  <a href="#f1"><rect x="380" y="40" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f1"><rect x="380" y="120" width="220" height="40" rx="6" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f4"><rect x="380" y="190" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
+  <a href="#f2"><rect x="380" y="270" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f5"><rect x="650" y="276" width="190" height="40" rx="6" fill="transparent" style="cursor:pointer"><title>Feature 5</title></rect></a>
+  <a href="#f3"><rect x="380" y="350" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+  <a href="#f3"><rect x="380" y="430" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+  <a href="#f3"><rect x="380" y="510" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+</svg>
+<p class="caption">Main path in colour: build → seed → step → evaluate. A rebuild is a fresh build from the same class (<a href="#f6">feature 6</a>). The frozen exit inputs are captured at the entry-decision bar and released when flat (<a href="#f5">feature 5</a>).</p>
+</div>
+
+<h3>Feature cards</h3>
+
+<div class="behaviour" id="f1"><h3><span class="num">1</span>Build cold, or refuse a bad signal<span class="added">settled; interface proposed · was behaviour 1 · decisions 5, 7, 9 · System map decision 43</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Strategy builds the slot's signal before trading. A broken signal must fail at start, never during a session, and two slots must never share state.</dd>
+<dt>Upstream gives</dt><dd>A <code>SignalDag</code> subclass with typed params and a <code>build_graph()</code>, the slot's deployment config (signal instrument), the calculation registry, and the instrument's exchange profile.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Type-check the params against their type hints.</li>
+<li>Run <code>build_graph(g, params)</code>: take each calculation from the registry by name (the strategy folder's scope first, then the built-in library) and wire its inputs. A node reads only nodes added before it, so the graph has no cycle.</li>
+<li>Refuse a bad signal: a param value that does not match its type hint; an unregistered calculation name; a duplicate node name; no entry condition; no exit; an unknown session; an unregistered market-data name, or one the session cannot supply; a non-bool <code>rearm_required</code>; a node named <code>entry</code> while rearm is on.</li>
+<li>Resolve the params' session label (for example <code>regular</code>) to the instrument's session name from its exchange profile.</li>
+<li>Tell each calculation that reads auxiliary history which market-data names its inputs read.</li>
+<li>Start cold: no stepped values, no rising edge, no frozen inputs.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Session label</td><td>Configurable per signal class</td><td>the session names of the instrument's exchange profile</td><td>— (required)</td></tr>
+<tr><td>Direction</td><td>Configurable per signal class</td><td>not stated (<a href="#open-questions">Q1</a>)</td><td>— (required)</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>A refused signal leaves no state behind for the next build, and two builds of the same class share nothing. Within one scope, a registry name is bound to exactly one class.</dd>
+</dl></div>
+
+<div class="behaviour" id="f2"><h3><span class="num">2</span>Step every node once per bar, in dependency order<span class="added">settled · was behaviour 2</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Each answer must read values from the same bar, and a value that could not be computed must never pass as current.</dd>
+<dt>Upstream gives</dt><dd>Strategy passes the bar history up to this bar and strategy data (<a href="strategy_map.html#f1">Strategy feature 1</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Step every calculation and inline expression once, in dependency order; warmup calculations stay at their seeded value.</li>
+<li>Skip an inline step that cannot be evaluated yet (a missing input, or the entry price while flat); the step is unavailable for this bar.</li>
+<li>A step that fails is null for this bar; its previous value is dropped, never carried, and the step is marked stale, so <code>level()</code> and <code>exit_condition_level()</code> answer None for that step.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>The values for a bar depend only on the signal class, the bars, the seed and the strategy data given so far.</dd>
+</dl></div>
+
+<div class="behaviour" id="f3"><h3><span class="num">3</span>Evaluate entry and exit<span class="added">settled; names and values proposed · was behaviour 3 · decisions 3, 8</span></h3><dl class="gmi">
+<dt>Need</dt><dd>StrategyExecution asks for the entry answer while flat and the exit answers in a trade. A protected execution masks exit conditions that a resting broker order already covers, so StrategyExecution needs each exit condition by name and its level.</dd>
+<dt>Upstream gives</dt><dd>The values of the last stepped bar (<a href="#f2">feature 2</a>), which can contain nulls.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li><strong>Rearm.</strong> With rearm on, entry is true only on the per-day rising edge of the entry logic. Track the edge on every bar, in position too.</li>
+<li><strong>Nulls.</strong> Use three-valued logic: a null leg does not block an OR whose other leg is true; an AND with a false leg is false; a result still null reads as false. With rearm on, warn once per trading date about a null entry, naming the missing refs. Raise any evaluation error other than a missing ref.</li>
+<li><strong>Exits.</strong> Answer each exit condition by name, in the order the exits were added; the exit answer is their OR. Report every condition as evaluated; the signal knows nothing of resting broker exits.</li>
+<li><strong>Levels.</strong> A condition of the shape <code>close &lt;op&gt; step</code> reports that step's value as its level; any other shape reports None. Any node's level is its last value as a price, or None.</li>
+<li><strong>Names and values.</strong> List entry conditions, exit condition names and condition names without evaluating, so the lists are correct before the first bar. Return a copy of every node's value on the last stepped bar.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Rearm required</td><td>Configurable per signal class</td><td>true, false</td><td>false</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>For both rearm values: asking twice on the same bar gives the same answers, with no side effect. With rearm on, a sustained run of true entry logic gives one entry, and the gate stays closed until the signal is warm.</dd>
+</dl></div>
+
+<div class="behaviour" id="f4"><h3><span class="num">4</span>Report history needs and warmth<span class="added">settled · was behaviour 4</span></h3><dl class="gmi">
+<dt>Need</dt><dd>The Event Loop and Aux Data must fetch exactly the history the signal needs. StrategyExecution must not trade before every warmup calculation has a value. Strategy persists session-fixed values across a restart (<a href="strategy_map.html#f5">Strategy feature 5</a>).</dd>
+<dt>Upstream gives</dt><dd>History frames from Strategy: daily bars, prior-session intraday bars, auxiliary series. A frame can be empty or too short.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Report which calculations need intraday, daily or auxiliary history, and how many months of daily bars.</li>
+<li>Seed the warmup calculations; report warm only when every warmup calculation has a value.</li>
+<li>Let session-fixed calculations snapshot and restore their value; a restore puts each value back so the logic reads it before the next bar.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Warmup months of daily bars</td><td>Configurable per signal class</td><td>0 or any positive count</td><td>0</td></tr>
+<tr><td>History kinds</td><td>Chosen per warmup node</td><td>daily, intraday, aux</td><td>—</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>A calculation whose history was empty or too short is never reported warm. A restored session-fixed value equals the snapshotted value.</dd>
+</dl></div>
+
+<div class="behaviour" id="f5"><h3><span class="num">5</span>Freeze exit inputs at the entry bar<span class="added">settled · was behaviour 5 · decision 6</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A stop placed at entry must stay at its entry-bar level for the whole trade, even when the calculation it was derived from keeps moving.</dd>
+<dt>Upstream gives</dt><dd>StrategyExecution freezes at the entry-decision bar and releases when flat again (<a href="strategy_execution_map.html">StrategyExecution</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>On freeze, capture the calculation and market inputs of every exit-side step at that bar. An exit-side step reads strategy data, or is wrapped in <code>g.freeze_at_entry()</code>.</li>
+<li>While frozen, exit-side steps read the captured inputs; the close, strategy data and every other step stay live.</li>
+<li>On release, exit-side steps read live inputs again. Each freeze replaces the previous one.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>An input missing at the entry bar stays unavailable for the whole trade. A signal with no exit-side nodes is unaffected by freeze and release.</dd>
+</dl></div>
+
+<div class="behaviour" id="f6"><h3><span class="num">6</span>Rebuild cold<span class="added">proposed · was behaviour 6 · System map decision 22</span></h3><dl class="gmi">
+<dt>Need</dt><dd>When late history arrives, Strategy rebuilds the signal while flat and idle (<a href="strategy_map.html#f3">Strategy feature 3</a>), and the rebuilt signal must equal a fresh process.</dd>
+<dt>Upstream gives</dt><dd>A rebuild request from Strategy, then the seed bars replayed through <code>step()</code>.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Build afresh from the same class (<a href="#f1">feature 1</a>), discarding every value, the rearm state and any freeze.</li>
+<li>Strategy replays the seed bars through the new signal.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>After a rebuild and the same replay, the signal's values equal those of a fresh process given the same bars.</dd>
+</dl></div>
+</section>
+
+<section id="tests">
+<div class="eyebrow">StrategySignal · 3 · Tests</div>
+<h2>Tests</h2>
+<p>Contract tests for the interface: any implementation must pass them. Each calculation in the library also gets its own step and warmup tests. A test with parameter cases runs once per supported value. Every row is <span class="not-written">not written yet</span>.</p>
+
+<details open><summary>End to end · the component sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>tests/signal/test_signal_sample.py::test_level_cross_then_stop_on_frozen_entry_level</code></td></tr>
+<tr><th>Source</th><td>A component-level sample, separate from the system golden sample: the golden sample reaches the signal only as "entry true on the L-cross bar, exit true on the T bar", so the golden sample exercises neither warmup, rearm nor the freeze.</td></tr>
+<tr><th>Input</th><td>A signal class with one warmup calculation <code>sma5</code> (5-bar SMA of the close, seeded from 5 prior bars); entry close &gt; L with rearm on; exit-side step <code>stop_px = sma5 − 2 ticks</code>; exit <code>stop</code>: close &lt; <code>stop_px</code>; exit <code>target</code>: close ≥ T. Five seed bars, then 10 bars: the close crosses L on bar 3 and rises on bars 4–6; on bar 8 the close falls below the bar-3 <code>stop_px</code> without reaching T. StrategyExecution freezes on bar 3. The full class is under <a href="#skeleton-code">Skeleton code</a>.</td></tr>
+<tr><th>Parameter cases</th><td>rearm ∈ {true}</td></tr>
+<tr><th>Passes when</th><td>Warm after the seed; over bars 1–10 entry is true exactly once, on bar 3; exit is true exactly once, on bar 8, from <code>stop</code>; <code>target</code> is never true; <code>stop_px</code> on bars 4–8 equals its bar-3 value, and so does <code>exit_condition_level("stop")</code>.</td></tr>
+<tr><th>Fails when</th><td>Entry is also true on bars 4–6 (the rising-edge gate is broken); <code>stop_px</code> on bar 5 differs from bar 3 (the freeze is broken); or the signal reports warm before the seed.</td></tr>
+</tbody></table></div></details>
+
+<details><summary>1. Build cold, or refuse a bad signal<span class="count">4 tests · 13 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_bad_signal_refused_and_leaves_no_state</code></td><td>reason ∈ {param type mismatch, unregistered calculation, duplicate node, no entry, no exit, unknown session, unregistered market-data name, market data the session cannot supply, non-bool rearm, node named entry with rearm}</td><td>build result; state left for the next build</td><td>refused; none</td></tr>
+<tr><td><code>test_rebinding_a_registry_name_to_another_class_raises</code></td><td>—</td><td>second registration</td><td>raises</td></tr>
+<tr><td><code>test_folder_calc_shadows_builtin_and_folders_do_not_collide</code></td><td>—</td><td>class resolved per folder</td><td>folder class first; two folders keep their own</td></tr>
+<tr><td><code>test_session_label_resolved_from_exchange_profile</code></td><td>exchange ∈ {CME}</td><td>session name</td><td>the profile's session for the label</td></tr>
+</tbody></table></div></details>
+
+<details><summary>2. Step every node once per bar, in dependency order<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_unavailable_value_not_carried_from_previous_bar</code></td><td>—</td><td>value of a step whose input is missing</td><td>unavailable, not the previous value</td></tr>
+<tr><td><code>test_failed_step_is_null_and_level_is_none</code></td><td>—</td><td>value; <code>level()</code></td><td>null; None</td></tr>
+</tbody></table></div></details>
+
+<details><summary>3. Evaluate entry and exit<span class="count">6 tests · 9 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_sustained_entry_run_entries</code></td><td>rearm ∈ {true, false}</td><td>entries over a 5-bar true run</td><td>1; 5</td></tr>
+<tr><td><code>test_null_leg_follows_kleene_rules</code></td><td>case ∈ {true OR null, false AND null, null alone}</td><td>answer</td><td>true; false; false</td></tr>
+<tr><td><code>test_evaluate_twice_same_answers</code></td><td>—</td><td>answers on a second ask</td><td>equal</td></tr>
+<tr><td><code>test_exit_is_or_of_named_conditions</code></td><td>—</td><td>exit answer vs. per-condition answers</td><td>OR, in the order added</td></tr>
+<tr><td><code>test_condition_names_listed_before_first_bar</code></td><td>—</td><td>names before any step</td><td>complete</td></tr>
+<tr><td><code>test_values_returns_a_copy</code></td><td>—</td><td>signal state after the caller changes the copy</td><td>unchanged</td></tr>
+</tbody></table></div></details>
+
+<details><summary>4. Report history needs and warmth<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_warm_only_with_enough_history</code></td><td>history ∈ {empty, too short, enough}</td><td>warm report</td><td>false; false; true</td></tr>
+<tr><td><code>test_restore_session_state_puts_value_back</code></td><td>—</td><td>value read before the next bar</td><td>equal to the snapshot</td></tr>
+</tbody></table></div></details>
+
+<details><summary>5. Freeze exit inputs at the entry bar<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_release_returns_exit_inputs_to_live</code></td><td>—</td><td>exit-side step after release</td><td>follows live inputs</td></tr>
+<tr><td><code>test_input_missing_at_entry_stays_unavailable</code></td><td>—</td><td>exit-side step during the trade</td><td>unavailable until release</td></tr>
+</tbody></table></div></details>
+
+<details><summary>6. Rebuild cold<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_rebuild_and_replay_equals_fresh_process</code></td><td>—</td><td>every node value after rebuild and replay</td><td>equal to a fresh process</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="open-questions">
+<div class="eyebrow">StrategySignal · Open questions</div>
+<h2>Open questions</h2>
+<ol>
+<li><strong>Direction (feature 1).</strong> Which direction values does <code>SignalParams.direction</code> support (long, short, both)?</li>
+</ol>
+</section>
+
+<section id="reference">
+<div class="eyebrow">StrategySignal · Reference</div>
+<h2>Reference</h2>
+<p>Implementation detail and history. Feature numbers equal the old behaviour numbers.</p>
+<h3>Step → code</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Step</th><th>Code</th></tr></thead>
+<tbody>
+<tr><td>Build DAG</td><td><code>strategy_builder/signal_dag.py</code> · <code>SignalDag.from_config()</code>, <code>build_graph()</code>, <code>Graph</code>, <code>SignalParams</code>; <code>registry.py</code> · <code>register_calc()</code>, <code>get_calc()</code>, <code>register_signal_dag()</code>, <code>get_signal_dag()</code></td></tr>
+<tr><td>[ DAG ]</td><td><code>Graph</code>, <code>Node</code></td></tr>
+<tr><td>Seed warmup nodes</td><td><code>SignalDag.warmup_requirements()</code>, <code>seed()</code>, <code>is_warm()</code>, <code>snapshot_session_state()</code>, <code>restore_session_state()</code>; <code>calculations/calculation.py</code> · <code>Calculation.warmup()</code>, <code>SessionFixedCalculation</code></td></tr>
+<tr><td>Step in dependency order</td><td><code>SignalDag.step()</code>; <code>Calculation.setup()</code>, <code>step()</code>, <code>value()</code>, <code>bind_aux()</code></td></tr>
+<tr><td>[ frozen exit inputs ]</td><td><code>SignalDag.freeze_exit_inputs()</code>, <code>release_exit_inputs()</code>; <code>Graph.freeze_at_entry()</code></td></tr>
+<tr><td>Evaluate entry</td><td><code>SignalDag.evaluate_entry()</code>, <code>rearm_required</code>, <code>entry_conditions()</code></td></tr>
+<tr><td>Evaluate exits</td><td><code>SignalDag.evaluate_exit_conditions()</code>, <code>exit_condition_level()</code>, <code>level()</code>, <code>has_level()</code>, <code>exit_condition_names()</code>, <code>condition_names()</code></td></tr>
+<tr><td>Read values</td><td><code>SignalDag.values()</code></td></tr>
+<tr><td>Interface</td><td><code>strategy_builder/strategy_signal.py</code> · <code>StrategySignal</code>, <code>WarmupRequirements</code></td></tr>
+</tbody></table></div>
+
+
+<div id="skeleton-code">
+<h3>Skeleton code</h3>
 <p>The interface, the <code>SignalDag</code> implementation and its graph, the calculation base classes and registries, and the Sample's signal class.</p>
 <h3>The pieces</h3>
 <div class="table-wrap"><table>
@@ -202,7 +383,7 @@ Five seed bars, then 10 synthetic bars. The close crosses L on bar 3 and keeps r
 </tbody></table></div>
 <h3>Methods by behaviour</h3>
 <div class="table-wrap"><table>
-<thead><tr><th>Behaviour</th><th>Methods</th></tr></thead>
+<thead><tr><th>Old behaviours</th><th>Methods</th></tr></thead>
 <tbody>
 <tr><td>1. Build cold</td><td><code>from_config(strategy_config)</code> (class method)</td></tr>
 <tr><td>2. Step</td><td><code>step(bars, strategy_data)</code></td></tr>
@@ -383,37 +564,10 @@ class LevelCross(SignalDag):
         g.exit("stop", close, "&lt;", stop_px)
         g.exit("target", close, "&gt;=", p.target)
 </code></pre></details>
-</section>
+</div>
 
-<section id="test-spec">
-<div class="eyebrow">StrategySignal · Test spec</div>
-<h2>Test spec</h2>
-<p>Contract tests for the interface; any implementation must pass them. Each calculation in the library also gets its own step and warmup tests. Each row below is <span class="not-written">not written yet</span>.</p>
-<details><summary>Sample and behaviours 1–6<span class="count">18 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
-<tr><td><code>tests/signal/test_signal_sample.py::test_level_cross_then_stop_on_frozen_entry_level</code></td><td>The Sample's Passes-when.</td></tr>
-<tr><td><code>test_bad_signal_refused_and_leaves_no_state</code></td><td>Behaviour 1.</td></tr>
-<tr><td><code>test_param_value_not_matching_type_hint_refused</code></td><td>Behaviour 1; decision 9.</td></tr>
-<tr><td><code>test_rebinding_a_registry_name_to_another_class_raises</code></td><td>Behaviour 1 invariant.</td></tr>
-<tr><td><code>test_folder_calc_shadows_builtin_and_folders_do_not_collide</code></td><td>Behaviour 1 invariant; System map decision 43.</td></tr>
-<tr><td><code>test_session_label_resolved_from_exchange_profile</code></td><td>Behaviour 1.</td></tr>
-<tr><td><code>test_unavailable_value_not_carried_from_previous_bar</code></td><td>Behaviour 2.</td></tr>
-<tr><td><code>test_failed_step_is_null_and_level_is_none</code></td><td>Behaviour 2.</td></tr>
-<tr><td><code>test_sustained_entry_run_fires_once_with_rearm</code></td><td>Behaviour 3 invariant.</td></tr>
-<tr><td><code>test_null_leg_follows_kleene_rules</code></td><td>Behaviour 3.</td></tr>
-<tr><td><code>test_evaluate_twice_same_answers</code></td><td>Behaviour 3 invariant.</td></tr>
-<tr><td><code>test_exit_is_or_of_named_conditions</code></td><td>Behaviour 3.</td></tr>
-<tr><td><code>test_condition_names_listed_before_first_bar</code></td><td>Behaviour 3; decision 8.</td></tr>
-<tr><td><code>test_values_returns_a_copy</code></td><td>Behaviour 3; decision 8.</td></tr>
-<tr><td><code>test_not_warm_on_short_history</code></td><td>Behaviour 4 invariant.</td></tr>
-<tr><td><code>test_restore_session_state_puts_value_back</code></td><td>Behaviour 4.</td></tr>
-<tr><td><code>test_release_returns_exit_inputs_to_live</code></td><td>Behaviour 5.</td></tr>
-<tr><td><code>test_rebuild_and_replay_equals_fresh_process</code></td><td>Behaviour 6 invariant.</td></tr>
-</tbody></table></div></details>
-</section>
-
-<section id="decisions-already-made">
-<div class="eyebrow">StrategySignal · Decisions already made</div>
-<h2>Decisions already made</h2>
+<div id="decisions-already-made">
+<h3>Decisions already made</h3>
 <div class="decision"><h3><span class="num">1</span>Is the signal pure?</h3><p class="q">Yes: no I/O, no clock, no orders. Position data arrives only as strategy data (<a href="system_map.html#d21">System map decision 21</a>).</p></div>
 <div class="decision"><h3><span class="num">2</span>Who decides when it steps, rebuilds, freezes?</h3><p class="q">Strategy steps and rebuilds it; StrategyExecution asks it questions and times the freeze (<a href="system_map.html#d20">System map decisions 20</a>, <a href="system_map.html#d22">22</a>).</p></div>
 <div class="decision"><h3><span class="num">3</span>Does the signal know about resting broker exits?</h3><p class="q">No. It reports every exit condition and each one's level; StrategyExecution decides which conditions a broker order already covers.</p></div>
@@ -424,6 +578,7 @@ class LevelCross(SignalDag):
 <div class="decision"><h3><span class="num">7</span>Why put an interface in front of one implementation?</h3><p class="q">So Strategy and StrategyExecution can be tested against a small fake signal, and so a different signal layer can plug in without engine changes (System map R2). <code>SignalDag</code> is still the only one the engine ships.</p><p class="when">proposed · v3</p></div>
 <div class="decision"><h3><span class="num">8</span>What may a caller read from the signal?</h3><p class="q">Only its public interface. For logs and startup checks the interface has read-only methods: <code>entry_conditions()</code>, <code>exit_condition_names()</code>, <code>condition_names()</code> and <code>values()</code>. A restore after a restart goes through <code>restore_session_state()</code>, which also puts the restored values back. No caller reads a signal's private state.</p><p class="rej">Rejected: callers reading the signal's value cache or its logic structure directly (they would depend on one implementation's private layout, so another implementation could not plug in).</p><p class="when">proposed · v3 · 2026-11-07</p></div>
 <div class="decision"><h3><span class="num">9</span>Where do a signal's params live?</h3><p class="q">In its <code>Params</code> dataclass; the defaults are the values. The build type-checks every field against its type hint. A variant with other values is a subclass that overrides <code>Params</code>. Version control of a strategy's code and params is outside the system.</p><p class="rej">Rejected: params in outside config (a second place that must agree with the code).</p><p class="when">proposed · v3 · 2026-11-07</p></div>
+</div>
 </section>
 </div>
 </body>

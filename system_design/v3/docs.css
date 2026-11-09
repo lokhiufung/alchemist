@@ -148,7 +148,7 @@ a.card:hover { border-color: var(--accent); text-decoration: none; }
 }
 .behaviour .added { font: 12px var(--mono); color: var(--ink-3); margin-left: 6px; }
 .not-written { font: 12px var(--mono); color: var(--warn); margin-left: 6px; white-space: nowrap; }
-dl.gmi { display: grid; grid-template-columns: 96px 1fr; gap: 6px 14px; margin: 0; }
+dl.gmi { display: grid; grid-template-columns: 124px 1fr; gap: 6px 14px; margin: 0; }
 dl.gmi dt { font: 600 12px/1.9 var(--mono); text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
 dl.gmi dd { margin: 0; }
 dl.gmi dd ul { margin: 4px 0; padding-left: 18px; }
@@ -164,3 +164,5 @@ details > .inner { padding: 4px 14px 10px; }
 @media (max-width: 600px) { dl.gmi { grid-template-columns: 1fr; } dl.gmi dt { line-height: 1.4; } }
 .details-body { padding: 0 14px 10px; }
 .details-body h4 { margin: 14px 0 6px; font-size: 14px; }
+
+.details-body { padding: 4px 16px 12px; }

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="docs.css?v=5">
+<link rel="stylesheet" href="docs.css?v=6">
 </head>
 <body>
 <nav class="topnav">
@@ -33,110 +33,325 @@
 <header>
 <div class="eyebrow">Component map · STRATEGY_MAP · Alchemist v3</div>
 <h1>Strategy</h1>
-<div class="lede"><p>The one object per slot that the Event Loop talks to. It drives the slot's three parts — StrategySignal, StrategyExecution and Order Manager — with what the Event Loop delivers, and books the slot's own position from fills.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong> Behaviours and decisions are settled. The calls Strategy makes on StrategySignal use the v3 signal interface (<a href="strategy_signal_map.html#skeleton-code">StrategySignal skeleton</a>). Multi-asset: the position is booked in the execution instrument's currency (<a href="system_map.html#d39">System map decision 39</a>). 2026-11-07: the strategy is registered with <code>register_strategy</code> and names its signal by registry name; the signal is built with <code>from_config()</code> and its params sit in the signal class; logs and snapshots read <code>values()</code> (decision 16).</p></div>
+<div class="lede"><p>The one object per slot that the Event Loop talks to. Strategy drives the slot's three parts (StrategySignal, StrategyExecution and Order Manager) with what the Event Loop delivers, and books the slot's own position from fills.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> Features and decisions are settled. The calls Strategy makes on StrategySignal use the v3 signal interface. Multi-asset: the position is booked in the execution instrument's currency (<a href="system_map.html#d39">System map decision 39</a>). Open questions are listed at the end.</p>
+<details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 6 features (Need / Upstream gives / Algorithm / Parameters / Invariant), replacing behaviours 1 and 3–7; old behaviour 2 was a placeholder (the exit-input freeze belongs to StrategyExecution) and is dropped → quantified tests with parameter cases → open questions → reference. Algorithm map added.</li>
+<li><strong>2026-11-07</strong> — The strategy is registered with <code>register_strategy</code> and names its signal by registry name; the signal is built with <code>from_config()</code> and its params sit in the signal class; logs and snapshots read <code>values()</code> (decision 16).</li>
+</ul></details></div>
 </header>
 
-<section id="goal">
-<div class="eyebrow">Strategy · Goal</div>
-<h2>Goal</h2>
-<p>Be the one per-slot object the Event Loop talks to, and drive the slot's three parts — StrategySignal, StrategyExecution and Order Manager — with what the Event Loop delivers, booking the slot's own position from fills along the way.</p>
+<section id="goal-and-scope">
+<div class="eyebrow">Strategy · 1 · Goal and scope</div>
+<h2>Goal and scope</h2>
+<p><strong>What it is.</strong> Strategy is the one object per slot that the Event Loop talks to. Strategy drives the slot's three parts (StrategySignal, StrategyExecution and Order Manager) with what the Event Loop delivers, and books the slot's own position from fills. A strategy author registers a strategy class and names its signal by registry name (decision 16).</p>
+<p><strong>Why it exists.</strong> The Event Loop must see one interface per slot, not three parts. The three parts must not reach into each other: the signal must not read the position, and StrategyExecution must not decide when a signal may be rebuilt. Strategy holds the position and the slot's timing rules (when to step the signal, when a rebuild is safe), so each part stays testable alone (<a href="system_map.html#d19">System map decisions 19</a>, <a href="system_map.html#d22">22</a>).</p>
+<p><strong>Goal.</strong> Be the one per-slot object the Event Loop talks to, and drive StrategySignal, StrategyExecution and Order Manager with what the Event Loop delivers, booking the slot's own position from fills.</p>
+
+<h3>Public interface</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
+<tbody>
+<tr><td rowspan="4">Other components call Strategy</td><td>Event Loop</td><td>Deliver a bar; an order update; a position update; a balance update; warmup history; a flatten request</td><td>bar, update, history, flatten reason and bar time</td></tr>
+<tr><td>Aux Data</td><td>Tell the slot that auxiliary data is ready or not ready, with the frames</td><td>ready flag, frames</td></tr>
+<tr><td>Event Loop, Safety</td><td>Ask the slot's state: processing an order? quarantined? flat and idle? trade closed? submitted, open and cancelling orders (decision 14)</td><td>flags, orders</td></tr>
+<tr><td>Event Loop</td><td>Quarantine and release the slot</td><td>—</td></tr>
+<tr><td rowspan="3">Strategy calls other components</td><td>StrategySignal</td><td>Build cold; step with bars and strategy data (entry price, seconds since entry); seed; snapshot and restore session state; read values</td><td>bars, strategy data, history</td></tr>
+<tr><td>StrategyExecution</td><td>Pass a bar (with the step-signal callback); pass an order update; set warmup-ready and aux-ready; hand the booked position for a flatten</td><td>bar, update, flags, position</td></tr>
+<tr><td>Order Manager</td><td>Forward an order update; ask for the slot's orders</td><td>update → change or nothing</td></tr>
+</tbody></table></div>
+
+<h3>Scope</h3>
 <p>Owns, from the System map:</p>
 <blockquote><p>Being the one per-slot object the Event Loop talks to: booking its own position from fills, in the instrument's currency, and driving its StrategySignal, StrategyExecution and Order Manager with what the Event Loop delivers — stepping the signal on each bar, passing the bar on to StrategyExecution, and deciding when the signal may be rebuilt (only while flat with no open or submitted orders).</p></blockquote>
 <div class="table-wrap"><table>
 <thead><tr><th>Not Strategy's job</th><th>Owned by</th></tr></thead>
 <tbody>
-<tr><td>The signal's params</td><td><a href="strategy_signal_map.html">StrategySignal</a> (the signal class holds them)</td></tr>
-<tr><td>The calculations and entry/exit logic</td><td><a href="strategy_signal_map.html">StrategySignal</a></td></tr>
-<tr><td>Which execution phase the slot is in, session gating, the daily quota, asking the signal for the entry/exit answer, timing its exit-input freeze and release, and what an order event means</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
-<tr><td>An order's life from submission to closed status, and which orders are owned</td><td><a href="order_manager_map.html">Order Manager</a></td></tr>
+<tr><td>The signal's params; the calculations and entry/exit logic</td><td><a href="strategy_signal_map.html">StrategySignal</a></td></tr>
+<tr><td>The execution phase, session gating, the daily quota, asking the signal for the entry/exit answer, timing the exit-input freeze and release, and what an order event means</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>An order's life from submission to closed status, and which orders the slot owns</td><td><a href="order_manager_map.html">Order Manager</a></td></tr>
 <tr><td>When bars are complete</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
 </tbody></table></div>
+
+<h3>Place in the system</h3>
+<div class="diagram">
+<svg viewBox="0 0 900 250" role="img" aria-label="Strategy between the Event Loop and Aux Data on the left, and StrategySignal, StrategyExecution and Order Manager on the right." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .ps-core { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .ps-ext { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.3; }
+    .ps-t { fill: var(--ink); font: 600 14px var(--sans); text-anchor: middle; }
+    .ps-x { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .ps-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .ps-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
+    .ps-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#stpsah); }
+  </style>
+  <defs><marker id="stpsah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
+  <rect class="ps-core" x="380" y="30" width="160" height="200" rx="10"/>
+  <text class="ps-t" x="460" y="124">Strategy</text><text class="ps-r" x="460" y="144">one per slot,</text><text class="ps-r" x="460" y="160">holds the position</text>
+  <rect class="ps-ext" x="20" y="40" width="150" height="90" rx="24"/><text class="ps-x" x="95" y="90">Event Loop</text>
+  <path class="ps-a" d="M170,70 H380"/><text class="ps-l" x="275" y="64">bars, updates, warmup</text>
+  <path class="ps-a" d="M380,104 H170"/><text class="ps-l" x="275" y="120">slot state answers</text>
+  <rect class="ps-ext" x="20" y="160" width="150" height="60" rx="24"/><text class="ps-x" x="95" y="195">Aux Data</text>
+  <path class="ps-a" d="M170,190 H380"/><text class="ps-l" x="275" y="184">ready, frames</text>
+  <rect class="ps-ext" x="720" y="20" width="160" height="56" rx="24"/><text class="ps-x" x="800" y="53">StrategySignal</text>
+  <path class="ps-a" d="M540,48 H720"/><text class="ps-l" x="630" y="42">step, rebuild</text>
+  <rect class="ps-ext" x="720" y="96" width="160" height="56" rx="24"/><text class="ps-x" x="800" y="129">StrategyExecution</text>
+  <path class="ps-a" d="M540,124 H720"/><text class="ps-l" x="630" y="118">bar, update, ready</text>
+  <rect class="ps-ext" x="720" y="172" width="160" height="56" rx="24"/><text class="ps-x" x="800" y="205">Order Manager</text>
+  <path class="ps-a" d="M540,190 H720"/><text class="ps-l" x="630" y="184">update</text>
+  <path class="ps-a" d="M720,212 H540"/><text class="ps-l" x="630" y="228">change or nothing</text>
+</svg>
+<p class="caption">StrategyExecution also talks to StrategySignal and Order Manager directly (<a href="system_map.html#d15">System map decisions 15</a>, <a href="system_map.html#d20">20</a>); those links are on the StrategyExecution page.</p>
+</div>
 </section>
 
-<section id="what-this-component-does">
-<div class="eyebrow">Strategy · What this component does</div>
-<h2>What this component does</h2>
-<h3>On each bar</h3>
-<p>Strategy is the only thing that steps the slot's StrategySignal. It steps it once with <code>step()</code>, passing strategy data built from its position:</p>
-<ul>
-<li><code>entry_price</code> — the booked average price;</li>
-<li><code>secs_since_entry</code> — counted from the entry-order bar.</li>
-</ul>
-<p>Both are <code>None</code> while flat. It then passes the bar to StrategyExecution, which asks the signal for the entry or exit answer its phase needs, decides, and sends orders through Order Manager.</p>
-<h3>On each order update</h3>
-<p>It forwards the update to Order Manager, books the position only from the change Order Manager returns, and passes the update to StrategyExecution — which asks Order Manager itself for anything more it needs. The new entry price reaches the signal through strategy data on the next bar.</p>
-<h3>When late data arrives</h3>
-<p>When late warmup or auxiliary data arrives, it rebuilds the signal cold — but only while <code>is_flat_idle()</code> holds: no position, and Order Manager has no open or submitted order. Then it tells StrategyExecution the slot is ready.</p>
-</section>
+<section id="features">
+<div class="eyebrow">Strategy · 2 · Features</div>
+<h2>Features</h2>
+<p>Each feature says which component needs it and why, what the upstream can give, and how Strategy closes the gap. Every number is a parameter with its supported values. Click a box in the map to jump to its feature.</p>
 
-<section id="sample">
-<div class="eyebrow">Strategy · Sample</div>
-<h2>Sample</h2>
-<p>Strategy's slice of the system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>.</p>
-<div class="table-wrap"><table><tbody>
-<tr><th>Input</th><td>A synthetic price path that rises through fixed level L on bar 10 and later reaches target T on bar 20, with no outage. A fixed-rule long signal: entry true on the first close above L, exit true on the first bar reaching T. StrategySignal and StrategyExecution are scripted stubs; Order Manager is a mock that returns each fill as an owned change.</td></tr>
-<tr><th>Expected</th><td>Strategy steps the signal exactly once per bar, before StrategyExecution sees that bar. On the buy fill it books +1, and from the next bar steps the signal with <code>entry_price</code> = fill price. On the sell fill it books 0. It ends flat with <code>entry_price</code> back to <code>None</code>.</td></tr>
-<tr><th>Passes when</th><td>Every bar reaches the signal once and StrategyExecution once, in that order; the position is +1 between the two fills and 0 at the end.</td></tr>
-<tr><th>Fails when</th><td>A bar reaches StrategyExecution before the signal was stepped with it; or the position moves on an update Order Manager did not return as a change.</td></tr>
-</tbody></table></div>
-</section>
+<h3>Algorithm map</h3>
+<div class="diagram">
+<svg viewBox="0 0 1000 780" role="img" aria-label="Strategy steps: a bar goes to StrategyExecution, which calls back to step the signal with strategy data from the position; an order update goes to Order Manager and only a returned change books the position before StrategyExecution sees the update; account updates for this slot change the position or balance; warmup or aux data rebuilds the signal only while flat and idle; a flatten request hands StrategyExecution the position; session-fixed values persist; snapshots go to the log." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .t-stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+    .t-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .t-st { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 5 4; }
+    .t-ext { fill: none; stroke: var(--ink-3); stroke-width: 1.2; }
+    .t-t { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .t-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .t-x { fill: var(--ink-2); font: 12px var(--sans); text-anchor: middle; }
+    .t-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
+    .t-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#tah); }
+    .t-w { stroke: var(--accent); stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; marker-end: url(#tah2); }
+  </style>
+  <defs>
+    <marker id="tah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker>
+    <marker id="tah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+  </defs>
 
-<section id="behaviours">
-<div class="eyebrow">Strategy · Behaviours</div>
-<h2>Behaviours</h2>
-<p>Each behaviour says what Strategy is given, what it must do, and what must always stay true.</p>
+  <rect class="t-ext" x="10" y="30" width="110" height="52" rx="20"/><text class="t-x" x="65" y="60">Event Loop</text>
+  <rect class="t-main" x="160" y="30" width="210" height="52" rx="8"/><text class="t-t" x="265" y="52">Hand bar to execution</text><text class="t-r" x="265" y="70">with step callback</text>
+  <path class="t-a" d="M120,56 H160"/><text class="t-l" x="140" y="24">bar</text>
+  <rect class="t-ext" x="880" y="30" width="110" height="52" rx="20"/><text class="t-x" x="935" y="53">Strategy</text><text class="t-x" x="935" y="69">Execution</text>
+  <path class="t-a" d="M370,56 H880"/><text class="t-l" x="625" y="50">bar + step_signal</text>
 
-<div class="behaviour"><h3><span class="num">1</span>Bar drive</h3><dl class="gmi">
-<dt>Given</dt><dd>A completed bar from the Event Loop.</dd>
-<dt>Must</dt><dd>Call StrategyExecution's <code>on_bar(bar, step_signal)</code>. When it calls <code>step_signal</code>, call the signal's <code>step()</code> with the bar history and strategy data from the booked position.</dd>
-<dt>Invariant</dt><dd>The signal is stepped exactly once per in-session bar, and before StrategyExecution sees that bar. The first in-session bar is the session's bar 0, so no step happens while StrategyExecution waits for the session, or while a quarantined slot is out of session.</dd>
+  <rect class="t-main" x="660" y="110" width="190" height="52" rx="8"/><text class="t-t" x="755" y="132">Step signal</text><text class="t-r" x="755" y="150">once, before decision</text>
+  <path class="t-a" d="M935,82 V136 H850"/><text class="t-l" x="895" y="128">call</text>
+  <rect class="t-ext" x="880" y="180" width="110" height="52" rx="20"/><text class="t-x" x="935" y="203">Strategy</text><text class="t-x" x="935" y="219">Signal</text>
+  <path class="t-a" d="M755,162 V206 H880"/><text class="t-l" x="815" y="200">bars + data</text>
+
+  <rect class="t-ext" x="10" y="260" width="110" height="52" rx="20"/><text class="t-x" x="65" y="290">Event Loop</text>
+  <rect class="t-main" x="160" y="260" width="210" height="52" rx="8"/><text class="t-t" x="265" y="282">Forward update</text><text class="t-r" x="265" y="300">to Order Manager</text>
+  <path class="t-a" d="M120,286 H160"/><text class="t-l" x="140" y="254">update</text>
+  <rect class="t-ext" x="880" y="260" width="110" height="52" rx="20"/><text class="t-x" x="935" y="283">Order</text><text class="t-x" x="935" y="299">Manager</text>
+  <path class="t-a" d="M370,280 H880"/><text class="t-l" x="625" y="274">order update</text>
+  <rect class="t-main" x="660" y="340" width="190" height="52" rx="8"/><text class="t-t" x="755" y="362">Book position</text><text class="t-r" x="755" y="380">only returned changes</text>
+  <path class="t-a" d="M880,300 H865 V352 H850"/><text class="t-l" x="815" y="330">change</text>
+  <rect class="t-ext" x="880" y="340" width="110" height="52" rx="20"/><text class="t-x" x="935" y="363">Strategy</text><text class="t-x" x="935" y="379">Execution</text>
+  <path class="t-a" d="M850,382 H880"/>
+
+  <rect class="t-ext" x="10" y="340" width="110" height="52" rx="20"/><text class="t-x" x="65" y="370">Event Loop</text>
+  <rect class="t-stp" x="160" y="340" width="210" height="52" rx="8"/><text class="t-t" x="265" y="362">Filter account update</text><text class="t-r" x="265" y="380">own instrument, account</text>
+  <path class="t-a" d="M120,366 H160"/><text class="t-l" x="140" y="334">pos, bal</text>
+
+  <rect class="t-st" x="410" y="346" width="210" height="40" rx="6"/><text class="t-r" x="515" y="370">[ position, balance ]</text>
+  <path class="t-w" d="M660,366 H620"/><path class="t-w" d="M370,366 H410"/>
+  <path class="t-w" d="M515,346 V136 H660"/>
+
+  <rect class="t-ext" x="10" y="430" width="110" height="40" rx="18"/><text class="t-x" x="65" y="455">Event Loop</text>
+  <rect class="t-ext" x="10" y="480" width="110" height="40" rx="18"/><text class="t-x" x="65" y="505">Aux Data</text>
+  <rect class="t-main" x="160" y="440" width="210" height="70" rx="8"/><text class="t-t" x="265" y="464">Rebuild when flat idle</text><text class="t-r" x="265" y="482">no position, no open</text><text class="t-r" x="265" y="498">or submitted order</text>
+  <path class="t-a" d="M120,450 H160"/><text class="t-l" x="140" y="426">warmup</text>
+  <path class="t-a" d="M120,500 H160"/><text class="t-l" x="140" y="494">frames</text>
+  <rect class="t-ext" x="880" y="430" width="110" height="40" rx="18"/><text class="t-x" x="935" y="455">Signal</text>
+  <path class="t-a" d="M370,450 H880"/><text class="t-l" x="625" y="444">build cold, seed bars</text>
+  <rect class="t-ext" x="880" y="480" width="110" height="40" rx="18"/><text class="t-x" x="935" y="505">Execution</text>
+  <path class="t-a" d="M370,500 H880"/><text class="t-l" x="625" y="494">warmup-ready, aux-ready</text>
+
+  <rect class="t-ext" x="10" y="560" width="110" height="52" rx="20"/><text class="t-x" x="65" y="590">Event Loop</text>
+  <rect class="t-stp" x="160" y="560" width="210" height="52" rx="8"/><text class="t-t" x="265" y="582">Hand flatten</text><text class="t-r" x="265" y="600">with booked position</text>
+  <path class="t-a" d="M120,586 H160"/><text class="t-l" x="140" y="554">flatten</text>
+  <rect class="t-ext" x="880" y="560" width="110" height="52" rx="20"/><text class="t-x" x="935" y="590">Execution</text>
+  <path class="t-a" d="M370,586 H880"/><text class="t-l" x="625" y="580">flatten + position</text>
+
+  <rect class="t-stp" x="160" y="640" width="210" height="52" rx="8"/><text class="t-t" x="265" y="662">Persist session values</text><text class="t-r" x="265" y="680">once warm; restore</text>
+  <rect class="t-ext" x="880" y="640" width="110" height="52" rx="20"/><text class="t-x" x="935" y="670">state store</text>
+  <path class="t-a" d="M370,656 H880"/><text class="t-l" x="625" y="650">session-fixed values</text>
+  <path class="t-a" d="M880,678 H370"/><text class="t-l" x="625" y="694">restored values</text>
+
+  <rect class="t-stp" x="160" y="716" width="210" height="52" rx="8"/><text class="t-t" x="265" y="738">Log snapshot</text><text class="t-r" x="265" y="756">every N bars</text>
+  <rect class="t-ext" x="880" y="716" width="110" height="52" rx="20"/><text class="t-x" x="935" y="746">log</text>
+  <path class="t-a" d="M370,742 H880"/><text class="t-l" x="625" y="736">signal values</text>
+
+  <a href="#f1"><rect x="160" y="30" width="210" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f1"><rect x="660" y="110" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f2"><rect x="160" y="260" width="210" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f2"><rect x="660" y="340" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f2"><rect x="160" y="340" width="210" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f3"><rect x="160" y="440" width="210" height="70" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+  <a href="#f4"><rect x="160" y="560" width="210" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
+  <a href="#f5"><rect x="160" y="640" width="210" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 5</title></rect></a>
+  <a href="#f6"><rect x="160" y="716" width="210" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 6</title></rect></a>
+</svg>
+<p class="caption">Main path in colour: bar → execution → step signal; update → Order Manager → book position → execution. The dashed box is the slot's position and balance: written by booking and by account updates, read when the signal is stepped (entry price, seconds since entry).</p>
+</div>
+
+<h3>Feature cards</h3>
+
+<div class="behaviour" id="f1"><h3><span class="num">1</span>The signal is stepped once per bar, before the decision<span class="added">settled · was behaviour 1 · decisions 1, 3</span></h3><dl class="gmi">
+<dt>Need</dt><dd>StrategyExecution asks the signal for an entry or exit answer on each bar, so the signal must already include that bar. The signal also needs position data (entry price, seconds since entry) without reading the position itself.</dd>
+<dt>Upstream gives</dt><dd>The Event Loop delivers each completed bar once, in time order (<a href="event_loop_map.html#f2">Event Loop feature 2</a>). StrategyExecution knows whether the bar is in session.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Pass the bar to StrategyExecution together with a step-signal callback.</li>
+<li>When StrategyExecution calls the callback, build strategy data from the booked position: entry price = booked average price; seconds since entry = counted from the entry-order bar. Both are None while flat.</li>
+<li>Call the signal's step with the bar history and the strategy data.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>The signal is stepped exactly once per in-session bar, before StrategyExecution decides on that bar. The first in-session bar is the session's bar 0; no step happens while StrategyExecution waits for the session, or while a quarantined slot is out of session.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">2</span>Exit-input freeze and release timing — not a Strategy behaviour</h3>
-<p>StrategyExecution calls <code>freeze_exit_inputs()</code> / <code>release_exit_inputs()</code> (StrategyExecution behaviour 1). The number is kept so references to the later behaviours stay valid.</p></div>
-
-<div class="behaviour"><h3><span class="num">3</span>Order-update relay and position booking</h3><dl class="gmi">
-<dt>Given</dt><dd>An order update from the Event Loop.</dd>
-<dt>Must</dt><dd><ul>
-<li>Forward it to Order Manager. If Order Manager returns no change, stop.</li>
-<li>Otherwise book the position (size, average price, currency, entry timestamp = the entry-order bar) from the returned change, and call StrategyExecution's <code>on_order_update(order_update)</code>.</li>
-<li>Also: build Order Manager with the slot's account; apply a broker position update only for this slot's execution instrument; take in a balance update for this slot's account and its instrument's currency.</li>
-</ul></dd>
+<div class="behaviour" id="f2"><h3><span class="num">2</span>The position is booked only from Order Manager's changes<span class="added">settled · was behaviour 3 · decisions 7, 8, 9</span></h3><dl class="gmi">
+<dt>Need</dt><dd>The slot's position must count each fill exactly once, in the execution instrument's currency, even though every slot sees every broker update.</dd>
+<dt>Upstream gives</dt><dd>The Event Loop delivers every order, position and balance update to every slot (<a href="event_loop_map.html#f3">Event Loop feature 3</a>). Order Manager returns a change only for an owned order, once per fill (<a href="order_manager_map.html#f3">Order Manager feature 3</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Forward each order update to Order Manager. If Order Manager returns no change, stop.</li>
+<li>Book the position from the returned change: size, average price, currency, entry timestamp = the entry-order bar.</li>
+<li>Pass the update to StrategyExecution. StrategyExecution asks Order Manager itself for anything more it needs.</li>
+<li>Apply a broker position update only for this slot's execution instrument. Take a balance update only for this slot's account and the instrument's currency.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Position currency</td><td>Fixed per instrument (exchange profile, <a href="system_map.html#d39">System map decision 39</a>)</td><td>USD (CME), EUR (Eurex)</td><td>—</td></tr>
+</tbody></table></div></dd>
 <dt>Invariant</dt><dd>The position changes only from changes Order Manager returns, each booked once. The signal sees position data only through strategy data.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">4</span>Readiness and rebuild timing</h3><dl class="gmi">
-<dt>Given</dt><dd>Warmup history from the Event Loop, or auxiliary ready / not ready with its frames from <a href="aux_data_map.html">Aux Data</a> (proposed, <a href="system_map.html#d44">System map decision 44</a>), or the signal not yet warm. On a cold rebuild while aux is ready, Strategy reads the frames again from Aux Data.</dd>
-<dt>Must</dt><dd><ul>
-<li>Rebuild the signal cold and replay the seed bars only while <code>is_flat_idle()</code> holds (no position, and Order Manager has no open or submitted order); then set StrategyExecution's warmup-ready / aux-ready.</li>
-<li>During a mid-session replay, hold live bars back and step them afterwards, in order. Replayed bars outside the slot's session are skipped.</li>
-</ul></dd>
-<dt>Invariant</dt><dd>No rebuild ever happens with a position or an open or submitted order. StrategyExecution is never told "ready" while the signal is not warm. No live bar is stepped in the middle of a replay or dropped by it.</dd>
+<div class="behaviour" id="f3"><h3><span class="num">3</span>A rebuild happens only while flat and idle<span class="added">settled · was behaviour 4 · decisions 5, 10</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Late warmup history or late auxiliary data means the signal must be rebuilt cold. A rebuild in the middle of a trade would change the exit logic under an open position.</dd>
+<dt>Upstream gives</dt><dd>Warmup history from the Event Loop (<a href="event_loop_map.html#f7">Event Loop feature 7</a>); ready or not ready with frames from Aux Data (<a href="aux_data_map.html#f4">Aux Data feature 4</a>), and frames again on request during a rebuild (<a href="aux_data_map.html#f8">Aux Data feature 8</a>); the signal's warm report.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Rebuild only while flat and idle: no position, and Order Manager has no open or submitted order.</li>
+<li>Build the signal cold and replay the seed bars; then set StrategyExecution's warmup-ready and aux-ready.</li>
+<li>During a mid-session replay, hold live bars back and step them afterwards, in order. Skip replayed bars outside the slot's session.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>No rebuild happens with a position or with an open or submitted order. StrategyExecution is never told "ready" while the signal is not warm. No live bar is stepped in the middle of a replay or dropped by the replay.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">5</span>Teardown</h3><dl class="gmi">
-<dt>Given</dt><dd>A <code>request_flatten</code> call (session end, shutdown) — or Strategy's own call with reason <code>exit_failed</code>, made on each bar while StrategyExecution reports <code>flatten_wanted()</code> after an exit failed in position (StrategyExecution behaviour 12).</dd>
-<dt>Must</dt><dd>Hand StrategyExecution the booked position on every call. StrategyExecution cancels every order, waits until each is final, then sends one market order opposite the booked position (none when flat) and goes to DONE (StrategyExecution behaviour 11). <code>is_flat_idle()</code> counts submitted, open and cancelling orders.</dd>
+<div class="behaviour" id="f4"><h3><span class="num">4</span>A flatten hands StrategyExecution the booked position<span class="added">settled · was behaviour 5 · decision 6</span></h3><dl class="gmi">
+<dt>Need</dt><dd>At session end, at shutdown, or after an exit failed in position, the slot must close exactly the position Strategy booked, and a flat slot must send nothing.</dd>
+<dt>Upstream gives</dt><dd>A flatten request from the Event Loop (<a href="event_loop_map.html#f8">Event Loop feature 8</a>), or StrategyExecution reporting that a flatten is wanted after a failed exit.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>On each flatten request, hand StrategyExecution the booked position. On each bar while StrategyExecution reports that a flatten is wanted, call the flatten with reason <code>exit_failed</code>.</li>
+<li>StrategyExecution cancels every order, waits until each is final, sends one market order opposite the booked position (none when flat) and ends the day.</li>
+<li>Flat and idle counts submitted, open and cancelling orders.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>A flat slot sends no close order.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">6</span>Signal state across a restart</h3><dl class="gmi">
-<dt>Given</dt><dd>A state store and the signal's list of values fixed for the session.</dd>
-<dt>Must</dt><dd>Accept only session-fixed values as cached. Once warm, persist their state once. On restart, restore it (logging loudly), and treat a missing or corrupt record as nothing to restore. A quarantined slot never persists.</dd>
+<div class="behaviour" id="f5"><h3><span class="num">5</span>Session-fixed signal values survive a restart<span class="added">settled · was behaviour 6</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A process restart mid-session must not lose values fixed for the session (for example an opening range), because the history to rebuild those values may no longer be available.</dd>
+<dt>Upstream gives</dt><dd>A state store, and the signal's list of values fixed for the session (<a href="strategy_signal_map.html">StrategySignal</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Accept only session-fixed values as cached.</li>
+<li>Once the signal is warm, persist their state once.</li>
+<li>On restart, restore the state and log loudly; treat a missing or corrupt record as nothing to restore.</li>
+<li>A quarantined slot never persists.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>Only values that cannot go stale while the process is down are restored.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">7</span>Observability</h3><dl class="gmi">
-<dt>Given</dt><dd>A snapshot interval and the slot's health.</dd>
-<dt>Must</dt><dd>Log a signal snapshot, built from the signal's <code>values()</code>, every N bars (never when 0) with instrument and event fields. Mark a quarantined slot's in-session snapshot row as stale; a healthy row carries no stale keys. The write happens on a logging thread, not the event loop (<a href="system_map.html#d29">System map decision 29</a>).</dd>
-<dt>Invariant</dt><dd>Logging never changes what is traded.</dd>
+<div class="behaviour" id="f6"><h3><span class="num">6</span>Signal snapshots are logged without touching trading<span class="added">settled · was behaviour 7 · System map decision 29</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A run must be auditable afterwards: the operator needs the signal's values next to each decision.</dd>
+<dt>Upstream gives</dt><dd>The signal's values, and the slot's health (quarantined or not).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Every N bars (never when N is 0), log a snapshot built from the signal's values, with instrument and event fields.</li>
+<li>Mark a quarantined slot's in-session snapshot row as stale; a healthy row carries no stale keys.</li>
+<li>Write the record on a logging thread, not on the Event Loop thread.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Snapshot interval N (bars)</td><td>Configurable</td><td>0 (off) or any positive count</td><td>not stated (<a href="#open-questions">Q1</a>)</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>For every N: logging never changes what is traded.</dd>
 </dl></div>
 </section>
 
-<section id="skeleton-code">
-<div class="eyebrow">Strategy · Skeleton code</div>
-<h2>Skeleton code</h2>
+<section id="tests">
+<div class="eyebrow">Strategy · 3 · Tests</div>
+<h2>Tests</h2>
+<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. No Strategy test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
+
+<details open><summary>End to end · the sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>tests/strategy/test_strategy.py::test_golden_round_trip_books_position</code></td></tr>
+<tr><th>Input</th><td>A synthetic price path that rises through level L on bar 10 and reaches target T on bar 20, with no outage; a fixed-rule long signal; scripted StrategySignal and StrategyExecution stubs; an Order Manager mock that returns each fill as an owned change (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
+<tr><th>Passes when</th><td>Every bar reaches the signal once and StrategyExecution once, in that order; the position is +1 between the two fills and 0 at the end; from the bar after the buy fill the signal gets entry price = fill price, and at the end entry price is None.</td></tr>
+<tr><th>Fails when</th><td>A bar reaches StrategyExecution before the signal was stepped with the bar; or the position moves on an update Order Manager did not return as a change.</td></tr>
+</tbody></table></div></details>
+
+<details><summary>1. The signal is stepped once per bar, before the decision<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_signal_stepped_once_before_execution_each_bar</code></td><td>—</td><td>steps per bar; order of calls</td><td>1; step before decision</td></tr>
+<tr><td><code>test_strategy_data_carries_entry_price_after_fill</code></td><td>position ∈ {flat, long}</td><td>entry price; seconds since entry</td><td>None, None; fill price, seconds from the entry-order bar</td></tr>
+<tr><td><code>test_no_step_outside_session_or_when_quarantined_out_of_session</code></td><td>—</td><td>steps before bar 0</td><td>0</td></tr>
+</tbody></table></div></details>
+
+<details><summary>2. The position is booked only from Order Manager's changes<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_position_booked_only_from_order_manager_changes</code></td><td>update ∈ {owned change, not owned, duplicate}</td><td>position change</td><td>booked once; none; none</td></tr>
+<tr><td><code>test_position_booked_in_execution_instrument_currency</code></td><td>instrument ∈ {NQ, FDAX}</td><td>position currency</td><td>USD; EUR</td></tr>
+<tr><td><code>test_position_update_for_other_instrument_ignored</code></td><td>—</td><td>position change</td><td>none</td></tr>
+</tbody></table></div></details>
+
+<details><summary>3. A rebuild happens only while flat and idle<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_rebuild_refused_unless_flat_idle</code></td><td>state ∈ {position, open order, submitted order}</td><td>rebuilds</td><td>0</td></tr>
+<tr><td><code>test_rebuild_then_ready_when_flat_idle</code></td><td>—</td><td>ready flags after a rebuild</td><td>set only after the signal is warm</td></tr>
+<tr><td><code>test_live_bars_held_during_replay_then_stepped_in_order</code></td><td>—</td><td>live bars stepped during the replay; order afterwards</td><td>0; time order, none dropped</td></tr>
+</tbody></table></div></details>
+
+<details><summary>4. A flatten hands StrategyExecution the booked position<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_flatten_closes_booked_position</code></td><td>position ∈ {flat, long 1}</td><td>close orders sent</td><td>0; 1 SELL 1 MKT</td></tr>
+</tbody></table></div></details>
+
+<details><summary>5. Session-fixed signal values survive a restart<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_restore_session_values</code></td><td>record ∈ {valid, missing, corrupt}</td><td>values restored</td><td>all; none; none</td></tr>
+<tr><td><code>test_quarantined_slot_never_persists</code></td><td>—</td><td>writes to the state store</td><td>0</td></tr>
+</tbody></table></div></details>
+
+<details><summary>6. Signal snapshots are logged without touching trading<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_snapshot_every_n_bars</code></td><td>N ∈ {0, 10}</td><td>snapshots in 100 bars; stale keys on healthy rows</td><td>0; 10; 0</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="open-questions">
+<div class="eyebrow">Strategy · Open questions</div>
+<h2>Open questions</h2>
+<ol>
+<li><strong>Snapshot interval (feature 6).</strong> What is the default N?</li>
+</ol>
+</section>
+
+<section id="reference">
+<div class="eyebrow">Strategy · Reference</div>
+<h2>Reference</h2>
+<p>Implementation detail and history. The skeleton and decisions still cite the old behaviour numbers: old 1 → feature 1, old 3 → 2, old 4 → 3, old 5 → 4, old 6 → 5, old 7 → 6.</p>
+<h3>Step → code</h3>
+<p><code>Strategy</code> is in <code>strategy_builder/strategy.py</code>; the stores are in <code>stores.py</code>.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Step</th><th>Code</th></tr></thead>
+<tbody>
+<tr><td>Hand bar to execution, Step signal</td><td><code>Strategy.on_bar()</code>, <code>strategy_data()</code></td></tr>
+<tr><td>Forward update, Book position</td><td><code>Strategy.on_order_update()</code></td></tr>
+<tr><td>Filter account update</td><td><code>Strategy.on_position_update()</code>, <code>on_balance_update()</code></td></tr>
+<tr><td>Rebuild when flat idle</td><td><code>Strategy.warmup()</code>, <code>warmup_requirements()</code>, <code>rebuild_intraday_state()</code>, <code>deferring_bars()</code>, <code>reset_signal()</code>, <code>is_flat_idle()</code>, <code>on_aux_ready()</code></td></tr>
+<tr><td>Hand flatten</td><td><code>Strategy.request_flatten()</code></td></tr>
+<tr><td>Persist session values</td><td><code>Strategy.restore_signal_state()</code>; <code>CalcStateStore.save()</code>, <code>load()</code>; <code>RoundTripStore</code></td></tr>
+<tr><td>Log snapshot</td><td><code>Strategy.signal_snapshot()</code></td></tr>
+<tr><td>Slot-state answers</td><td><code>Strategy.is_processing_order()</code>, <code>quarantine()</code>, <code>release_quarantine()</code>, <code>is_quarantined()</code>, <code>consume_trade_closed()</code>, <code>get_submitted_orders()</code>, <code>get_open_orders()</code>, <code>get_cancelling_orders()</code></td></tr>
+</tbody></table></div>
+
+
+<div id="skeleton-code">
+<h3>Skeleton code</h3>
 <h3>Major state</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>State</th><th>What it holds</th></tr></thead>
@@ -151,7 +366,7 @@
 </tbody></table></div>
 <h3>Methods by behaviour</h3>
 <div class="table-wrap"><table>
-<thead><tr><th>Behaviour</th><th>Methods</th></tr></thead>
+<thead><tr><th>Old behaviours</th><th>Methods</th></tr></thead>
 <tbody>
 <tr><td>1. Bar drive</td><td><code>on_bar()</code>, <code>strategy_data()</code></td></tr>
 <tr><td>3. Relay and booking</td><td><code>on_order_update()</code>, <code>on_position_update()</code>, <code>on_balance_update()</code></td></tr>
@@ -230,29 +445,10 @@ class Strategy:
     def get_open_orders(self) -&gt; list: ...
     def get_cancelling_orders(self) -&gt; list: ...
 </code></pre></details>
-</section>
+</div>
 
-<section id="test-spec">
-<div class="eyebrow">Strategy · Test spec</div>
-<h2>Test spec</h2>
-<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>.</p>
-<details><summary>Sample and behaviours 1–7<span class="count">10 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
-<tr><td><code>tests/strategy/test_strategy.py::test_signal_stepped_once_before_execution_each_bar</code></td><td>Behaviour 1; the Sample.</td></tr>
-<tr><td><code>test_strategy_data_carries_entry_price_after_fill</code></td><td>Behaviour 1, 3.</td></tr>
-<tr><td><code>test_position_booked_only_from_order_manager_changes</code></td><td>Behaviour 3 invariant.</td></tr>
-<tr><td><code>test_position_booked_in_execution_instrument_currency</code></td><td>EUR for FDAX, USD for NQ.</td></tr>
-<tr><td><code>test_position_update_for_other_instrument_ignored</code></td><td>Behaviour 3.</td></tr>
-<tr><td><code>test_rebuild_refused_with_open_or_submitted_order</code></td><td>Behaviour 4 invariant.</td></tr>
-<tr><td><code>test_rebuild_then_ready_when_flat_idle</code></td><td>Behaviour 4.</td></tr>
-<tr><td><code>test_live_bars_held_during_replay_then_stepped_in_order</code></td><td>Behaviour 4.</td></tr>
-<tr><td><code>test_flat_slot_sends_no_close_order</code></td><td>Behaviour 5 invariant.</td></tr>
-<tr><td><code>test_corrupt_state_record_restores_nothing</code></td><td>Behaviour 6.</td></tr>
-</tbody></table></div></details>
-</section>
-
-<section id="decisions-already-made">
-<div class="eyebrow">Strategy · Decisions already made</div>
-<h2>Decisions already made</h2>
+<div id="decisions-already-made">
+<h3>Decisions already made</h3>
 <div class="decision"><h3><span class="num">1</span>Who drives the signal?</h3><p class="q">Strategy steps and rebuilds it; StrategyExecution holds it and asks it for the entry/exit answers (<a href="system_map.html#d20">System map decision 20</a>).</p><p class="rej">Rejected: Strategy evaluating the answers and handing them over.</p></div>
 <div class="decision"><h3><span class="num">2</span>What does Strategy need from the signal's interface?</h3><p class="q">Step, warm state, rebuild, warmup requirements, and the entry/exit answers StrategyExecution asks for — including per-condition exit answers and each exit condition's level, so a protected slot can rest a broker order at the level the signal already computes — and the read-only <code>values()</code> for logs and snapshots.</p><p class="rej">Rejected: skip-masks or a fill callback inside the signal.</p></div>
 <div class="decision"><h3><span class="num">3</span>How does the signal see position data?</h3><p class="q">Through strategy data (entry price, seconds since entry) passed into each step (<a href="system_map.html#d21">System map decision 21</a>). It never reads the position itself.</p></div>
@@ -268,6 +464,7 @@ class Strategy:
 <div class="decision"><h3><span class="num">15</span>An unknown key in a slot's config?</h3><p class="q">Logged, never fatal. A bad execution block fails startup (StrategyExecution decision 21).</p></div>
 <div class="decision"><h3><span class="num">16</span>How is a strategy declared, and how is its signal built?</h3><p class="q">A strategy is a small declarative subclass in its folder's <code>strategy.py</code>, registered with <code>register_strategy(strat)</code>; the slot config names that strat. It names its signal by registry name (<code>signal_name</code>), not by import (<a href="system_map.html#d43">System map decision 43</a>). Strategy builds the signal with <code>get_signal_dag(signal_name).from_config(config)</code> at start and on every rebuild, and reads it only through the public signal interface (<a href="strategy_signal_map.html#decisions-already-made">StrategySignal decision 8</a>).</p><p class="rej">Rejected: reading or writing the signal's value cache directly for logs or restore.</p><p class="when">proposed · v3 · 2026-11-07</p></div>
 <p class="meta">Decisions 12 and 13 are not used; the numbers are kept so references stay valid.</p>
+</div>
 </section>
 </div>
 </body>

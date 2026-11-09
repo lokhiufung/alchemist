@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="docs.css?v=5">
+<link rel="stylesheet" href="docs.css?v=6">
 </head>
 <body>
 <nav class="topnav">
@@ -33,17 +33,34 @@
 <header>
 <div class="eyebrow">Component map · AUX_DATA_MAP · Alchemist v3</div>
 <h1>Aux Data</h1>
-<div class="lede"><p>The engine's second input. It reads daily auxiliary series from outside data sources, decides when a value is good enough for the next session, and tells each strategy that reads one whether it is ready to trade.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-07 — proposed, not agreed (<a href="system_map.html#d44">System map decision 44</a>).</strong> The behaviours carry over the auxiliary and arming rules that the Event Loop map held before (its behaviour 8 and the auxiliary part of behaviour 17). Behaviours 1–6 carry those rules over; behaviours 7–9 are new interface rules.</p>
+<div class="lede"><p>The engine's second input. Aux Data reads daily auxiliary series from outside data sources, decides when a value is settled for the next session, and tells each strategy that reads a series whether the strategy may trade.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-09 — proposed, not agreed (<a href="system_map.html#d44">System map decision 44</a>).</strong> Features 1–6 carry over the auxiliary and arming rules that the Event Loop map held before; features 7–9 are new interface rules. Open questions are listed at the end.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 9 features (Need / Upstream gives / Algorithm / Parameters / Invariant; same numbers as the old behaviours) → quantified tests with parameter cases → open questions → reference. Algorithm map added.</li>
 <li><strong>2026-11-07</strong> — Page created. Auxiliary sources, arming, rechecks and bar values move here from the Event Loop.</li>
 </ul></details></div>
 </header>
 
-<section id="goal">
-<div class="eyebrow">Aux Data · Goal</div>
-<h2>Goal</h2>
-<p>Give every strategy that reads an auxiliary series a value it can trust for the session it will trade, before that session opens, and keep that value fresh across day boundaries.</p>
+<section id="goal-and-scope">
+<div class="eyebrow">Aux Data · 1 · Goal and scope</div>
+<h2>Goal and scope</h2>
+<p><strong>What it is.</strong> Aux Data is the engine's second input, beside the Gateway. Aux Data reads daily auxiliary series (values that are not broker prices) from outside data sources, decides when a value is settled for the session a strategy will trade, and tells each strategy that reads a series whether that strategy may trade. One resident task steps every arm group; the Event Loop calls Aux Data once per bar; Strategy calls Aux Data when Strategy rebuilds a signal.</p>
+<p><strong>Why it exists.</strong> Some signals read a daily series that an outside source publishes, sometimes late, sometimes provisional, on the clock of a market other than the broker's. The Gateway talks to the broker only (<a href="system_map.html#d7">System map decision 7</a>), and the Event Loop must stay narrow (bars, dispatch, broker history). Aux Data owns the outside sources, their failure modes and their arming clock, so that no strategy trades on an auxiliary value that was not settled (<a href="system_map.html#d44">System map decision 44</a>).</p>
+<p><strong>Goal.</strong> Give every strategy that reads an auxiliary series a value the strategy can trust for the session it will trade, before that session opens, and keep that value fresh across day boundaries.</p>
+
+<h3>Public interface</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
+<tbody>
+<tr><td rowspan="3">Other components call Aux Data</td><td>Event Loop</td><td>Annotate a completed bar before dispatch</td><td>bar → bar + auxiliary values</td></tr>
+<tr><td>Strategy</td><td>Ask for the history frames of an instrument during a cold rebuild</td><td>instrument → frames</td></tr>
+<tr><td>Runner</td><td>Start and stop the resident task</td><td>mode, replay date</td></tr>
+<tr><td rowspan="3">Aux Data calls other components</td><td>Outside data sources</td><td>Fetch a series</td><td>name, target date → rows</td></tr>
+<tr><td>Strategy</td><td>Give a member its frames to seed; tell the member it is ready or not ready</td><td>frames, ready flag</td></tr>
+<tr><td>Event Loop (runtime book)</td><td>Read the current members on each step</td><td>strategies and the names they read</td></tr>
+</tbody></table></div>
+
+<h3>Scope</h3>
 <p>Owns, from the System map:</p>
 <blockquote><p>Reading auxiliary daily series from outside data sources, each through one data-source interface; deciding when a value is settled for its target session; arming and disarming each group of strategies that read them; adding the values to bars; and serving the history frames a cold rebuild needs (<a href="system_map.html#d44">System map decision 44</a>).</p></blockquote>
 <div class="table-wrap"><table>
@@ -51,113 +68,327 @@
 <tbody>
 <tr><td>Broker history (daily and prior-session bars)</td><td><a href="gateway_map.html">Gateway</a>, requested by the <a href="event_loop_map.html">Event Loop</a></td></tr>
 <tr><td>Delivering bars to strategies</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
-<tr><td>When a signal may be rebuilt, and telling StrategyExecution it is ready</td><td><a href="strategy_map.html">Strategy</a></td></tr>
+<tr><td>When a signal may be rebuilt; telling StrategyExecution that the slot is ready</td><td><a href="strategy_map.html">Strategy</a></td></tr>
 <tr><td>How a calculation is seeded from the frames</td><td><a href="strategy_signal_map.html">StrategySignal</a></td></tr>
 </tbody></table></div>
+
+<h3>Place in the system</h3>
+<div class="diagram">
+<svg viewBox="0 0 900 230" role="img" aria-label="Aux Data between outside data sources on the left and the Event Loop and Strategy on the right." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .ps-core { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .ps-ext { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.3; }
+    .ps-t { fill: var(--ink); font: 600 14px var(--sans); text-anchor: middle; }
+    .ps-x { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .ps-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .ps-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
+    .ps-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#apsah); }
+  </style>
+  <defs><marker id="apsah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
+  <rect class="ps-core" x="355" y="30" width="190" height="180" rx="10"/>
+  <text class="ps-t" x="450" y="114">Aux Data</text><text class="ps-r" x="450" y="134">settled values,</text><text class="ps-r" x="450" y="150">armed groups</text>
+  <rect class="ps-ext" x="20" y="80" width="150" height="80" rx="24"/><text class="ps-x" x="95" y="116">Outside data</text><text class="ps-x" x="95" y="134">sources</text>
+  <path class="ps-a" d="M355,104 H170"/><text class="ps-l" x="262" y="98">fetch (name, date)</text>
+  <path class="ps-a" d="M170,136 H355"/><text class="ps-l" x="262" y="152">daily rows</text>
+  <rect class="ps-ext" x="730" y="30" width="150" height="70" rx="24"/><text class="ps-x" x="805" y="70">Event Loop</text>
+  <path class="ps-a" d="M730,46 H545"/><text class="ps-l" x="637" y="40">bar, members</text>
+  <path class="ps-a" d="M545,82 H730"/><text class="ps-l" x="637" y="98">bar + values</text>
+  <rect class="ps-ext" x="730" y="140" width="150" height="70" rx="24"/><text class="ps-x" x="805" y="180">Strategy</text>
+  <path class="ps-a" d="M730,156 H545"/><text class="ps-l" x="637" y="150">frame request</text>
+  <path class="ps-a" d="M545,192 H730"/><text class="ps-l" x="637" y="208">frames, ready</text>
+</svg>
+<p class="caption">Aux Data reads the runtime book's members on each step; the Event Loop owns the runtime book (<a href="event_loop_map.html#f11">Event Loop feature 11</a>).</p>
+</div>
 </section>
 
-<section id="what-this-component-does">
-<div class="eyebrow">Aux Data · What this component does</div>
-<h2>What this component does</h2>
-<p>One resident task steps every arm group at a fixed interval. The Event Loop calls it once per bar to add values. Strategy calls it when it rebuilds.</p>
-<div class="table-wrap"><table>
-<thead><tr><th>Job</th><th>How</th></tr></thead>
-<tbody>
-<tr><td>Read</td><td>One <code>AuxSource</code> per outside source: files in replay, an outside source live, and a backup that counts only when a second source confirms it.</td></tr>
-<tr><td>Judge</td><td>A value counts only when it is the row the calendar names for the target session, settled on that market's own clock.</td></tr>
-<tr><td>Arm</td><td>Strategies are grouped by the session they arm for. Each group has its own target date, deadline and columns.</td></tr>
-<tr><td>Recheck</td><td>After arming, a group rechecks every hour until its open, and adopts a changed value.</td></tr>
-<tr><td>Annotate</td><td>Adds each bound value to a bar before the Event Loop dispatches it.</td></tr>
-<tr><td>Serve frames</td><td>Gives Strategy the history frames a cold rebuild needs.</td></tr>
-</tbody></table></div>
-</section>
+<section id="features">
+<div class="eyebrow">Aux Data · 2 · Features</div>
+<h2>Features</h2>
+<p>Each feature says which component needs it and why, what the outside sources can give, and how Aux Data closes the gap. Every number is a parameter with its supported values. Click a box in the map to jump to its feature.</p>
 
-<section id="sample">
-<div class="eyebrow">Aux Data · Sample</div>
-<h2>Sample</h2>
-<p>Aux Data's slice of the system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>.</p>
-<div class="table-wrap"><table><tbody>
-<tr><th>Input</th><td>The golden replay session. The fixed-rule strategy reads no auxiliary name.</td></tr>
-<tr><th>Expected</th><td>Aux Data reads no source, makes no arm group, changes no strategy's ready state and adds nothing to any bar.</td></tr>
-<tr><th>Passes when</th><td>No source is called; every bar reaches the strategy with only its OHLCV fields; the strategy's aux state stays as built.</td></tr>
-<tr><th>Fails when</th><td>A source is read, a bar gets an extra field, or the strategy is gated on auxiliary data it does not read.</td></tr>
-</tbody></table></div>
-</section>
+<h3>Algorithm map</h3>
+<div class="diagram">
+<svg viewBox="0 0 1000 620" role="img" aria-label="Aux Data steps: members from the runtime book are grouped by arm session; each group fetches a value, judges whether the value is settled for its target, arms by seeding members through Strategy, rechecks hourly until the open, and disarms when the target date rolls. Bars get the bound values; a cold rebuild gets the current frames." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .x-stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+    .x-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .x-st { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 5 4; }
+    .x-ext { fill: none; stroke: var(--ink-3); stroke-width: 1.2; }
+    .x-t { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .x-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .x-x { fill: var(--ink-2); font: 12px var(--sans); text-anchor: middle; }
+    .x-l { fill: var(--ink-2); font: 12px var(--mono); }
+    .x-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#xah); }
+    .x-c { stroke: var(--accent); stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; marker-end: url(#xah2); }
+  </style>
+  <defs>
+    <marker id="xah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker>
+    <marker id="xah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+  </defs>
+  <rect class="x-ext" x="420" y="8" width="140" height="30" rx="15"/><text class="x-x" x="490" y="28">Event Loop</text>
+  <path class="x-a" d="M490,38 V70"/><text class="x-l" x="498" y="58">members (runtime book)</text>
+  <rect class="x-st" x="20" y="76" width="170" height="40" rx="6"/><text class="x-r" x="105" y="100">[ clock: every step ]</text>
+  <path class="x-c" d="M190,96 H380"/>
 
-<section id="behaviours">
-<div class="eyebrow">Aux Data · Behaviours</div>
-<h2>Behaviours</h2>
-<p>Each behaviour says what Aux Data is given, what it must do, and what must always stay true.</p>
+  <rect class="x-main" x="380" y="70" width="220" height="52" rx="8"/><text class="x-t" x="490" y="92">Group by arm session</text><text class="x-r" x="490" y="110">session from profile</text>
+  <path class="x-a" d="M490,122 V150"/><text class="x-l" x="498" y="140">groups</text>
+  <rect class="x-st" x="380" y="150" width="220" height="40" rx="6"/><text class="x-r" x="490" y="174">[ arm groups ]</text>
+  <path class="x-a" d="M490,190 V220"/><text class="x-l" x="498" y="209">target date, columns</text>
 
-<div class="behaviour"><h3><span class="num">1</span>One interface per outside source</h3><dl class="gmi">
-<dt>Given</dt><dd>A registered auxiliary name that a strategy reads.</dd>
-<dt>Must</dt><dd><ul>
-<li>Read it through one <code>AuxSource</code>: from files in replay, from the outside source live.</li>
-<li>Fill a value missing from the primary source with a backup value only when a second source confirms it.</li>
-</ul></dd>
-<dt>Invariant</dt><dd>A new feed or backup is one new <code>AuxSource</code> class (<a href="system_map.html#d32">System map decision 32</a>).</dd>
+  <rect class="x-main" x="380" y="220" width="220" height="52" rx="8"/><text class="x-t" x="490" y="242">Fetch value</text><text class="x-r" x="490" y="260">backup only if confirmed</text>
+  <rect class="x-ext" x="20" y="220" width="170" height="52" rx="20"/><text class="x-x" x="105" y="250">Outside sources</text>
+  <path class="x-a" d="M380,236 H190"/><text class="x-l" x="285" y="230" text-anchor="middle">fetch (name, date)</text>
+  <path class="x-a" d="M190,258 H380"/><text class="x-l" x="285" y="274" text-anchor="middle">rows</text>
+  <path class="x-a" d="M490,272 V300"/><text class="x-l" x="498" y="290">rows</text>
+
+  <rect class="x-main" x="380" y="300" width="220" height="52" rx="8"/><text class="x-t" x="490" y="322">Judge settled</text><text class="x-r" x="490" y="340">target row, market clock</text>
+  <path class="x-a" d="M490,352 V380"/><text class="x-l" x="498" y="370">settled value</text>
+
+  <rect class="x-main" x="380" y="380" width="220" height="52" rx="8"/><text class="x-t" x="490" y="402">Arm group</text><text class="x-r" x="490" y="420">seed first, then ready</text>
+  <rect class="x-ext" x="20" y="380" width="170" height="52" rx="20"/><text class="x-x" x="105" y="410">Strategy</text>
+  <path class="x-a" d="M380,396 H190"/><text class="x-l" x="285" y="390" text-anchor="middle">frames, ready</text>
+  <path class="x-a" d="M190,418 H380"/><text class="x-l" x="285" y="434" text-anchor="middle">seed error</text>
+  <path class="x-a" d="M490,432 V460"/><text class="x-l" x="498" y="450">armed group</text>
+
+  <rect class="x-stp" x="380" y="460" width="220" height="52" rx="8"/><text class="x-t" x="490" y="482">Recheck until open</text><text class="x-r" x="490" y="500">hourly; adopt a change</text>
+  <rect class="x-ext" x="20" y="460" width="170" height="52" rx="20"/><text class="x-x" x="105" y="490">Strategy</text>
+  <path class="x-a" d="M380,486 H190"/><text class="x-l" x="285" y="480" text-anchor="middle">frames (re-seed)</text>
+  <path class="x-a" d="M600,486 H630 V246 H600"/><text class="x-l" x="636" y="370">refetch</text>
+
+  <rect class="x-stp" x="380" y="540" width="220" height="52" rx="8"/><text class="x-t" x="490" y="562">Roll target date</text><text class="x-r" x="490" y="580">new date → disarm</text>
+  <path class="x-a" d="M490,512 V540"/><text class="x-l" x="498" y="530">open passed</text>
+  <path class="x-a" d="M600,566 H660 V182 H600"/><text class="x-l" x="666" y="560">disarm</text>
+
+  <rect class="x-main" x="720" y="220" width="170" height="52" rx="8"/><text class="x-t" x="805" y="242">Annotate bar</text><text class="x-r" x="805" y="260">bound names only</text>
+  <path class="x-a" d="M600,160 H805 V220"/><text class="x-l" x="700" y="154" text-anchor="middle">values</text>
+  <rect class="x-ext" x="910" y="220" width="80" height="52" rx="20"/><text class="x-x" x="950" y="250">Event Loop</text>
+  <path class="x-a" d="M910,236 H890"/><path class="x-a" d="M890,258 H910"/>
+  <text class="x-l" x="950" y="212" text-anchor="middle">bar ↓</text><text class="x-l" x="950" y="290" text-anchor="middle">+ values ↑</text>
+
+  <rect class="x-stp" x="720" y="380" width="170" height="52" rx="8"/><text class="x-t" x="805" y="402">Serve frames</text><text class="x-r" x="805" y="420">current frames</text>
+  <rect class="x-ext" x="910" y="380" width="80" height="52" rx="20"/><text class="x-x" x="950" y="410">Strategy</text>
+  <path class="x-a" d="M910,396 H890"/><path class="x-a" d="M890,418 H910"/>
+  <text class="x-l" x="950" y="372" text-anchor="middle">request ↓</text><text class="x-l" x="950" y="450" text-anchor="middle">frames ↑</text>
+
+  <a href="#f9"><rect x="380" y="70" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 9</title></rect></a>
+  <a href="#f3"><rect x="380" y="150" width="220" height="40" rx="6" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+  <a href="#f1"><rect x="380" y="220" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f2"><rect x="380" y="300" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f4"><rect x="380" y="380" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
+  <a href="#f5"><rect x="380" y="460" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 5</title></rect></a>
+  <a href="#f4"><rect x="380" y="540" width="220" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
+  <a href="#f7"><rect x="720" y="220" width="170" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 7</title></rect></a>
+  <a href="#f8"><rect x="720" y="380" width="170" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 8</title></rect></a>
+</svg>
+<p class="caption">Main path in colour: members → groups → fetch → judge → arm. In replay, every group resolves at start in one pass (<a href="#f6">feature 6</a>). Dashed boxes are shared data structures; the dashed accent arrow is the step clock.</p>
+</div>
+
+<h3>Feature cards</h3>
+
+<div class="behaviour" id="f1"><h3><span class="num">1</span>One interface per outside source<span class="added">settled · was behaviour 1 · System map decision 32</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A strategy reads an auxiliary series by name. The strategy must not know which source serves that name, and a new feed or backup must not change any other code.</dd>
+<dt>Upstream gives</dt><dd>Replay has files. Live has an outside source that can be down or late, and a backup source that can be wrong when used alone.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Pick the source registered for the name: files in replay, the outside source live.</li>
+<li>Fill a value missing from the primary source with a backup value only when a second source confirms the backup value.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Source per name</td><td>Configurable (registry)</td><td>file source; confirmed backup source</td><td>—</td></tr>
+<tr><td>Confirmations a backup value needs</td><td>Open (<a href="#open-questions">Q1</a>)</td><td>1 second source</td><td>1</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>A new feed or backup is one new source class. An unconfirmed backup value is never used.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">2</span>A value counts only when settled for its target</h3><dl class="gmi">
-<dt>Given</dt><dd>A group's target date: the next or current trading date of its arm session.</dd>
-<dt>Must</dt><dd>Accept a value only when it is the row the calendar names for that target, settled on that market's own clock (New York for CME, Frankfurt for Eurex). While no settled row can exist yet, fetch at most once per target when no frame is loaded, and warn once per change in what the source serves.</dd>
+<div class="behaviour" id="f2"><h3><span class="num">2</span>A value counts only when settled for its target<span class="added">settled · was behaviour 2</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A strategy that trades a session needs that session's value, not yesterday's value carried forward and not a provisional value.</dd>
+<dt>Upstream gives</dt><dd>A source serves rows by date. The row for a target date appears at some time after that market's close, on that market's own clock, and can be missing for a while.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Take the group's target date: the next or current trading date of its arm session.</li>
+<li>Accept a value only when the row is the one the calendar names for that target, settled on that market's own clock (New York for CME, Frankfurt for Eurex).</li>
+<li>While no settled row can exist yet, fetch at most once per target when no frame is loaded, and warn once per change in what the source serves.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>A carried-forward value never arms a group.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">3</span>Arm groups are independent</h3><dl class="gmi">
-<dt>Given</dt><dd>The strategies that read auxiliary names.</dd>
-<dt>Must</dt><dd>Group them by the session they arm for, taken from the exchange profile. Give each group its own target date, its deadline (that session's open) and its column scope (pairs of instrument and name). Step every group concurrently, every 60 s.</dd>
+<div class="behaviour" id="f3"><h3><span class="num">3</span>Arm groups are independent<span class="added">settled · was behaviour 3 · decision 3</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Strategies on CME and on Eurex arm for different sessions on different clocks. A Eurex outage must not stop a CME strategy from trading.</dd>
+<dt>Upstream gives</dt><dd>The members from the runtime book, and each instrument's exchange profile with its sessions.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Group the members by the session they arm for, taken from the exchange profile.</li>
+<li>Give each group its own target date, its deadline (that session's open) and its column scope (pairs of instrument and name).</li>
+<li>Step every group concurrently, at the step interval.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Step interval</td><td>Open (<a href="#open-questions">Q2</a>)</td><td>60 s</td><td>60 s</td></tr>
+</tbody></table></div></dd>
 <dt>Invariant</dt><dd>One group's slow fetch or outage never changes another group's verdict.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">4</span>Arm before the open, or sit the session out</h3><dl class="gmi">
-<dt>Given</dt><dd>A group whose value is settled for its target.</dd>
-<dt>Must</dt><dd><ul>
-<li>Give each member its frames through Strategy first. If seeding raises, log CRITICAL and leave the group unarmed.</li>
-<li>Then mark the group armed and tell each member it is ready.</li>
+<div class="behaviour" id="f4"><h3><span class="num">4</span>Arm before the open, or sit the session out<span class="added">settled · was behaviour 4 · decision 2</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Strategy must not mark a slot ready on a value that was not settled, or on frames that did not seed. A value that arrives after the open must not change a session already running.</dd>
+<dt>Upstream gives</dt><dd>A settled value (<a href="#f2">feature 2</a>) and Strategy's seeding result.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Give each member its frames through Strategy. If seeding raises, log CRITICAL and leave the group unarmed.</li>
+<li>Then mark the group armed and tell each member the member is ready.</li>
 <li>A group not armed by its open sits that session out: no fetch and no late arm for that target. A process started after the open still arms, because the value existed before the open.</li>
 <li>When the target date rolls, disarm the group and wait for the next value.</li>
-</ul></dd>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>No strategy is ready on a value that was not settled, or on frames that did not seed.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">5</span>Recheck until the open</h3><dl class="gmi">
-<dt>Given</dt><dd>An armed group before its open.</dd>
-<dt>Must</dt><dd>Refetch at most once per hour. Adopt a changed value, re-seed the members and warn. A recheck that fails, or no longer serves the target, keeps the armed value. A re-seed that raises disarms the group.</dd>
+<div class="behaviour" id="f5"><h3><span class="num">5</span>Recheck until the open<span class="added">settled · was behaviour 5</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A source can correct a value after the group armed. The strategy must trade the corrected value if the correction arrives before the open.</dd>
+<dt>Upstream gives</dt><dd>The same source, which can serve a changed row, fail, or stop serving the target.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Refetch at most once per recheck interval while the group is armed and before its open.</li>
+<li>Adopt a changed value, re-seed the members and warn.</li>
+<li>A recheck that fails, or no longer serves the target, keeps the armed value. A re-seed that raises disarms the group.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Recheck interval</td><td>Open (<a href="#open-questions">Q2</a>)</td><td>1 h</td><td>1 h</td></tr>
+</tbody></table></div></dd>
 <dt>Invariant</dt><dd>A member never trades on frames built from a value that was replaced.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">6</span>Replay resolves at once</h3><dl class="gmi">
-<dt>Given</dt><dd>Replay mode, with a replay date.</dd>
-<dt>Must</dt><dd>Load the files at start, resolve every bound name for the replay date, seed and arm the members. Raise when a value is missing.</dd>
+<div class="behaviour" id="f6"><h3><span class="num">6</span>Replay resolves at once<span class="added">settled · was behaviour 6</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A replay must start with every auxiliary value it needs, and must fail loudly when one is missing.</dd>
+<dt>Upstream gives</dt><dd>Files that hold the whole history, and a replay date.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Load the files at start.</li>
+<li>Resolve every bound name for the replay date, seed and arm the members.</li>
+<li>Raise when a value is missing.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>A replay never runs a day with an auxiliary value silently missing.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">7</span>Values on the bar<span class="added">proposed · new interface</span></h3><dl class="gmi">
-<dt>Given</dt><dd>A completed bar, from the Event Loop, before it is dispatched.</dd>
-<dt>Must</dt><dd>Add each auxiliary name bound on that instrument, with its value for the bar's trading date.</dd>
-<dt>Invariant</dt><dd>Strategies on that instrument all see the same bar object with the same values. An instrument with no bound name gets an unchanged bar.</dd>
+<div class="behaviour" id="f7"><h3><span class="num">7</span>Values on the bar<span class="added">proposed · was behaviour 7</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A signal reads auxiliary values together with the bar, and every strategy on one instrument must see the same values.</dd>
+<dt>Upstream gives</dt><dd>The Event Loop passes each completed bar before dispatch (<a href="event_loop_map.html#f2">Event Loop feature 2</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Add each auxiliary name bound on the bar's instrument, with its value for the bar's trading date.</li>
+<li>Return an instrument with no bound name unchanged.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>Strategies on one instrument all see the same bar object with the same values.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">8</span>Frames for a cold rebuild<span class="added">proposed · new interface</span></h3><dl class="gmi">
-<dt>Given</dt><dd>Strategy rebuilding its signal cold while the group is already armed.</dd>
-<dt>Must</dt><dd>Answer <code>frames_for(instrument)</code> with the current history frames, so Strategy re-seeds the new signal.</dd>
+<div class="behaviour" id="f8"><h3><span class="num">8</span>Frames for a cold rebuild<span class="added">proposed · was behaviour 8</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Strategy rebuilds a signal cold while the group is already armed, and the new signal needs the auxiliary frames to seed.</dd>
+<dt>Upstream gives</dt><dd>The frames Aux Data already holds for the armed group.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Answer a frame request for an instrument with the current history frames.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>A rebuild never leaves an armed slot on an unseeded calculation.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">9</span>Members come from the runtime book<span class="added">proposed · System map decision 34</span></h3><dl class="gmi">
-<dt>Given</dt><dd>Each step of the resident task.</dd>
-<dt>Must</dt><dd>Read the members from the runtime book again. A strategy committed later joins its arm session's group only if that group already covers what it reads; otherwise it gets its own group. A crash of the resident task logs CRITICAL.</dd>
+<div class="behaviour" id="f9"><h3><span class="num">9</span>Members come from the runtime book<span class="added">proposed · was behaviour 9 · System map decision 34</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A strategy added while the process runs must get its auxiliary values like any other strategy (<a href="event_loop_map.html#f11">Event Loop feature 11</a>).</dd>
+<dt>Upstream gives</dt><dd>The runtime book, which the Event Loop changes only between events.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Read the members from the runtime book again on each step.</li>
+<li>A strategy committed later joins its arm session's group only if that group already covers what the strategy reads; otherwise the strategy gets its own group.</li>
+<li>A crash of the resident task logs CRITICAL.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>Aux Data keeps no copy of the strategy list.</dd>
 </dl></div>
 </section>
 
-<section id="skeleton-code">
-<div class="eyebrow">Aux Data · Skeleton code</div>
-<h2>Skeleton code</h2>
+<section id="tests">
+<div class="eyebrow">Aux Data · 3 · Tests</div>
+<h2>Tests</h2>
+<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. No Aux Data test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
+
+<details open><summary>End to end · the sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>tests/aux_data/test_aux_data_sample.py::test_golden_no_aux_names_is_inert</code></td></tr>
+<tr><th>Input</th><td>The golden replay session (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>). The fixed-rule strategy reads no auxiliary name.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>No source is called; every bar reaches the strategy with only its OHLCV fields; the strategy's aux state stays as built.</td></tr>
+<tr><th>Fails when</th><td>A source is read, a bar gets an extra field, or the strategy is gated on auxiliary data that the strategy does not read.</td></tr>
+</tbody></table></div></details>
+
+<details><summary>1. One interface per outside source<span class="count">1 test · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_backup_value_used_only_when_confirmed</code></td><td>second source ∈ {confirms, disagrees, missing}</td><td>value used</td><td>backup; none; none</td></tr>
+</tbody></table></div></details>
+
+<details><summary>2. A value counts only when settled for its target<span class="count">2 tests · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_carried_value_never_arms</code></td><td>market ∈ {CME, Eurex}</td><td>arm with only a carried-forward row</td><td>not armed</td></tr>
+<tr><td><code>test_fetch_at_most_once_per_target_before_settle_time</code></td><td>—</td><td>fetches before a settled row can exist</td><td>≤ 1 per target</td></tr>
+</tbody></table></div></details>
+
+<details><summary>3. Arm groups are independent<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_arm_groups_per_exchange_are_independent</code></td><td>—</td><td>CME group state during a Eurex source outage</td><td>unchanged</td></tr>
+<tr><td><code>test_groups_stepped_every_interval</code></td><td>interval ∈ {60 s}</td><td>steps in a 10-minute replay clock run</td><td>10 per group</td></tr>
+</tbody></table></div></details>
+
+<details><summary>4. Arm before the open, or sit the session out<span class="count">4 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_not_armed_by_open_sits_session_out</code></td><td>—</td><td>fetches and arms after the open for that target</td><td>0</td></tr>
+<tr><td><code>test_seed_error_leaves_group_unarmed</code></td><td>—</td><td>ready flags set; CRITICAL logs</td><td>0; 1</td></tr>
+<tr><td><code>test_start_after_open_still_arms</code></td><td>—</td><td>group state</td><td>armed</td></tr>
+<tr><td><code>test_target_roll_disarms_group</code></td><td>—</td><td>group state after the roll</td><td>unarmed</td></tr>
+</tbody></table></div></details>
+
+<details><summary>5. Recheck until the open<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_changed_value_after_arm_is_adopted_and_reseeded</code></td><td>interval ∈ {1 h}</td><td>value and seeds after the recheck</td><td>new value; members re-seeded once</td></tr>
+<tr><td><code>test_recheck_outcomes</code></td><td>outcome ∈ {fetch fails, target gone, re-seed raises}</td><td>group state</td><td>armed; armed; unarmed</td></tr>
+</tbody></table></div></details>
+
+<details><summary>6. Replay resolves at once<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_replay_resolves_or_raises</code></td><td>value ∈ {present, missing}</td><td>start result</td><td>armed before the first bar; raises</td></tr>
+</tbody></table></div></details>
+
+<details><summary>7. Values on the bar<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_annotate_adds_bound_values_before_dispatch</code></td><td>instrument ∈ {with bound name, without}</td><td>fields added to the bar</td><td>bound values only; none</td></tr>
+</tbody></table></div></details>
+
+<details><summary>8. Frames for a cold rebuild<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_rebuild_while_armed_gets_current_frames</code></td><td>—</td><td>frames returned vs. armed frames</td><td>equal</td></tr>
+</tbody></table></div></details>
+
+<details><summary>9. Members come from the runtime book<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_late_joiner_gets_own_group_unless_covered</code></td><td>joiner reads ∈ {covered names, a new name}</td><td>group joined</td><td>existing group; own group</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="open-questions">
+<div class="eyebrow">Aux Data · Open questions</div>
+<h2>Open questions</h2>
+<ol>
+<li><strong>Backup confirmations (feature 1).</strong> One second source confirms a backup value. Fixed, or configurable per name?</li>
+<li><strong>Step and recheck intervals (features 3, 5).</strong> 60 s and 1 h: fixed, or configurable?</li>
+<li><strong>Whole component.</strong> Aux Data is still a proposed component (<a href="system_map.html#d44">System map decision 44</a>). Agree it?</li>
+</ol>
+</section>
+
+<section id="reference">
+<div class="eyebrow">Aux Data · Reference</div>
+<h2>Reference</h2>
+<p>Implementation detail and history. Feature numbers equal the old behaviour numbers.</p>
+<h3>Step → code</h3>
+<p>Sources are in <code>external_data/sources.py</code>; the provider and groups are in <code>external_data/data_providers..py</code> (the file name has a double dot).</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Step</th><th>Code</th></tr></thead>
+<tbody>
+<tr><td>Group by arm session</td><td><code>AuxProvider</code> · Planned grouping; <code>AuxArmGroup.covers()</code></td></tr>
+<tr><td>[ arm groups ]</td><td><code>AuxArmGroup</code></td></tr>
+<tr><td>Fetch value</td><td><code>AuxSource.fetch()</code>, <code>FileAuxSource</code>, <code>ConfirmedBackupAuxSource</code>, <code>register_aux_source()</code></td></tr>
+<tr><td>Judge settled, Arm group, Recheck until open, Roll target date</td><td><code>AuxArmGroup.step()</code></td></tr>
+<tr><td>Replay resolve</td><td><code>AuxProvider.start()</code></td></tr>
+<tr><td>Annotate bar</td><td><code>AuxProvider.annotate()</code></td></tr>
+<tr><td>Serve frames</td><td><code>AuxProvider.frames_for()</code></td></tr>
+<tr><td>Resident task</td><td><code>AuxProvider.start()</code>, <code>stop()</code></td></tr>
+</tbody></table></div>
+
+
+<div id="skeleton-code">
+<h3>Skeleton code</h3>
 <p>One service object, one source interface and one group class.</p>
 <div class="table-wrap"><table>
-<thead><tr><th>Piece</th><th>Role</th><th>Behaviours</th></tr></thead>
+<thead><tr><th>Piece</th><th>Role</th><th>Old behaviours</th></tr></thead>
 <tbody>
 <tr><td><code>AuxSource</code>, <code>AUX_SOURCES</code></td><td>One outside source; picked by name from a registry.</td><td>1</td></tr>
 <tr><td><code>AuxArmGroup</code></td><td>Target date, deadline, columns, armed state and warnings for one arm session.</td><td>2, 3, 4, 5</td></tr>
@@ -206,36 +437,14 @@ class AuxProvider:
     def annotate(self, instrument: Instrument, bar: dict) -&gt; None: ...
     def frames_for(self, instrument: Instrument) -&gt; dict: ...
 </code></pre></details>
-</section>
+</div>
 
-<section id="test-spec">
-<div class="eyebrow">Aux Data · Test spec</div>
-<h2>Test spec</h2>
-<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>.</p>
-<details><summary>Sample<span class="count">1 test</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
-<tr><td><code>tests/aux_data/test_aux_data_sample.py::test_golden_no_aux_names_is_inert</code></td><td>The Sample's Passes-when.</td></tr>
-</tbody></table></div></details>
-<details><summary>1–6. Sources and arming<span class="count">6 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
-<tr><td><code>test_backup_value_used_only_when_confirmed</code></td><td>Behaviour 1.</td></tr>
-<tr><td><code>test_carried_value_never_arms</code></td><td>Behaviour 2 invariant.</td></tr>
-<tr><td><code>test_arm_groups_per_exchange_are_independent</code></td><td>A Eurex outage never unarms a CME group.</td></tr>
-<tr><td><code>test_not_armed_by_open_sits_session_out</code></td><td>Behaviour 4.</td></tr>
-<tr><td><code>test_changed_value_after_arm_is_adopted_and_reseeded</code></td><td>Behaviour 5.</td></tr>
-<tr><td><code>test_replay_missing_value_raises</code></td><td>Behaviour 6.</td></tr>
-</tbody></table></div></details>
-<details><summary>7–9. Proposed<span class="count">3 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
-<tr><td><code>test_annotate_adds_bound_values_before_dispatch</code></td><td>Behaviour 7.</td></tr>
-<tr><td><code>test_rebuild_while_armed_gets_current_frames</code></td><td>Behaviour 8.</td></tr>
-<tr><td><code>test_late_joiner_gets_own_group_unless_covered</code></td><td>Behaviour 9.</td></tr>
-</tbody></table></div></details>
-</section>
-
-<section id="decisions-already-made">
-<div class="eyebrow">Aux Data · Decisions already made</div>
-<h2>Decisions already made</h2>
+<div id="decisions-already-made">
+<h3>Decisions already made</h3>
 <div class="decision"><h3><span class="num">1</span>Why is Aux Data its own component?</h3><p class="q">It has its own outside input (not the broker), its own failure modes (source down, value not settled, provisional value changed, backup not confirmed) and its own clock (arming by each session's open). It touches the rest of the engine at three points only: values on a bar, frames for a rebuild, and ready / not ready. Taking it out narrows the Event Loop to bars, dispatch and broker history.</p><p class="rej">Rejected: keeping it inside the Event Loop (the widest boundary in the system); moving it behind the Gateway (the Gateway is the broker only, System map decision 7).</p><p class="when">proposed · 2026-11-07</p></div>
-<div class="decision"><h3><span class="num">2</span>Who tells a strategy it is ready?</h3><p class="q">Aux Data tells Strategy, with the frames. Strategy seeds the signal and then tells StrategyExecution (Strategy behaviour 4). Aux Data never reaches into the signal or the execution state machine.</p><p class="when">proposed · 2026-11-07</p></div>
+<div class="decision"><h3><span class="num">2</span>Who tells a strategy it is ready?</h3><p class="q">Aux Data tells Strategy, with the frames. Strategy seeds the signal and then tells StrategyExecution (<a href="strategy_map.html#f3">Strategy feature 3</a>). Aux Data never reaches into the signal or the execution state machine.</p><p class="when">proposed · 2026-11-07</p></div>
 <div class="decision"><h3><span class="num">3</span>Where does a group's arm session come from?</h3><p class="q">From the exchange profile of the strategy's instrument (System map decision 31). No code branches on a session or exchange name.</p><p class="when">proposed · 2026-11-07</p></div>
+</div>
 </section>
 </div>
 </body>

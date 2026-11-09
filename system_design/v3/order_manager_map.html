@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="docs.css?v=5">
+<link rel="stylesheet" href="docs.css?v=6">
 </head>
 <body>
 <nav class="topnav">
@@ -33,120 +33,292 @@
 <header>
 <div class="eyebrow">Component map · ORDER_MANAGER_MAP · Alchemist v3</div>
 <h1>Order Manager</h1>
-<div class="lede"><p>The slot's order clerk. It builds every order, sends each to the Gateway exactly once, and follows it from submission to a closed status — so the slot can always ask which orders are its own, which are still working, and how much each has filled.</p></div>
-<div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong> Behaviours 1–5 and decisions 2–16 are settled. Multi-asset: every order carries its instrument (System map decision 37).</p></div>
+<div class="lede"><p>The slot's order clerk. Order Manager builds every order, sends each order to the Gateway exactly once, and follows each order from submission to a closed status, so the slot can always ask which orders are the slot's own, which orders still work, and how much each order filled.</p></div>
+<div class="meta"><p><strong>v3 draft, 2026-11-09 — not agreed.</strong> Features 1–5 and decisions 2–16 are settled. Multi-asset: every order carries its instrument (System map decision 37). Open questions are listed at the end.</p>
+<details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — Page reordered: Goal and scope (with public interface and place in the system) → 5 features (Need / Upstream gives / Algorithm / Parameters / Invariant; same numbers as the old behaviours) → quantified tests with parameter cases, samples G and C as end-to-end tests → open questions → reference. Algorithm map added.</li>
+</ul></details></div>
 </header>
 
-<section id="goal">
-<div class="eyebrow">Order Manager · Goal</div>
-<h2>Goal</h2>
-<p>Every order a strategy slot sends is built correctly, reaches the Gateway exactly once, and is tracked from submission to a closed status, so the slot can always ask which orders it owns, which are still working, and how much each has filled.</p>
+<section id="goal-and-scope">
+<div class="eyebrow">Order Manager · 1 · Goal and scope</div>
+<h2>Goal and scope</h2>
+<p><strong>What it is.</strong> Order Manager is the order clerk of one strategy slot. Each slot has one Order Manager. Order Manager builds every order the slot sends, sends each order to the Gateway exactly once, and tracks each order from submission to a closed status.</p>
+<p><strong>Why it exists.</strong> Every slot sees every broker order update, and several slots can trade the same instrument. StrategyExecution must decide on facts ("my stop filled", "my group is closed"), not on raw broker messages. Order Manager owns the order bookkeeping, so that StrategyExecution and Strategy ask one place which orders the slot owns, which orders still work, and how much each order filled (<a href="system_map.html#d14">System map decision 14</a>).</p>
+<p><strong>Goal.</strong> Every order a slot sends is built correctly, reaches the Gateway exactly once, and is tracked from submission to a closed status, so the slot can always ask which orders the slot owns, which orders still work, and how much each order filled.</p>
+
+<h3>Public interface</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
+<tbody>
+<tr><td rowspan="3">Other components call Order Manager</td><td>StrategyExecution</td><td>Place an order; place a group of protective orders; cancel one order, a group, or every owned order</td><td>order request (type, side, quantity, instrument, price); group request; order id or group name</td></tr>
+<tr><td>Strategy</td><td>Forward a broker order update; ask whether an order is owned</td><td>order update → changed order with fill delta, or nothing</td></tr>
+<tr><td>Strategy, StrategyExecution</td><td>Ask for an order; list submitted, open and cancelling orders (of the slot or of one group); list a group's orders; ask whether a group is closed</td><td>order id, group name → orders, flag</td></tr>
+<tr><td>Order Manager calls other components</td><td>Gateway</td><td>Place an order; cancel an order</td><td>order with id, account, instrument, slot tag, group; order id</td></tr>
+</tbody></table></div>
+
+<h3>Scope</h3>
 <p>Owns, from the System map:</p>
 <blockquote><p>The life of every order the slot sends: building it, tracking it from submission to a closed status, knowing which orders the slot owns, and sending cancels.</p></blockquote>
 <div class="table-wrap"><table>
 <thead><tr><th>Not Order Manager's job</th><th>Owned by</th></tr></thead>
 <tbody>
-<tr><td>Deciding to enter or exit, or what an order event means — including the policy when the broker rejects or cancels an order</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
-<tr><td>The position, and the rule that exit quantity never exceeds it. Order Manager sends what it is given.</td><td><a href="strategy_map.html">Strategy</a> / <a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>Deciding to enter or exit; what an order event means, including the policy when the broker rejects or cancels an order</td><td><a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
+<tr><td>The position, and the rule that exit quantity never exceeds the position. Order Manager sends the quantity Order Manager is given.</td><td><a href="strategy_map.html">Strategy</a>, <a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
 <tr><td>Broker communication</td><td><a href="gateway_map.html">Gateway</a></td></tr>
 </tbody></table></div>
+
+<h3>Place in the system</h3>
+<div class="diagram">
+<svg viewBox="0 0 900 230" role="img" aria-label="Order Manager between StrategyExecution and Strategy on the left and the Gateway on the right." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .ps-core { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .ps-ext { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.3; }
+    .ps-t { fill: var(--ink); font: 600 14px var(--sans); text-anchor: middle; }
+    .ps-x { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .ps-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .ps-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
+    .ps-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#opsah); }
+  </style>
+  <defs><marker id="opsah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
+  <rect class="ps-core" x="400" y="30" width="180" height="180" rx="10"/>
+  <text class="ps-t" x="490" y="114">Order Manager</text><text class="ps-r" x="490" y="134">one per slot,</text><text class="ps-r" x="490" y="150">four stores</text>
+  <rect class="ps-ext" x="20" y="30" width="170" height="70" rx="24"/><text class="ps-x" x="105" y="70">StrategyExecution</text>
+  <path class="ps-a" d="M190,48 H400"/><text class="ps-l" x="295" y="42">orders, groups, cancels</text>
+  <path class="ps-a" d="M400,82 H190"/><text class="ps-l" x="295" y="98">query answers</text>
+  <rect class="ps-ext" x="20" y="140" width="170" height="70" rx="24"/><text class="ps-x" x="105" y="180">Strategy</text>
+  <path class="ps-a" d="M190,158 H400"/><text class="ps-l" x="295" y="152">order updates</text>
+  <path class="ps-a" d="M400,192 H190"/><text class="ps-l" x="295" y="208">changes, ownership</text>
+  <rect class="ps-ext" x="730" y="80" width="150" height="80" rx="24"/><text class="ps-x" x="805" y="125">Gateway</text>
+  <path class="ps-a" d="M580,120 H730"/><text class="ps-l" x="655" y="114">orders, cancels</text>
+</svg>
+<p class="caption">Order updates reach Order Manager through Strategy, not straight from the Gateway: every slot sees every update, and Order Manager returns nothing for an order the slot does not own.</p>
+</div>
 </section>
 
-<section id="what-this-component-does">
-<div class="eyebrow">Order Manager · What this component does</div>
-<h2>What this component does</h2>
-<p>Order Manager sits between the slot and the Gateway on the order path.</p>
-<p><strong>Sending.</strong> StrategyExecution hands it order requests — single orders, or a group of protective orders — and cancels. It stamps each order with its id, account, instrument and slot tag, gives a group's orders one fresh shared group, and sends each to the Gateway exactly once.</p>
-<p><strong>Tracking.</strong> Strategy forwards it every broker order update. It applies each execution to the owned order's cumulative filled quantity and average price, treats Filled / Cancelled / Rejected as closed statuses, and returns what changed so Strategy books only real changes.</p>
-<p><strong>Answering.</strong> Strategy and StrategyExecution query it directly: is this order mine, what are my submitted, open and cancelling orders (optionally one group's), is a group closed, how much has an order filled. No answer is relayed through another component.</p>
-<h3>Four stores</h3>
-<div class="table-wrap"><table>
-<thead><tr><th>Store</th><th>Holds</th></tr></thead>
-<tbody>
-<tr><td><code>submitted_orders</code></td><td>Sent, not yet acknowledged by the broker.</td></tr>
-<tr><td><code>open_orders</code></td><td>Acknowledged, working, not closed.</td></tr>
-<tr><td><code>cancelling_orders</code></td><td>A cancel was sent for an open order; no answer yet.</td></tr>
-<tr><td><code>closed_orders</code></td><td>Closed, kept for the session.</td></tr>
-</tbody></table></div>
-<p>The lifecycle has two entry points: <code>place_order()</code> and <code>cancel_order(id)</code>.</p>
-</section>
+<section id="features">
+<div class="eyebrow">Order Manager · 2 · Features</div>
+<h2>Features</h2>
+<p>Each feature says which component needs it and why, what the upstream can give, and how Order Manager closes the gap. Every number is a parameter with its supported values. Click a box in the map to jump to its feature.</p>
 
-<section id="sample">
-<div class="eyebrow">Order Manager · Sample</div>
-<h2>Sample</h2>
-<p>Two samples. The system golden sample covers the market-order path; a component-level sample covers groups and cancels. Neither involves a decision or a position: they script requests and broker updates, and observe only what Order Manager sends and reports.</p>
-<h3>Sample G — system golden sample</h3>
-<div class="table-wrap"><table><tbody>
-<tr><th>Source</th><td>The system golden sample from the <a href="system_map.html#golden-sample-frozen">System map</a>.</td></tr>
-<tr><th>Input</th><td>A BUY 1 MKT request, then broker updates Submitted and Filled 1; later a SELL 1 MKT request, then Submitted and Filled 1.</td></tr>
-<tr><th>Expected</th><td>Exactly two orders sent to the Gateway, each tracked to Filled with filled quantity 1; nothing left working.</td></tr>
-<tr><th>Passes when</th><td>The Gateway received exactly two orders, each once; both are reported closed, Filled with filled 1; the working-order answer is empty.</td></tr>
-<tr><th>Fails when</th><td>An order is sent to the Gateway twice; an order is still reported working after its Filled; or a second Filled update for an already filled order is returned as a change (it would be booked twice).</td></tr>
-</tbody></table></div>
-<h3>Sample C — component-level group/cancel sample</h3>
-<div class="table-wrap"><table>
-<thead><tr><th>Step</th><th>Input</th></tr></thead>
-<tbody>
-<tr><td>(a)</td><td>A BUY 1 MKT request, then Submitted and Filled 1 @ P.</td></tr>
-<tr><td>(b)</td><td>A group request with orders STP SELL 1 and LMT SELL 1, then OPEN for both orders.</td></tr>
-<tr><td>(c)</td><td>A cancel request for the group, then broker updates LMT Cancelled (0 filled) and, later, STP Filled 1 (the fill won the race).</td></tr>
-<tr><td>(d)</td><td>A cancel request for the filled entry.</td></tr>
-</tbody></table></div>
-<p><strong>Expected:</strong> three orders sent to the Gateway; the two group orders share one fresh group name with OCA type 2 and DAY; one cancel sent per open order; none for the entry.</p>
-<p><strong>Passes when</strong> right after the cancel request both group orders are reported cancelling — neither open nor closed — and the group is not closed. After LMT Cancelled the group is still not closed. After STP Filled the group is closed, STP reports filled 1, LMT reports filled 0, and nothing is left open or cancelling. (d) returns CANCEL_REJECTED_INTERNALLY and sends nothing.</p>
-<p><strong>Fails when</strong> the group or one of its orders is reported closed because of the cancel request alone, or after only one order's closed status; a cancelling order is reported open; a cancel is sent for an order that is not open; the two orders carry different group names; or the group name equals any earlier name.</p>
-</section>
+<h3>Algorithm map</h3>
+<div class="diagram">
+<svg viewBox="0 0 1000 500" role="img" aria-label="Order Manager steps: requests are stamped, groups get a fresh name, each order is sent once; cancels go only to open orders; broker updates are matched to owned orders and applied; queries read the four stores." xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .o-stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+    .o-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .o-st { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 5 4; }
+    .o-ext { fill: none; stroke: var(--ink-3); stroke-width: 1.2; }
+    .o-t { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
+    .o-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
+    .o-x { fill: var(--ink-2); font: 12px var(--sans); text-anchor: middle; }
+    .o-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
+    .o-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#oah); }
+    .o-w { stroke: var(--accent); stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; marker-end: url(#oah2); }
+  </style>
+  <defs>
+    <marker id="oah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker>
+    <marker id="oah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+  </defs>
+  <rect class="o-ext" x="10" y="30" width="110" height="162" rx="20"/><text class="o-x" x="65" y="106">Strategy</text><text class="o-x" x="65" y="122">Execution</text>
+  <rect class="o-ext" x="905" y="30" width="85" height="162" rx="20"/><text class="o-x" x="947" y="115">Gateway</text>
 
-<section id="behaviours">
-<div class="eyebrow">Order Manager · Behaviours</div>
-<h2>Behaviours</h2>
+  <rect class="o-main" x="200" y="40" width="190" height="52" rx="8"/><text class="o-t" x="295" y="62">Stamp order</text><text class="o-r" x="295" y="80">new id, account, slot</text>
+  <path class="o-a" d="M120,66 H200"/><text class="o-l" x="160" y="60">request</text>
+  <rect class="o-stp" x="430" y="40" width="190" height="52" rx="8"/><text class="o-t" x="525" y="62">Name group</text><text class="o-r" x="525" y="80">fresh name per group</text>
+  <path class="o-a" d="M390,66 H430"/>
+  <rect class="o-main" x="680" y="40" width="170" height="52" rx="8"/><text class="o-t" x="765" y="62">Send once</text><text class="o-r" x="765" y="80">one send per id</text>
+  <path class="o-a" d="M620,66 H680"/><text class="o-l" x="650" y="60">order</text>
+  <path class="o-a" d="M850,66 H905"/><text class="o-l" x="877" y="60">order</text>
 
-<div class="behaviour"><h3><span class="num">1</span>Submit</h3><dl class="gmi">
-<dt>Given</dt><dd>An order request from StrategyExecution: MKT, STP or LMT; side; quantity; instrument; optional stop or limit price.</dd>
-<dt>Must</dt><dd>Give it a new order id, stamp the slot's account and slot tag, send it to the Gateway exactly once, and record it as owned.</dd>
-<dt>Invariant</dt><dd>Every order the Gateway receives from this slot is owned by it, and no order id is sent twice.</dd>
+  <rect class="o-stp" x="200" y="130" width="190" height="52" rx="8"/><text class="o-t" x="295" y="152">Pick open orders</text><text class="o-r" x="295" y="170">open only</text>
+  <path class="o-a" d="M120,156 H200"/><text class="o-l" x="160" y="150">cancel</text>
+  <rect class="o-stp" x="680" y="130" width="170" height="52" rx="8"/><text class="o-t" x="765" y="152">Send cancel</text><text class="o-r" x="765" y="170">open → CANCELLING</text>
+  <path class="o-a" d="M390,156 H680"/><text class="o-l" x="525" y="150">open order ids</text>
+  <path class="o-a" d="M850,156 H905"/><text class="o-l" x="877" y="150">cancel</text>
+
+  <rect class="o-ext" x="10" y="230" width="110" height="52" rx="20"/><text class="o-x" x="65" y="260">Strategy</text>
+  <rect class="o-main" x="200" y="230" width="190" height="52" rx="8"/><text class="o-t" x="295" y="252">Match owned order</text><text class="o-r" x="295" y="270">not owned → nothing</text>
+  <path class="o-a" d="M120,256 H200"/><text class="o-l" x="160" y="250">update</text>
+  <rect class="o-main" x="430" y="230" width="190" height="52" rx="8"/><text class="o-t" x="525" y="252">Apply update</text><text class="o-r" x="525" y="270">closed is terminal</text>
+  <path class="o-a" d="M390,256 H430"/>
+  <rect class="o-ext" x="890" y="230" width="100" height="52" rx="20"/><text class="o-x" x="940" y="260">Strategy</text>
+  <path class="o-a" d="M620,256 H890"/><text class="o-l" x="765" y="250">changed order + fill delta</text>
+
+  <rect class="o-ext" x="10" y="320" width="110" height="52" rx="20"/><text class="o-x" x="65" y="342">Strategy,</text><text class="o-x" x="65" y="358">Execution</text>
+  <rect class="o-stp" x="200" y="320" width="190" height="52" rx="8"/><text class="o-t" x="295" y="342">Answer query</text><text class="o-r" x="295" y="360">group closed = all closed</text>
+  <path class="o-a" d="M120,336 H200"/><text class="o-l" x="160" y="330">query</text>
+  <path class="o-a" d="M200,358 H120"/><text class="o-l" x="160" y="374">answer</text>
+
+  <rect class="o-st" x="200" y="420" width="650" height="44" rx="6"/>
+  <text class="o-r" x="525" y="447">[ stores by order id: submitted · open · cancelling · closed ]</text>
+  <path class="o-w" d="M680,66 H655 V420"/><path class="o-w" d="M680,170 H655"/>
+  <path class="o-w" d="M525,282 V420"/>
+  <path class="o-w" d="M295,420 V372"/>
+
+  <a href="#f1"><rect x="200" y="40" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f2"><rect x="430" y="40" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f1"><rect x="680" y="40" width="170" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f5"><rect x="200" y="130" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 5</title></rect></a>
+  <a href="#f5"><rect x="680" y="130" width="170" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 5</title></rect></a>
+  <a href="#f4"><rect x="200" y="230" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
+  <a href="#f3"><rect x="430" y="230" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+  <a href="#f4"><rect x="200" y="320" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
+</svg>
+<p class="caption">Main path in colour: an order is stamped and sent once; an update is matched and applied. Dashed accent lines write to and read from the four stores. Order state: <code>SUBMITTED</code> ─open─▶ <code>OPEN</code> ─cancel sent─▶ <code>CANCELLING</code> ─CANCEL_REJECTED─▶ <code>OPEN</code>; <code>SUBMITTED</code>, <code>OPEN</code> or <code>CANCELLING</code> ─Filled, Cancelled, Rejected─▶ closed.</p>
+</div>
+
+<h3>Feature cards</h3>
+
+<div class="behaviour" id="f1"><h3><span class="num">1</span>Every order is sent once and owned<span class="added">settled · was behaviour 1</span></h3><dl class="gmi">
+<dt>Need</dt><dd>StrategyExecution sends entry and exit orders and must never send one order twice. Every slot sees every update, so the slot must know which orders are the slot's own.</dd>
+<dt>Upstream gives</dt><dd>StrategyExecution gives an order request: type, side, quantity, instrument, and a stop or limit price for STP and LMT. The Gateway gives the next order id (<a href="gateway_map.html#f4">Gateway feature 4</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Take a new order id; stamp the slot's account, the instrument and the slot tag.</li>
+<li>Send the order to the Gateway exactly once.</li>
+<li>Record the order in the submitted store as owned by the slot.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>Order types</td><td>Open (same as <a href="gateway_map.html#open-questions">Gateway Q2</a>)</td><td>MKT, STP, LMT</td><td>—</td></tr>
+<tr><td>Quantity per entry</td><td>Fixed by <a href="system_map.html#d24">System map decision 24</a></td><td>1 unit</td><td>1 unit</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>Every order the Gateway receives from this slot is owned by this slot, and no order id is sent twice.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">2</span>Group</h3><dl class="gmi">
-<dt>Given</dt><dd>A group request of one or more protective orders.</dd>
-<dt>Must</dt><dd>Give every order the same group name, fresh for this group, with OCA type 2 and DAY time in force, and submit each order as in behaviour 1.</dd>
-<dt>Invariant</dt><dd>Orders of one group always share one name; a group name is never reused, even after its group is closed; the name is at most 48 characters whatever the slot name (IBKR refuses longer group names with error 401).</dd>
+<div class="behaviour" id="f2"><h3><span class="num">2</span>A group shares one fresh name<span class="added">settled · was behaviour 2 · decision 9</span></h3><dl class="gmi">
+<dt>Need</dt><dd>StrategyExecution places protective exits (a stop and a limit) that must cancel each other at the broker. When one leg fills, the broker must cancel the other leg.</dd>
+<dt>Upstream gives</dt><dd>StrategyExecution gives a group request of one or more orders. The broker links orders that carry the same OCA group name and OCA type, and refuses a group name longer than 48 characters (IBKR error 401).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Make a group name that no earlier group of this slot used, at most 48 characters for every slot name length.</li>
+<li>Give every order of the group that name, the OCA type and the time in force.</li>
+<li>Submit each order as in <a href="#f1">feature 1</a>.</li>
+</ol></dd>
+<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
+<tr><td>OCA type</td><td>Fixed by decision 9</td><td>2</td><td>2</td></tr>
+<tr><td>Group time in force</td><td>Fixed by decision 9</td><td>DAY</td><td>DAY</td></tr>
+<tr><td>Group name length limit</td><td>Fixed (IBKR refuses longer names)</td><td>48 characters</td><td>48</td></tr>
+</tbody></table></div></dd>
+<dt>Invariant</dt><dd>Orders of one group always share one name. A group name is never reused, even after the group is closed.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">3</span>Track per execution</h3><dl class="gmi">
-<dt>Given</dt><dd>A broker order update forwarded by Strategy.</dd>
-<dt>Must</dt><dd>For an owned order that is not yet closed:
-<ul>
-<li>Apply each partial or full execution to its cumulative filled quantity and average price, and return the updated order with this update's fill delta.</li>
-<li>On Filled, Cancelled or Rejected, close it — from submitted, open or cancelling — keeping any quantity filled before.</li>
-<li>On CANCEL_REJECTED (the broker refused our cancel), move a cancelling order back to open; its own later closed status closes it.</li>
-<li>A Cancelled the slot did not request (a broker or OCA cancel) closes an open order directly. The broker's pending-cancel status never reaches Order Manager (Gateway decision 6).</li>
-</ul>
-Return nothing for an update that is not owned, arrives after the order is closed, or changes nothing. Apply no policy to rejections or system cancels — they are reported as a closed status like any other. Log a cancel or reject only for the slot that owns the order (every slot sees every update), and tag every log line with the slot's name.</dd>
+<div class="behaviour" id="f3"><h3><span class="num">3</span>Each execution is applied once<span class="added">settled · was behaviour 3 · decisions 6, 8, 15</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Strategy books the position from Order Manager's changes and must book each fill exactly once. StrategyExecution must see a cancelling order as cancelling, not open.</dd>
+<dt>Upstream gives</dt><dd>Strategy forwards every broker order update, including updates for other slots' orders, duplicates, and updates that arrive after the order closed. The Gateway drops the broker's pending-cancel status (<a href="gateway_map.html#f5">Gateway feature 5</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>For an owned order that is not closed: apply each partial or full execution to the cumulative filled quantity and average price, and return the updated order with this update's fill delta.</li>
+<li>On Filled, Cancelled or Rejected, close the order from submitted, open or cancelling, keeping any quantity filled before.</li>
+<li>On CANCEL_REJECTED, move a cancelling order back to open.</li>
+<li>A Cancelled that the slot did not request (a broker or OCA cancel) closes an open order directly.</li>
+<li>Return nothing for an update that is not owned, arrives after the order closed, or changes nothing. Apply no policy to rejections or system cancels.</li>
+<li>Log a cancel or reject only in the slot that owns the order, and tag every log line with the slot's name.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>A closed status is terminal. An order's filled quantity never decreases and is never counted twice. A cancelling order is never reported open.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">4</span>Ownership answer</h3><dl class="gmi">
-<dt>Given</dt><dd>A question from Strategy or StrategyExecution about an order id, the slot, or a group name.</dd>
-<dt>Must</dt><dd><ul>
-<li>Answer whether the order is owned: <code>on_order_update()</code> returns <code>None</code> for an order the slot does not own, and <code>get_order(id)</code> returns <code>None</code> for one it never sent.</li>
-<li>Report an owned order's status, filled quantity and average price (closed orders stay queryable for the session).</li>
-<li>List the slot's or a group's submitted, open and cancelling orders, with their filled quantity.</li>
-<li>List every order of a group (submitted, open, cancelling or closed), and say whether a group is closed.</li>
-</ul></dd>
-<dt>Invariant</dt><dd>A group's orders are exactly the owned orders carrying its group name, however they were sent. A group is closed only when every one of its orders is closed.</dd>
+<div class="behaviour" id="f4"><h3><span class="num">4</span>Ownership and status on request<span class="added">settled · was behaviour 4 · decisions 3, 7, 11, 12, 16</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Strategy must filter updates by ownership. StrategyExecution must know its submitted, open and cancelling orders, each order's fill, and when a group is closed, to drive its state machine.</dd>
+<dt>Upstream gives</dt><dd>The four stores, kept by features 1, 3 and 5.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>Answer ownership: an update for an order the slot does not own returns nothing; a request for an order the slot never sent returns nothing.</li>
+<li>Report an owned order's status, filled quantity and average price; closed orders stay queryable for the session.</li>
+<li>List the slot's or one group's submitted, open and cancelling orders, with their filled quantity.</li>
+<li>List every order of a group in any store, and say whether the group is closed.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>A group's orders are exactly the owned orders that carry its group name, however the orders were sent. A group is closed only when every one of its orders is closed.</dd>
 </dl></div>
 
-<div class="behaviour"><h3><span class="num">5</span>Cancel</h3><dl class="gmi">
-<dt>Given</dt><dd>A cancel request for one order by id, for a group, or for every owned order.</dd>
-<dt>Must</dt><dd>For each order in scope that is open: send one cancel to the Gateway and move it to cancelling. For one order by id that is not open (unknown, submitted, already cancelling or closed): send nothing, change nothing, and return CANCEL_REJECTED_INTERNALLY with a warning log. A group or every-order cancel skips orders that are not open.</dd>
-<dt>Invariant</dt><dd>A cancel request never closes an order; only the broker's closed status does (behaviour 3). A submitted order is never cancelled (decision 14).</dd>
+<div class="behaviour" id="f5"><h3><span class="num">5</span>Cancels go only to open orders<span class="added">settled · was behaviour 5 · decisions 13, 14</span></h3><dl class="gmi">
+<dt>Need</dt><dd>StrategyExecution cancels one order, a group, or every owned order, and must not cause a second cancel or a cancel for an order the broker has not acknowledged.</dd>
+<dt>Upstream gives</dt><dd>A cancel request by order id, by group name, or for every owned order.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>For each order in scope that is open: send one cancel to the Gateway and move the order to cancelling.</li>
+<li>For one order by id that is not open (unknown, submitted, cancelling or closed): send nothing, change nothing, log a warning, and return CANCEL_REJECTED_INTERNALLY.</li>
+<li>A group or every-order cancel skips orders that are not open.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>A cancel request never closes an order; only the broker's closed status closes an order (<a href="#f3">feature 3</a>). A submitted order is never cancelled.</dd>
 </dl></div>
 </section>
 
-<section id="skeleton-code">
-<div class="eyebrow">Order Manager · Skeleton code</div>
-<h2>Skeleton code</h2>
+<section id="tests">
+<div class="eyebrow">Order Manager · 3 · Tests</div>
+<h2>Tests</h2>
+<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. No Order Manager test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
+
+<details open><summary>End to end · Sample G, the system golden sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_golden_two_market_orders</code></td></tr>
+<tr><th>Input</th><td>A BUY 1 MKT request, then broker updates Submitted and Filled 1; later a SELL 1 MKT request, then Submitted and Filled 1 (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
+<tr><th>Passes when</th><td>The Gateway received exactly two orders, each once; both are reported closed, Filled with filled 1; the working-order answer is empty.</td></tr>
+<tr><th>Fails when</th><td>An order is sent to the Gateway twice; an order is still reported working after its Filled; or a second Filled update for an already filled order is returned as a change.</td></tr>
+</tbody></table></div></details>
+
+<details open><summary>End to end · Sample C, component-level group and cancel<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_group_cancel_race_fill_wins</code></td></tr>
+<tr><th>Input</th><td>(a) BUY 1 MKT, Submitted, Filled 1 @ P. (b) A group of STP SELL 1 and LMT SELL 1, OPEN for both. (c) Cancel the group; LMT Cancelled (0 filled), later STP Filled 1. (d) Cancel the filled entry.</td></tr>
+<tr><th>Passes when</th><td>Three orders were sent; the two group orders share one fresh name with OCA type 2 and DAY. Right after (c) both group orders are cancelling and the group is not closed; after LMT Cancelled the group is still not closed; after STP Filled the group is closed, STP filled 1, LMT filled 0, nothing open or cancelling. (d) returns CANCEL_REJECTED_INTERNALLY and sends nothing.</td></tr>
+<tr><th>Fails when</th><td>The group or an order is reported closed because of the cancel request alone, or after only one order's closed status; a cancelling order is reported open; a cancel is sent for an order that is not open; the two orders carry different names; or the name equals an earlier name.</td></tr>
+</tbody></table></div></details>
+
+<details><summary>1. Every order is sent once and owned<span class="count">1 test · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_order_sent_once_and_owned</code></td><td>type ∈ {MKT, STP, LMT}</td><td>sends per order id; ownership answer</td><td>1; owned</td></tr>
+</tbody></table></div></details>
+
+<details><summary>2. A group shares one fresh name<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_group_name_fresh_and_at_most_48_chars</code></td><td>slot name length ∈ {8, 100} characters</td><td>name length; reuse across 1000 groups</td><td>≤ 48; 0 reuses</td></tr>
+<tr><td><code>test_group_orders_share_name_oca_type_and_day</code></td><td>group size ∈ {1, 2}</td><td>distinct names; OCA type; time in force</td><td>1; 2; DAY</td></tr>
+</tbody></table></div></details>
+
+<details><summary>3. Each execution is applied once<span class="count">5 tests · 13 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_partial_then_full_fill_accumulates_and_duplicate_ignored</code></td><td>—</td><td>filled quantity; average price; change returned for the duplicate</td><td>sum of fills; size-weighted mean; none</td></tr>
+<tr><td><code>test_closed_status_closes_from_any_store</code></td><td>status ∈ {Filled, Cancelled, Rejected} × from ∈ {submitted, open, cancelling}</td><td>store after the update</td><td>closed; earlier fill kept</td></tr>
+<tr><td><code>test_cancel_rejected_returns_order_to_open</code></td><td>—</td><td>store after CANCEL_REJECTED</td><td>open</td></tr>
+<tr><td><code>test_unrequested_cancel_closes_open_order</code></td><td>—</td><td>store after a broker Cancelled</td><td>closed</td></tr>
+<tr><td><code>test_cancel_or_reject_logged_only_by_owning_slot</code></td><td>—</td><td>log lines in a slot that does not own the order</td><td>0</td></tr>
+</tbody></table></div></details>
+
+<details><summary>4. Ownership and status on request<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_update_for_unowned_order_returns_none</code></td><td>—</td><td>return value</td><td>None</td></tr>
+<tr><td><code>test_group_closed_only_when_all_closed</code></td><td>closed orders ∈ {0, 1, 2} of 2</td><td>group closed answer</td><td>False; False; True</td></tr>
+<tr><td><code>test_closed_order_stays_queryable</code></td><td>—</td><td>order returned after close</td><td>status, filled, average price</td></tr>
+</tbody></table></div></details>
+
+<details><summary>5. Cancels go only to open orders<span class="count">3 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_cancel_of_non_open_order_rejected_internally</code></td><td>state ∈ {unknown, submitted, cancelling, closed}</td><td>return value; cancels sent</td><td>CANCEL_REJECTED_INTERNALLY; 0</td></tr>
+<tr><td><code>test_group_cancel_skips_non_open_orders</code></td><td>—</td><td>cancels sent</td><td>one per open order</td></tr>
+<tr><td><code>test_cancel_request_never_closes_order</code></td><td>—</td><td>store right after the request</td><td>cancelling</td></tr>
+</tbody></table></div></details>
+</section>
+
+<section id="open-questions">
+<div class="eyebrow">Order Manager · Open questions</div>
+<h2>Open questions</h2>
+<ol>
+<li><strong>Order types (feature 1).</strong> Order Manager supports the order types the Gateway supports (<a href="gateway_map.html#open-questions">Gateway open question 2</a>). Same answer for both pages?</li>
+</ol>
+</section>
+
+<section id="reference">
+<div class="eyebrow">Order Manager · Reference</div>
+<h2>Reference</h2>
+<p>Implementation detail and history. Feature numbers equal the old behaviour numbers.</p>
+<h3>Step → code</h3>
+<p>All steps are in <code>managers/order_manager.py</code>.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Step</th><th>Code</th></tr></thead>
+<tbody>
+<tr><td>Stamp order, Send once</td><td><code>OrderManager.place_order()</code></td></tr>
+<tr><td>Name group</td><td><code>OrderManager.place_group()</code></td></tr>
+<tr><td>Pick open orders, Send cancel</td><td><code>OrderManager.cancel_order()</code>, <code>cancel_group()</code>, <code>cancel_all()</code></td></tr>
+<tr><td>Match owned order, Apply update</td><td><code>OrderManager.on_order_update()</code></td></tr>
+<tr><td>Answer query</td><td><code>OrderManager.get_order()</code>, <code>get_submitted_orders()</code>, <code>get_open_orders()</code>, <code>get_cancelling_orders()</code>, <code>get_order_group()</code>, <code>is_group_closed()</code></td></tr>
+<tr><td>[ four stores ]</td><td><code>OrderManager</code> state; statuses in <code>OrderState</code></td></tr>
+</tbody></table></div>
+
+
+<div id="skeleton-code">
+<h3>Skeleton code</h3>
 <h3>Statuses</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
@@ -215,29 +387,11 @@ class OrderManager:
     async def cancel_group(self, group: str) -&gt; None: ...
     async def cancel_all(self) -&gt; None: ...
 </code></pre></details>
-</section>
+</div>
 
-<section id="test-spec">
-<div class="eyebrow">Order Manager · Test spec</div>
-<h2>Test spec</h2>
-<p>The contract tests this map needs. None exists yet in v3; each is <span class="not-written">not written yet</span>.</p>
-<details><summary>Samples and behaviours 1–5<span class="count">9 tests</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Expectation</th></tr></thead><tbody>
-<tr><td><code>test_two_market_orders_each_sent_once_and_owned</code></td><td>Sample G; behaviour 1.</td></tr>
-<tr><td><code>test_two_market_orders_end_with_nothing_open</code></td><td>Sample G.</td></tr>
-<tr><td><code>test_group_cancel_race_fill_wins</code></td><td>Sample C.</td></tr>
-<tr><td><code>test_group_name_fresh_and_at_most_48_chars</code></td><td>Behaviour 2 invariant.</td></tr>
-<tr><td><code>test_partial_then_full_fill_accumulates_and_duplicate_ignored</code></td><td>Behaviour 3.</td></tr>
-<tr><td><code>test_cancel_rejected_returns_order_to_open</code></td><td>Behaviour 3.</td></tr>
-<tr><td><code>test_unrequested_cancel_closes_open_order</code></td><td>Behaviour 3.</td></tr>
-<tr><td><code>test_update_for_unowned_order_returns_none</code></td><td>Behaviour 4.</td></tr>
-<tr><td><code>test_cancel_of_submitted_order_rejected_internally</code></td><td>Behaviour 5.</td></tr>
-</tbody></table></div></details>
-</section>
-
-<section id="decisions-already-made">
-<div class="eyebrow">Order Manager · Decisions already made</div>
-<h2>Decisions already made</h2>
-<div class="decision"><h3><span class="num">2</span>Which sample?</h3><p class="q">The system golden sample for the market-order path, plus a component-level group/cancel sample.</p><p class="rej">Rejected: a cancel-vs-fill race sample. The race is about state changes at the StrategyExecution level, not something Order Manager can be tested on alone.</p></div>
+<div id="decisions-already-made">
+<h3>Decisions already made</h3>
+<div class="decision"><h3><span class="num">2</span>Which sample?</h3><p class="q">The system golden sample for the market-order path, plus a component-level group/cancel sample.</p><p class="rej">Rejected: a cancel-vs-fill race sample. The race is about state changes at the StrategyExecution level, not a behaviour that a test of Order Manager alone can check.</p></div>
 <div class="decision"><h3><span class="num">3</span>How does StrategyExecution learn that a group is closed?</h3><p class="q">It asks Order Manager directly (it already holds it to send orders).</p><p class="rej">Rejected: StrategyExecution tracking orders itself (a second lifecycle tracker that can disagree with this one).</p></div>
 <div class="decision"><h3><span class="num">4</span>Who enforces "exit quantity never exceeds the position"?</h3><p class="q">Strategy / StrategyExecution.</p><p class="rej">Rejected: an Order Manager guard. Order Manager sends what it is given.</p></div>
 <div class="decision"><h3><span class="num">5</span>How much of the lifecycle is tracked?</h3><p class="q">Per execution: cumulative filled quantity and average price. Closed only on Filled / Cancelled / Rejected; a closed status keeps the quantity filled before it.</p><p class="rej">Rejected: closed-status-only tracking (partial fills go unbooked until closed).</p></div>
@@ -252,6 +406,7 @@ class OrderManager:
 <div class="decision"><h3><span class="num">15</span>The broker's pending-cancel status?</h3><p class="q">Not a status Order Manager sees: the Gateway drops it, and a cancel is confirmed only by the final Cancelled. A cancel the slot did not request leaves the order open until its Cancelled closes it.</p></div>
 <div class="decision"><h3><span class="num">16</span>Do outside callers read the cancelling store?</h3><p class="q">No. Safety's repair selects slots by submitted or open orders.</p><p class="when">Accepted cost: if the socket drops while an order is cancelling and its final status is lost, the order stays cancelling for the session; under the join design (StrategyExecution decision 16) no exit waits on it.</p></div>
 <p class="meta">Decisions 1 and 10 are not used; the numbers are kept so references stay valid.</p>
+</div>
 </section>
 </div>
 </body>
