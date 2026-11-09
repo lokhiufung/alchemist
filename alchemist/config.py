@@ -30,6 +30,7 @@ class SystemConfig:
 class GatewayConfig:
     name: str
     options: dict = field(default_factory=dict)
+    replay: "ReplayConfig | None" = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +144,7 @@ def load_config(path: Path) -> Configuration:
     raw = resolve_environment(yaml.safe_load(raw_bytes) or {})
     system = raw["system"]
     gateway = dict(raw["gateway"])
+    replay = build_replay(raw.get("replay"))
     return Configuration(
         path=Path(path),
         sha256=hashlib.sha256(raw_bytes).hexdigest(),
@@ -151,10 +153,10 @@ def load_config(path: Path) -> Configuration:
             log_path=Path(system["log_path"]),
             strategies_root=Path(system.get("strategies_root", "local/strategies")),
         ),
-        gateway=GatewayConfig(name=gateway.pop("name"), options=gateway),
+        gateway=GatewayConfig(name=gateway.pop("name"), options=gateway, replay=replay),
         safety=build_safety(raw.get("safety")),
         aux_sources=raw.get("aux_sources") or {},
         event_loop=EventLoopConfig(**(raw.get("event_loop") or {})),
         strategies={name: build_strategy(name, body) for name, body in (raw.get("strategies") or {}).items()},
-        replay=build_replay(raw.get("replay")),
+        replay=replay,
     )

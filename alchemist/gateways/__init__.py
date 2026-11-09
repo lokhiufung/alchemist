@@ -1,3 +1,4 @@
+from alchemist.gateways import synthetic_tapes  # noqa: F401  registers the golden tape
 from alchemist.gateways.gateway import Gateway, get_gateway, register_gateway
 from alchemist.gateways.simulation_gateway import OrderFillingEngine, SimulationGateway
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
