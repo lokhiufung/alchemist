@@ -51,3 +51,37 @@ def make_gateway(replay_kwargs=None, tape=None, journal=None):
     gateway = SimulationGateway(buffer, GatewayConfig("simulation", replay=replay),
                                 ReplayClock(start.astimezone(timezone.utc)), tape=tape)
     return gateway, buffer
+
+
+def make_order(gateway, order_type="MKT", side="BUY", instrument=MES, qty=1, **fields) -> dict:
+    return {"order_id": gateway.next_order_id(), "account_id": "SIM", "instrument": instrument, "side": side,
+            "qty": qty, "order_type": order_type, "stop_price": None, "limit_price": None, "oca_group": None,
+            "oca_type": None, "tif": "DAY", "outside_rth": True, "slot": "T", **fields}
+
+
+class Driver:
+    def __init__(self, gateway, buffer, instrument=MES) -> None:
+        self.gateway, self.buffer, self.instrument = gateway, buffer, instrument
+        self.index = 0
+        start, _ = exchange_profile(instrument).session_window(gateway.replay.session, gateway.replay.date)
+        self.open_ts = start.timestamp()
+
+    def show(self, close, high=None, low=None, open_=None, instrument=None):
+        instrument = instrument or self.instrument
+        bar = tape_bar(instrument, self.open_ts + self.index, close, high=high, low=low, open_=open_)
+        self.index += 1
+        self.gateway.clock.advance(datetime.fromtimestamp(bar["end_ts"], timezone.utc))
+        self.gateway.on_bar(instrument, bar)
+        return bar
+
+    def updates(self, order_id=None):
+        rows = self.buffer.of_type("order_update")
+        return [u for u in rows if order_id is None or u["order_id"] == order_id]
+
+    def statuses(self, order_id):
+        return [u["status"] for u in self.updates(order_id)]
+
+
+def driver(replay_kwargs=None, session="NY_RTH", instrument=MES, journal=None):
+    gateway, buffer = make_gateway({"session": session, **(replay_kwargs or {})}, tape=ListTape([]), journal=journal)
+    return Driver(gateway, buffer, instrument)
