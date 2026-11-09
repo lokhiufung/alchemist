@@ -4,20 +4,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from alchemist.config import SafetyConfig
+
 HEARTBEAT_INTERVAL_S = 5.0
 STALE_TICK_S = 45.0
 RESUBSCRIBE_MAX_ATTEMPTS = 4
 RESUBSCRIBE_WITHOUT_TICK_CAP = 3
 REJECT_SYNTHESIS_MIN_AGE_S = 120.0
-
-
-@dataclass(frozen=True)
-class SafetyConfig:
-    """The config's safety: section (System map decision 47)."""
-    reconnect_base_s: float = 15.0
-    reconnect_cap_s: float = 120.0
-    maintenance_windows: tuple[tuple[str, str], ...] = field(default_factory=tuple)
-    positions_poll_s: float | None = None
 
 
 class SafetyMonitor:

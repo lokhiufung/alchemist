@@ -4,7 +4,6 @@ from enum import Enum
 
 
 class Mode(str, Enum):
-    """System map decision 46: read only by the runner."""
     REPLAY = "replay"
     PAPER = "paper"
     LIVE = "live"
@@ -14,4 +13,5 @@ class Mode(str, Enum):
         return self is Mode.REPLAY
 
 
+RunMode = Mode
 MODES = [mode.value for mode in Mode]

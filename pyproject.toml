@@ -16,3 +16,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["alchemist"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "ibkr_paper: needs a live IBKR paper account; run by hand",
+    "load: R3 load test; run by hand",
+]
+addopts = "-m 'not ibkr_paper and not load'"

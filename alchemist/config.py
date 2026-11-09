@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
+from typing import Any
 
-from alchemist.gateways.simulation_gateway import ReplayConfig
-from alchemist.instruments import Instrument
-from alchemist.safety.monitor import SafetyConfig
+import yaml
+
+from alchemist.instruments import Instrument, instrument
+
+ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+class ConfigError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -13,35 +24,137 @@ class SystemConfig:
     bot_id: str
     log_path: Path
     strategies_root: Path = Path("local/strategies")
+
+
+@dataclass(frozen=True)
+class GatewayConfig:
+    name: str
+    options: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReplayConfig:
+    tape: str
+    date: date
+    session: str
+    pad_before_s: int = 0
+    pad_after_s: int = 0
+    fill_reference: str = "close"
+    slippage_ticks: int = 0
+    journal: Path | None = None
+
+
+@dataclass(frozen=True)
+class SafetyConfig:
+    reconnect_base_s: float = 15.0
+    reconnect_cap_s: float = 120.0
+    maintenance_windows: tuple[tuple[str, str], ...] = ()
+    positions_poll_s: float | None = None
+
+
+@dataclass(frozen=True)
+class EventLoopConfig:
     bar_flush_grace_s: float = 1.0
-    order_check_interval_s: float = 60.0
+    drain_timeout_s: float = 0.020
+    backlog_alert: int = 5000
+    on_bar_error_quarantine: int = 3
 
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    """One slot's entry; name is its strategy key, strat the registered strategy."""
     name: str
     strat: str
     account_id: str
-    signal_instrument: Instrument
-    execution_instrument: Instrument
+    signal_instruments: tuple[Instrument, ...]
+    execution_instruments: tuple[Instrument, ...]
     execution: dict | None = None
     snapshot_interval: int = 0
+
+    @property
+    def signal_instrument(self) -> Instrument:
+        return self.signal_instruments[0]
+
+    @property
+    def execution_instrument(self) -> Instrument:
+        return self.execution_instruments[0]
 
 
 @dataclass(frozen=True)
 class Configuration:
-    """Deployment config, one typed section per component (System map decisions 5, 47)."""
     path: Path
     sha256: str
     system: SystemConfig
-    gateway: dict
+    gateway: GatewayConfig
     safety: SafetyConfig
     aux_sources: dict
+    event_loop: EventLoopConfig
     strategies: dict[str, StrategyConfig] = field(default_factory=dict)
     replay: ReplayConfig | None = None
 
 
+def resolve_environment(value: Any) -> Any:
+    if isinstance(value, str):
+        def substitute(match: re.Match) -> str:
+            name = match.group(1)
+            if name not in os.environ:
+                raise ConfigError(f"environment variable {name} is not set")
+            return os.environ[name]
+        return ENV_REFERENCE.sub(substitute, value)
+    if isinstance(value, dict):
+        return {key: resolve_environment(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_environment(item) for item in value]
+    return value
+
+
+def instruments_from(value: Any) -> tuple[Instrument, ...]:
+    names = value if isinstance(value, list) else [value]
+    return tuple(instrument(name) for name in names)
+
+
+def build_strategy(name: str, raw: dict) -> StrategyConfig:
+    return StrategyConfig(
+        name=name,
+        strat=raw["strat"],
+        account_id=raw["account_id"],
+        signal_instruments=instruments_from(raw["signal_instrument"]),
+        execution_instruments=instruments_from(raw["execution_instrument"]),
+        execution=raw.get("execution"),
+        snapshot_interval=raw.get("snapshot_interval", 0),
+    )
+
+
+def build_replay(raw: dict | None) -> ReplayConfig | None:
+    if raw is None:
+        return None
+    journal = raw.get("journal")
+    return ReplayConfig(**{**raw, "journal": Path(journal) if journal else None})
+
+
+def build_safety(raw: dict | None) -> SafetyConfig:
+    raw = dict(raw or {})
+    if "maintenance_windows" in raw:
+        raw["maintenance_windows"] = tuple(tuple(pair) for pair in raw["maintenance_windows"])
+    return SafetyConfig(**raw)
+
+
 def load_config(path: Path) -> Configuration:
-    """Read YAML, resolve ${VAR} from the environment, build the typed sections."""
-    ...
+    raw_bytes = Path(path).read_bytes()
+    raw = resolve_environment(yaml.safe_load(raw_bytes) or {})
+    system = raw["system"]
+    gateway = dict(raw["gateway"])
+    return Configuration(
+        path=Path(path),
+        sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        system=SystemConfig(
+            bot_id=system["bot_id"],
+            log_path=Path(system["log_path"]),
+            strategies_root=Path(system.get("strategies_root", "local/strategies")),
+        ),
+        gateway=GatewayConfig(name=gateway.pop("name"), options=gateway),
+        safety=build_safety(raw.get("safety")),
+        aux_sources=raw.get("aux_sources") or {},
+        event_loop=EventLoopConfig(**(raw.get("event_loop") or {})),
+        strategies={name: build_strategy(name, body) for name, body in (raw.get("strategies") or {}).items()},
+        replay=build_replay(raw.get("replay")),
+    )

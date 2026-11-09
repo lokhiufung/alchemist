@@ -6,19 +6,8 @@ from datetime import date
 from typing import Any
 
 from alchemist.gateways.gateway import Gateway, register_gateway
+from alchemist.config import ReplayConfig
 from alchemist.instruments import Instrument
-
-
-@dataclass(frozen=True)
-class ReplayConfig:
-    """The config's replay: section (System map decision 47)."""
-    tape: str
-    date: date
-    session: str
-    pad_before_s: int = 0
-    pad_after_s: int = 0
-    fill_reference: str = "close"
-    slippage_ticks: float = 0.0
 
 
 class TapeSource(ABC):
