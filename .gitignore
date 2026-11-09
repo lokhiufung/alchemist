@@ -171,3 +171,11 @@ mytest*.py
 logs
 
 .prompts
+# Private deployment configs and strategies; only the public examples are tracked
+configs/*
+!configs/replay_config.yaml
+local/*
+!local/strategies/
+local/strategies/*
+!local/strategies/macd_rsi_rth_long/
+.DS_Store

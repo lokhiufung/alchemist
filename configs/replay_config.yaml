@@ -1,0 +1,6 @@
+gateway:
+  
+
+strategies:
+  macd_rsi_rth_long:
+    strat: macd_rsi_rth_long
