@@ -62,6 +62,9 @@ class ShutdownGateway:
     def on_bar(self, instrument, bar):
         return None
 
+    async def start_feed(self):
+        return None
+
     async def get_open_orders(self, timeout=5.0):
         if self.unreadable:
             raise TimeoutError("no answer")

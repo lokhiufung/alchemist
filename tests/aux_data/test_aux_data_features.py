@@ -257,3 +257,18 @@ async def test_resident_task_crash_logs_critical(caplog):
         await asyncio.sleep(0.01)
         await provider.stop()
     assert any(r.levelno == logging.CRITICAL for r in caplog.records)
+
+
+async def test_members_changed_resolves_in_replay_and_is_quiet_live(tmp_path):
+    declare_names("X")
+    clock = ReplayClock(ny(7))
+    source = ScriptedSource(clock)
+    source.publish(ny(0), TARGET, 1.0)
+    replay_member = StubStrategy("r", MES, ["X"])
+    replay = make_provider({"X": source}, [replay_member], clock, resolve_date=TARGET)
+    await replay.members_changed()
+    assert replay_member.ready_calls == 1
+    live_member = StubStrategy("l", MES, ["X"])
+    live = make_provider({"X": source}, [live_member], clock)
+    await live.members_changed()
+    assert live_member.ready_calls == 0

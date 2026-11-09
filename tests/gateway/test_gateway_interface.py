@@ -157,3 +157,15 @@ def test_unknown_gateway_name_lists_known():
     import alchemist.gateways  # noqa: F401
     with pytest.raises(KeyError, match="simulation"):
         get_gateway("nope")
+
+
+async def test_start_feed_default_does_nothing_and_simulated_broker_replays():
+    gateway = gateway_class()(RecordingBuffer(), GatewayConfig("stub"), None)
+    assert await gateway.start_feed() is None
+    from gateway_helpers import make_gateway
+    from alchemist.instruments import MES as instrument
+    simulated, buffer = make_gateway()
+    await simulated.connect()
+    await simulated.subscribe_tick(await simulated.resolve_contract(instrument))
+    await simulated.start_feed()
+    assert buffer.events[-1]["event_type"] == "end_of_data"

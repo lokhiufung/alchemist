@@ -97,3 +97,6 @@ class Gateway(ABC):
         return False
 
     async def unsubscribe_tick(self, contract: Any) -> None: ...
+
+    async def start_feed(self) -> None:
+        return None

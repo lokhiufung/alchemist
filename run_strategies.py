@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from alchemist.config import Configuration, load_config
+import alchemist.gateways  # noqa: F401  registers the gateways and the golden tape
+from alchemist.config import ConfigError, Configuration, load_config
+from alchemist.constants.mode import MODES, Mode
+from alchemist.loader import StrategyLoadError
 from alchemist.logger import setup_logging
-from alchemist.constants.mode import Mode, MODES
-from alchemist.runtime import Runtime
+from alchemist.registry import get_strategy
+from alchemist.runtime import Runtime, log_deploy_fingerprint
+
+STARTUP_FAILURE_EXIT_CODE = 1
 
 
 def parse_args(argv=None):
@@ -27,10 +33,18 @@ async def run(config: Configuration, mode: Mode) -> None:
 def main(argv=None) -> None:
     args = parse_args(argv)
     load_dotenv()
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        sys.exit(STARTUP_FAILURE_EXIT_CODE)
     listener = setup_logging(config.system.log_path)
     try:
+        log_deploy_fingerprint(config)
         asyncio.run(run(config, Mode(args.mode)))
+    except (StrategyLoadError, KeyError, ValueError) as exc:
+        print(f"startup failed: {exc}", file=sys.stderr)
+        sys.exit(STARTUP_FAILURE_EXIT_CODE)
     finally:
         listener.stop()
 

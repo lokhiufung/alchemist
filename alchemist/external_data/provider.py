@@ -238,6 +238,10 @@ class AuxProvider:
         else:
             await self.start_resident_task()
 
+    async def members_changed(self) -> None:
+        if self.config.resolve_date is not None:
+            await self.resolve_all()
+
     async def start_resident_task(self) -> None:
         self.task = asyncio.create_task(self.guarded_run())
 

@@ -340,6 +340,9 @@ class SimulationGateway(Gateway):
                    "high": price, "low": price, "close": price, "volume": 0.0, "resolution_s": BAR_SECONDS,
                    "broker_ts": begin + BAR_SECONDS}
 
+    async def start_feed(self) -> None:
+        await self.start_replay()
+
     async def start_replay(self) -> None:
         streams = [self.replay_bars(instrument) for instrument in self.instruments]
         for bar in heapq.merge(*streams, key=lambda b: b["start_ts"]):

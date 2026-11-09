@@ -1,6 +1,11 @@
+import sys
+from pathlib import Path
+
 import pytest
 
 from alchemist import registry
+
+sys.path.extend(str(p) for p in Path(__file__).parent.iterdir() if p.is_dir() and str(p) not in sys.path)
 
 TABLES = ("_calcs", "_signal_dags", "_strategies", "_gateways", "_tapes", "_aux_sources", "_aux_names")
 
