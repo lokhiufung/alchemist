@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from alchemist.event_loop.seeder import SeedState
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 from alchemist.managers.order_manager import OrderManager
 from alchemist.stores import CalcStateStore, RoundTripStore
 from alchemist.strategy_builder.strategy_executions import StrategyExecution

@@ -5,7 +5,7 @@ from collections import deque
 from typing import Any, Callable
 
 from alchemist.event_loop.resampler import Resampler
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 
 class BookClosed(RuntimeError): ...

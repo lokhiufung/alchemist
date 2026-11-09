@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 
 class BarRecorder:

@@ -4,7 +4,7 @@ from datetime import date
 
 from alchemist.external_data.sources import AuxSource
 from alchemist.clock import Clock
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 AUX_STEP_INTERVAL_S = 60.0
 AUX_RECHECK_INTERVAL_S = 3600.0

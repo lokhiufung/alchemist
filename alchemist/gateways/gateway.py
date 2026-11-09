@@ -5,7 +5,7 @@ from collections import deque
 from datetime import date
 from typing import Any, Callable
 
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 
 class Gateway(ABC):

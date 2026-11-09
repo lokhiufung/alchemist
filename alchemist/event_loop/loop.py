@@ -8,7 +8,7 @@ from alchemist.clock import Clock
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.recorders import BarRecorder, TradeRecorder
 from alchemist.event_loop.shutdown import ShutdownCoordinator
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 ON_BAR_ERROR_QUARANTINE = 3
 BAR_FLUSH_GRACE_S = 1.0

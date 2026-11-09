@@ -6,7 +6,7 @@ from datetime import date
 from typing import Any
 
 from alchemist.gateways.gateway import Gateway, register_gateway
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 
 @dataclass(frozen=True)

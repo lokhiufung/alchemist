@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 
 OCA_GROUP_MAX_LEN = 48
 

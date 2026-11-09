@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from alchemist.gateways.simulation_gateway import ReplayConfig
-from alchemist.constants.instruments import Instrument
+from alchemist.instruments import Instrument
 from alchemist.safety.monitor import SafetyConfig
 
 
