@@ -62,6 +62,15 @@ class EventLoopConfig:
 
 
 @dataclass(frozen=True)
+class AuxConfig:
+    step_interval_s: float = 60.0
+    recheck_interval_s: float = 3600.0
+    confirmations: int = 1
+    frame_days: int = 730
+    resolve_date: date | None = None
+
+
+@dataclass(frozen=True)
 class StrategyConfig:
     name: str
     strat: str
@@ -88,6 +97,7 @@ class Configuration:
     gateway: GatewayConfig
     safety: SafetyConfig
     aux_sources: dict
+    aux: AuxConfig
     event_loop: EventLoopConfig
     strategies: dict[str, StrategyConfig] = field(default_factory=dict)
     replay: ReplayConfig | None = None
@@ -156,6 +166,7 @@ def load_config(path: Path) -> Configuration:
         gateway=GatewayConfig(name=gateway.pop("name"), options=gateway, replay=replay),
         safety=build_safety(raw.get("safety")),
         aux_sources=raw.get("aux_sources") or {},
+        aux=AuxConfig(**(raw.get("aux") or {})),
         event_loop=EventLoopConfig(**(raw.get("event_loop") or {})),
         strategies={name: build_strategy(name, body) for name, body in (raw.get("strategies") or {}).items()},
         replay=replay,

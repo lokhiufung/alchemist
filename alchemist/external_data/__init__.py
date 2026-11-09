@@ -1,4 +1,5 @@
-from alchemist.external_data.external_data_provider import AuxArmGroup, AuxProvider
-from alchemist.external_data.sources import AUX_SOURCES, AuxSource, register_aux_source
+from alchemist.external_data.provider import AuxArmGroup, AuxDataError, AuxProvider
+from alchemist.external_data.sources import AuxSource, ConfirmedBackupAuxSource, FileAuxSource, register_aux_source
 
-__all__ = ["AUX_SOURCES", "AuxArmGroup", "AuxProvider", "AuxSource", "register_aux_source"]
+__all__ = ["AuxArmGroup", "AuxDataError", "AuxProvider", "AuxSource", "ConfirmedBackupAuxSource",
+           "FileAuxSource", "register_aux_source"]

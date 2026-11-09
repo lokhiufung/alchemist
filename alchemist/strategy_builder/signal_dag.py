@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from alchemist.calculations.calculation import Calculation, SessionFixedCalculation
 from alchemist.exchanges import ExchangeProfile, exchange_profile
 from alchemist.instruments import Instrument
-from alchemist.registry import find_aux_source, get_calc, scope_of_class
+from alchemist.registry import find_aux_name, get_calc, scope_of_class
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
 
 logger = logging.getLogger(__name__)
@@ -134,10 +134,10 @@ class Graph:
     def bar(self, field: str) -> Node:
         if field in BAR_FIELDS:
             return self.leaf("bar", field, field)
-        source = find_aux_source(field)
-        if source is None:
+        aux = find_aux_name(field)
+        if aux is None:
             raise SignalBuildError(f"market data {field!r} is not a bar field or a registered auxiliary name")
-        supplied = getattr(source, "supplied_sessions", None)
+        supplied = aux.supplied_sessions
         if supplied is not None and self.session_name not in supplied:
             raise SignalBuildError(
                 f"market data {field!r} is not supplied for session {self.session_name!r} (supplied: {list(supplied)})")

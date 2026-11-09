@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,6 +14,7 @@ _strategies: dict[str, tuple[type, str]] = {}
 _gateways: dict[str, tuple[type, str]] = {}
 _tapes: dict[str, tuple[type, str]] = {}
 _aux_sources: dict[str, tuple[type, str]] = {}
+_aux_names: dict[str, "AuxName"] = {}
 
 
 def _caller_file(depth: int) -> Path:
@@ -96,8 +98,21 @@ def get_aux_source(name: str) -> type:
     return lookup(_aux_sources, "aux source", name)
 
 
-def find_aux_source(name: str) -> type | None:
-    return _aux_sources[name][0] if name in _aux_sources else None
+@dataclass(frozen=True)
+class AuxName:
+    name: str
+    supplied_sessions: tuple[str, ...] | None = None
+
+
+def register_aux_name(name: str, supplied_sessions: tuple[str, ...] | None = None) -> AuxName:
+    if name in _aux_names:
+        raise ValueError(f"auxiliary name {name!r} registered twice")
+    _aux_names[name] = AuxName(name, supplied_sessions)
+    return _aux_names[name]
+
+
+def find_aux_name(name: str) -> AuxName | None:
+    return _aux_names.get(name)
 
 
 def scope_of_class(cls: Any) -> str:

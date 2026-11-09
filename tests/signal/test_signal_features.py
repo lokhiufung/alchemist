@@ -1,7 +1,7 @@
 import pytest
 
 from alchemist.calculations import Calculation, SessionFixedCalculation
-from alchemist.registry import register_aux_source, register_calc
+from alchemist.registry import register_aux_name, register_calc
 from alchemist.strategy_builder.signal_dag import SignalBuildError
 from alchemist.instruments import FDAX
 
@@ -60,9 +60,7 @@ def test_refused_signal_leaves_no_state_for_next_build():
 
 
 def test_market_data_the_session_cannot_supply_is_refused():
-    @register_aux_source("eurex_only_series")
-    class EurexOnly:
-        supplied_sessions = ("FRA_DAY",)
+    register_aux_name("eurex_only_series", supplied_sessions=("FRA_DAY",))
 
     def build(g, p):
         close = g.bar("close")
@@ -75,9 +73,7 @@ def test_market_data_the_session_cannot_supply_is_refused():
 
 
 def test_registered_aux_name_reads_the_annotated_bar_key():
-    @register_aux_source("vix_close")
-    class Vix:
-        supplied_sessions = None
+    register_aux_name("vix_close")
 
     def build(g, p):
         close = g.bar("close")
@@ -366,9 +362,7 @@ def test_values_returns_a_copy():
 
 
 def freeze_fixture(late_series_at_entry):
-    @register_aux_source("late_series")
-    class Late:
-        supplied_sessions = None
+    register_aux_name("late_series")
 
     def build(g, p):
         close = g.bar("close")

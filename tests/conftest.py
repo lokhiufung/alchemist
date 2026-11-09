@@ -2,7 +2,7 @@ import pytest
 
 from alchemist import registry
 
-TABLES = ("_calcs", "_signal_dags", "_strategies", "_gateways", "_tapes", "_aux_sources")
+TABLES = ("_calcs", "_signal_dags", "_strategies", "_gateways", "_tapes", "_aux_sources", "_aux_names")
 
 
 @pytest.fixture(autouse=True)
