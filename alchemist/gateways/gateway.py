@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections import deque
 from datetime import date
-from typing import Any, Callable
+from typing import Any
 
+from alchemist.clock import Clock
+from alchemist.config import GatewayConfig
 from alchemist.instruments import Instrument
+from alchemist.registry import get_gateway, register_gateway
+
+__all__ = ["Gateway", "get_gateway", "register_gateway"]
 
 
 class Gateway(ABC):
     """Gateway map: base of every broker gateway and of the simulated broker."""
 
-    event_buffer: deque
-
-    def __init__(self, event_buffer: deque, drain_wakeup: Callable[[], None], config: Any) -> None: ...
+    def __init__(self, event_buffer, config: GatewayConfig, clock: Clock) -> None:
+        self.event_buffer = event_buffer
+        self.config = config
+        self.clock = clock
 
     @abstractmethod
     async def connect(self) -> None: ...
@@ -71,6 +76,9 @@ class Gateway(ABC):
 
     def set_instrument_sessions(self, sessions: dict[Instrument, str]) -> None: ...
 
+    def market_data_type(self, instrument: Instrument) -> tuple[str, float | None]:
+        return ("tick_update", None)
+
     def market_data_ready(self) -> bool:
         return True
 
@@ -89,16 +97,3 @@ class Gateway(ABC):
         return False
 
     async def unsubscribe_tick(self, contract: Any) -> None: ...
-
-
-GATEWAYS: dict[str, type[Gateway]] = {}
-
-
-def register_gateway(name: str) -> Callable[[type[Gateway]], type[Gateway]]:
-    """Behaviour 10: gateways are picked by name."""
-    def bind(cls: type[Gateway]) -> type[Gateway]:
-        if name in GATEWAYS:
-            raise ValueError(f"gateway {name!r} registered twice")
-        GATEWAYS[name] = cls
-        return cls
-    return bind
