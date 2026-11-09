@@ -1,0 +1,10 @@
+instruments:
+  - {symbol: MES, asset_class: future, exchange: CME, currency: USD, multiplier: 5.0, tick_size: 0.25}
+  - {symbol: FDAX, asset_class: future, exchange: EUREX, currency: EUR, multiplier: 25.0, tick_size: 1.0}
+  - {symbol: FDXM, asset_class: future, exchange: EUREX, currency: EUR, multiplier: 5.0, tick_size: 1.0}
+  - {symbol: ES, asset_class: future, exchange: CME, currency: USD, multiplier: 50.0, tick_size: 0.25}
+  - {symbol: AAPL, asset_class: stock, exchange: NASDAQ, currency: USD, multiplier: 1.0, tick_size: 0.01}
+waits:
+  first_message_s: 30
+  fill_s: 30
+  rest_check_s: 10

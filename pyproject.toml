@@ -8,6 +8,11 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+ibkr = [
+    "ibapi==9.81.1.post1",
+]
+
 [dependency-groups]
 dev = ["pytest", "pytest-asyncio"]
 

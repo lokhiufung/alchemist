@@ -19,6 +19,8 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 uv sync
 ```
 
+The IBKR gateway needs the TWS API client. The PyPI `ibapi` package is outdated: install the Python client from IBKR's TWS API distribution (`pip install <TWS API>/source/pythonclient`), or use the pinned `ibkr` extra (`uv sync --extra ibkr`) for development and tests. Only `alchemist/gateways/ibkr/client.py` imports `ibapi`.
+
 ### 2. Write a deployment config
 
 A config is one YAML file. `${VAR}` values resolve from the environment (`.env` is loaded at start). Each slot under `strategies:` is one running strategy; the slot name is its strategy key, `strat` is the registered strategy name. A slot names one `signal_instrument` (market data it reads) and one `execution_instrument` (where its orders and position live).
