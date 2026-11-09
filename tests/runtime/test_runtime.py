@@ -74,10 +74,20 @@ def test_replay_build_passes_the_do_nothing_stand_ins(tmp_path):
     assert isinstance(slot.stores.round_trips, InMemoryRoundTripStore)
 
 
-def test_paper_and_live_wait_for_safety(tmp_path):
+@pytest.mark.parametrize("mode", [Mode.PAPER, Mode.LIVE])
+def test_paper_and_live_build_wall_clock_safety_and_file_stand_ins(mode, tmp_path):
+    from alchemist.clock import WallClock
+    from alchemist.event_loop.recorders import BarRecorder, TradeRecorder
+    from alchemist.safety.monitor import SafetyMonitor
+    from alchemist.stores import CalcStateStore, RoundTripStore
     config = load_config(write_config(tmp_path, ROOT / "local" / "strategies"))
-    with pytest.raises(NotImplementedError):
-        Runtime.build(config, Mode.PAPER)
+    runtime = Runtime.build(config, mode)
+    assert isinstance(runtime.clock, WallClock) and isinstance(runtime.safety, SafetyMonitor)
+    assert isinstance(runtime.event_loop.bar_recorder, BarRecorder)
+    assert isinstance(runtime.event_loop.trade_recorder, TradeRecorder)
+    assert isinstance(runtime.slots[0].stores.calc_state, CalcStateStore)
+    assert isinstance(runtime.slots[0].stores.round_trips, RoundTripStore)
+    assert runtime.services[-1][1] is runtime.safety
 
 
 class RecordingService:

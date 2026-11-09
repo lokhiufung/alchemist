@@ -191,3 +191,10 @@ async def test_cancel_request_never_closes_order():
     await manager.cancel_order(order_id)
     assert manager.get_order(order_id)["status"] == "CANCELLING"
     assert [o["order_id"] for o in manager.get_cancelling_orders()] == [order_id]
+
+
+async def test_order_record_carries_its_submission_time_but_the_gateway_order_does_not():
+    manager, gateway = make_manager()
+    order = await manager.place_order(MES, "BUY", 1, "MKT")
+    assert isinstance(manager.get_order(order["order_id"])["submitted_at"], float)
+    assert "submitted_at" not in gateway.placed[0]

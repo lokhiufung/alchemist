@@ -132,3 +132,33 @@ class Rig:
             self.advance_to(moment)
             await self.monitor.step()
             moment += timedelta(seconds=interval)
+
+
+class PendingStrategy:
+    def __init__(self, name, instrument, orders=(), processing=True) -> None:
+        self.name, self.signal_instrument, self.execution_instrument = name, instrument, instrument
+        self.session = "NY_RTH"
+        self.orders = list(orders)
+        self.processing = processing
+
+    def get_submitted_orders(self):
+        return [dict(o) for o in self.orders]
+
+    def get_open_orders(self):
+        return []
+
+    def get_cancelling_orders(self):
+        return []
+
+    def is_processing_order(self):
+        return self.processing
+
+
+def order(order_id, instrument, age, now, side="BUY", qty=1, account="ACC"):
+    return {"order_id": order_id, "instrument": instrument, "side": side, "qty": qty, "account_id": account,
+            "submitted_at": now - age}
+
+
+def execution(order_id, instrument, price, ts, side="BUY", qty=1, account="ACC"):
+    return {"order_id": order_id, "exec_id": f"x{order_id}", "ts": ts, "side": side, "qty": qty, "price": price,
+            "instrument": instrument, "account_id": account, "currency": instrument.currency}

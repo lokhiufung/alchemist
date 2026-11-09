@@ -63,10 +63,8 @@ async def test_scenario_closed_session_quiet(case):
 
 async def test_scenario_streams_restored():
     rig = Rig(MONDAY_OPEN, instruments=(MES, ES, FDAX))
-    rig.book.commit(type("S", (), {"name": "a", "signal_instrument": MES, "execution_instrument": MES,
-                                   "session": "NY_RTH"})(), [])
-    rig.book.commit(type("S", (), {"name": "b", "signal_instrument": MES, "execution_instrument": MES,
-                                   "session": "NY_RTH"})(), [])
+    rig.book.commit(PendingStrategy("a", MES, processing=False), [])
+    rig.book.commit(PendingStrategy("b", MES, processing=False), [])
     rig.gateway.heartbeat_ok = lambda now: False
     rig.gateway.last_tick = MONDAY_OPEN.timestamp()
     await rig.monitor.step()
@@ -75,3 +73,73 @@ async def test_scenario_streams_restored():
     names = rig.gateway.names()
     assert names.index("subscribe_order_update") > names.index("reconnect")
     assert "subscribe_account_update" in names
+
+
+from safety_helpers import PendingStrategy, execution, order
+
+
+async def test_scenario_dead_orders():
+    now = MONDAY_OPEN.timestamp()
+    strategy = PendingStrategy("s", MES, [order(50, MES, 150, now), order(51, MES, 100, now),
+                                          order(52, MES, 150, now)])
+    rig = Rig(MONDAY_OPEN, strategies=[strategy])
+    rig.gateway.open_orders = [{"order_id": 52, "instrument": MES}]
+    await rig.monitor.repair(rig.book.strategies)
+    rejected = rig.buffer.of_type("order_update")
+    assert [(u["order_id"], u["status"]) for u in rejected] == [(50, "REJECTED")]
+    assert rig.buffer.of_type("repaired_fill") == []
+
+
+async def test_scenario_stuck_order_timer():
+    now = MONDAY_OPEN.timestamp()
+    stuck = PendingStrategy("a", MES, [order(60, MES, 5, now)], processing=True)
+    idle = PendingStrategy("b", ES, [order(61, ES, 5, now)], processing=False)
+    rig = Rig(MONDAY_OPEN, strategies=[stuck, idle])
+    rig.gateway.last_tick = lambda: rig.clock.timestamp()
+    rig.gateway.executions = [execution(60, MES, 5000.0, now + 1), execution(61, ES, 5000.0, now + 1)]
+    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(seconds=61))
+    assert [f["order_id"] for f in rig.buffer.of_type("repaired_fill")] == [60]
+
+    quiet = Rig(MONDAY_OPEN, strategies=[PendingStrategy("c", MES, [], processing=False)])
+    quiet.gateway.last_tick = lambda: quiet.clock.timestamp()
+    await quiet.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(seconds=120))
+    assert "get_executions" not in quiet.gateway.names() and "get_open_orders" not in quiet.gateway.names()
+
+
+async def test_scenario_frozen_loop():
+    from alchemist.safety.freeze import FreezeDetector
+    dumps = []
+    detector = FreezeDetector(SafetyConfig(freeze_threshold=10), dump=lambda: dumps.append(1))
+    for _ in range(5):
+        detector.check_in()
+        detector.tick()
+    assert dumps == []
+    for _ in range(12):
+        detector.tick()
+    assert len(dumps) == 1
+    detector.check_in()
+    detector.tick()
+    for _ in range(10):
+        detector.tick()
+    assert len(dumps) == 2
+
+
+@pytest.mark.parametrize("interval", [None, 30.0])
+@pytest.mark.parametrize("case", ["answers", "fetch_fails"])
+async def test_scenario_positions_poll(interval, case, caplog):
+    rig = Rig(MONDAY_OPEN, config=SafetyConfig(positions_poll_s=interval))
+    rig.gateway.last_tick = lambda: rig.clock.timestamp()
+    rig.gateway.positions = [{"account_id": "ACC", "instrument": MES, "size": 1, "avg_cost": 5000.0,
+                              "currency": "USD"}]
+    rig.gateway.fail_reads = case == "fetch_fails"
+    with caplog.at_level(logging.WARNING):
+        await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(seconds=90))
+    fetches = rig.gateway.names().count("get_positions")
+    updates = rig.buffer.of_type("position_update")
+    if interval is None:
+        assert fetches == 0 and updates == []
+    elif case == "answers":
+        assert 1 <= fetches <= 3 and all(u["size"] == 1 and u["instrument"] == MES for u in updates)
+    else:
+        assert 1 <= fetches <= 3 and updates == []
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) <= 3

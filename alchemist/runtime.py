@@ -15,13 +15,14 @@ from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
 from alchemist.event_loop.loop import EventLoop
 from alchemist.event_loop.recorders import BarRecorder, NullRecorder, TradeRecorder, load_recorded_bars
-from alchemist.event_loop.seeder import Seeder
+from alchemist.event_loop.seeder import Seeder, no_recorded_bars
 from alchemist.event_loop.shutdown import ShutdownCoordinator
 from alchemist.exchanges import EXCHANGES, exchange_profile
 from alchemist.external_data.provider import AuxProvider
 from alchemist.gateways import get_gateway
 from alchemist.loader import STRATEGY_FILES, StrategyLoadError, load_strategies
 from alchemist.registry import get_aux_source, get_strategy
+from alchemist.safety.monitor import SafetyMonitor
 from alchemist.safety.null import NullSafety
 from alchemist.stores import CalcStateStore, InMemoryCalcStateStore, InMemoryRoundTripStore, RoundTripStore
 from alchemist.strategy_builder.strategy import Stores
@@ -113,27 +114,37 @@ class Runtime:
     @classmethod
     def build(cls, config: Configuration, mode: Mode) -> Runtime:
         is_replay = mode is Mode.REPLAY
-        if not is_replay:
-            raise NotImplementedError("paper and live runs need Safety, which is built later")
         load_strategies(config.system.strategies_root)
         check_strategy_folders(config.system.strategies_root)
         buffer = EventBuffer(config.event_loop)
         clock: Clock = ReplayClock(replay_clock_start(config)) if is_replay else WallClock(buffer.drain_wakeup)
         gateway = get_gateway(config.gateway.name)(buffer, config.gateway, clock)
         book = RuntimeBook()
-        seeder = Seeder(gateway, clock, config.event_loop)
+        root = config.system.log_path
+        recordings, state = root / "recordings", root / "state"
+        if is_replay:
+            recorded_bars = no_recorded_bars
+            stores = Stores(InMemoryCalcStateStore(), InMemoryRoundTripStore())
+            bar_recorder, trade_recorder = NullRecorder(), NullRecorder()
+            safety = NullSafety()
+            aux_config = dataclasses.replace(config.aux, resolve_date=config.replay.date)
+        else:
+            def recorded_bars(instrument, session):
+                return load_recorded_bars(recordings, instrument, session, clock)
+            stores = Stores(CalcStateStore(state, config.system.bot_id), RoundTripStore(state, config.system.bot_id))
+            bar_recorder, trade_recorder = BarRecorder(recordings, book), TradeRecorder(recordings, gateway, book)
+            safety = SafetyMonitor(gateway, book, buffer, EXCHANGES, clock, config.safety)
+            aux_config = config.aux
+        seeder = Seeder(gateway, clock, config.event_loop, recorded_bars=recorded_bars)
         book.attach(gateway, seeder)
-        aux_config = dataclasses.replace(config.aux, resolve_date=config.replay.date) if is_replay else config.aux
         sources = {name: get_aux_source(options["source"])(**{k: v for k, v in options.items() if k != "source"})
                    for name, options in config.aux_sources.items()}
         aux = AuxProvider(sources, book, clock, aux_config)
-        stores = Stores(InMemoryCalcStateStore(), InMemoryRoundTripStore())
         slots = [get_strategy(cfg.strat)(cfg, gateway, clock, stores, config.execution,
                                          config.event_loop.rebuild_yield_budget_s)
                  for cfg in config.strategies.values()]
-        safety = NullSafety()
         shutdown = ShutdownCoordinator(book, gateway, clock, config.event_loop)
-        loop = EventLoop(buffer, book, gateway, aux, safety, NullRecorder(), NullRecorder(), shutdown, clock,
+        loop = EventLoop(buffer, book, gateway, aux, safety, bar_recorder, trade_recorder, shutdown, clock,
                          config.event_loop, clock_advance=clock.advance if is_replay else None)
         services = [("gateway", GatewayService(gateway)), ("event_loop", EventLoopService(buffer)),
                     ("aux_data", aux), ("slots", SlotsService(book, slots, aux)), ("safety", safety)]

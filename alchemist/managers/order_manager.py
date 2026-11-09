@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from enum import Enum
 
 from alchemist.instruments import Instrument
@@ -28,6 +29,7 @@ CLOSED = {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED}
 ACKNOWLEDGED = {OrderState.SUBMITTED, OrderState.OPEN, OrderState.PARTIALLY_FILLED}
 CANCEL_REJECTED_INTERNALLY = "CANCEL_REJECTED_INTERNALLY"
 STORE_NAMES = ("submitted", "open", "cancelling", "closed")
+ORDER_RECORD_ONLY = ("status", "filled", "avg_fill_price", "submitted_at")
 
 
 class OrderManager:
@@ -73,13 +75,14 @@ class OrderManager:
             "oca_group": oca_group, "oca_type": OCA_TYPE if oca_group else None,
             "tif": "DAY", "outside_rth": True, "slot": self.slot,
             "status": OrderState.SUBMITTED.value, "filled": 0, "avg_fill_price": None,
+            "submitted_at": time.time(),
         }
         self.stores["submitted"][order_id] = order
         return order
 
     async def send(self, order: dict) -> None:
         await self.gateway.place_order({k: v for k, v in order.items()
-                                        if k not in ("status", "filled", "avg_fill_price")})
+                                        if k not in ORDER_RECORD_ONLY})
 
     def locate(self, order_id: int) -> str | None:
         return next((name for name, store in self.stores.items() if order_id in store), None)

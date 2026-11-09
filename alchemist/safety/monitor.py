@@ -7,6 +7,9 @@ from typing import Awaitable, Callable
 
 from alchemist.clock import Clock
 from alchemist.config import SafetyConfig
+from alchemist.messages import make_event
+from alchemist.safety.fsm_repair import repair_stuck_strategies
+from alchemist.safety.freeze import FreezeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,8 @@ async def no_restart() -> None:
 class SafetyMonitor:
     def __init__(self, gateway, book, event_buffer, exchange_profiles: dict, clock: Clock, config: SafetyConfig,
                  restart_gateway: Callable[[], Awaitable[None]] = no_restart,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 freeze: FreezeDetector | None = None) -> None:
         self.gateway = gateway
         self.book = book
         self.event_buffer = event_buffer
@@ -43,9 +47,13 @@ class SafetyMonitor:
         self.last_seen_tick: float | None = None
         self.started_at = clock.timestamp()
         self.task: asyncio.Task | None = None
+        self.freeze = freeze or FreezeDetector(config)
+        self.last_check: float | None = None
+        self.last_poll: float | None = None
 
     async def start(self) -> None:
         self.started_at = self.clock.timestamp()
+        self.freeze.start()
         self.task = asyncio.create_task(self.run())
 
     async def stop(self) -> None:
@@ -53,9 +61,29 @@ class SafetyMonitor:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
+        self.freeze.stop()
 
     def check_in(self) -> None:
-        return None
+        self.freeze.check_in()
+
+    async def repair(self, strategies: list) -> int:
+        return await repair_stuck_strategies(strategies, self.gateway, self.event_buffer, self.clock.timestamp(),
+                                             self.config)
+
+    async def stuck_check(self) -> None:
+        picked = [s for s in list(self.book.strategies) if s.is_processing_order()]
+        if picked:
+            await self.repair(picked)
+
+    async def poll_positions(self) -> None:
+        try:
+            positions = await self.gateway.get_positions()
+        except Exception as exc:
+            logger.warning("positions poll failed: %r", exc)
+            return
+        for row in positions:
+            self.event_buffer.push(make_event("position_update", dict(row), self.clock.timestamp()))
+
 
     async def run(self) -> None:
         while True:
@@ -80,6 +108,17 @@ class SafetyMonitor:
             await self.on_connectivity_restored()
         elif self.feed_is_stale(now):
             await self.climb_ladder()
+        if self.config.positions_poll_s:
+            if self.last_poll is None:
+                self.last_poll = now
+            elif now - self.last_poll >= self.config.positions_poll_s:
+                self.last_poll = now
+                await self.poll_positions()
+        if self.last_check is None:
+            self.last_check = now
+        elif now - self.last_check >= self.config.check_interval_s:
+            self.last_check = now
+            await self.stuck_check()
 
     def note_ticks(self) -> None:
         tick = self.gateway.last_tick_ts
@@ -158,6 +197,7 @@ class SafetyMonitor:
                     await self.restart_gateway()
                 await self.sleep(backoff_delay(attempt, self.config.reconnect_base_s, self.config.reconnect_cap_s))
         await self.restore_subscriptions()
+        await self.repair(list(self.book.strategies))
 
     async def restore_subscriptions(self) -> None:
         await self.resubscribe_feeds()

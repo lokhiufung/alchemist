@@ -169,3 +169,124 @@ async def test_failure_counter_only_goes_up_until_restored():
     rig.gateway.heartbeat_ok = lambda now: True
     await rig.monitor.step()
     assert rig.monitor.failures == 0
+
+
+from safety_helpers import PendingStrategy, execution, order
+
+
+async def test_resting_stop_filled_while_in_position_repaired():
+    now = MONDAY_OPEN.timestamp()
+    in_position = PendingStrategy("p", MES, [order(70, MES, 30, now, side="SELL")], processing=False)
+    rig = Rig(MONDAY_OPEN, strategies=[in_position])
+    rig.gateway.executions = [execution(70, MES, 4990.0, now, side="SELL")]
+    await rig.monitor.repair(rig.book.strategies)
+    assert [(f["order_id"], f["status"]) for f in rig.buffer.of_type("repaired_fill")] == [(70, "FILLED")]
+
+
+async def test_two_strategies_same_instrument_attributed_by_id():
+    now = MONDAY_OPEN.timestamp()
+    first = PendingStrategy("first", MES, [order(80, MES, 10, now)])
+    second = PendingStrategy("second", MES, [order(81, MES, 10, now)])
+    rig = Rig(MONDAY_OPEN, strategies=[first, second])
+    rig.gateway.executions = [execution(81, MES, 5001.0, now)]
+    await rig.monitor.repair(rig.book.strategies)
+    fills = rig.buffer.of_type("repaired_fill")
+    assert [f["order_id"] for f in fills] == [81] and fills[0]["avg_fill_price"] == 5001.0
+
+
+@pytest.mark.parametrize("age", [100, 150])
+@pytest.mark.parametrize("found_in", ["neither", "open_orders"])
+async def test_dead_order_rejected_only_after_grace_and_absent_both(age, found_in):
+    now = MONDAY_OPEN.timestamp()
+    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(90, MES, age, now)])])
+    if found_in == "open_orders":
+        rig.gateway.open_orders = [{"order_id": 90, "instrument": MES}]
+    await rig.monitor.repair(rig.book.strategies)
+    expected = 1 if (age >= 120 and found_in == "neither") else 0
+    assert len(rig.buffer.of_type("order_update")) == expected
+
+
+async def test_dead_order_check_also_requires_absence_from_executions():
+    now = MONDAY_OPEN.timestamp()
+    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(91, MES, 500, now)])])
+    rig.gateway.executions = [execution(91, MES, 5000.0, now)]
+    await rig.monitor.repair(rig.book.strategies)
+    assert rig.buffer.of_type("order_update") == [] and len(rig.buffer.of_type("repaired_fill")) == 1
+
+
+async def test_unreadable_broker_state_repairs_nothing():
+    now = MONDAY_OPEN.timestamp()
+    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(92, MES, 500, now)])])
+    rig.gateway.fail_reads = True
+    assert await rig.monitor.repair(rig.book.strategies) == 0
+    assert rig.buffer.events == []
+
+
+@pytest.mark.parametrize("loop_state", ["healthy", "blocked"])
+def test_freeze_dump_only_when_check_ins_missed(loop_state):
+    from alchemist.safety.freeze import FreezeDetector
+    dumps = []
+    detector = FreezeDetector(SafetyConfig(freeze_threshold=10), dump=lambda: dumps.append(1))
+    for _ in range(30):
+        if loop_state == "healthy":
+            detector.check_in()
+        detector.tick()
+    assert len(dumps) == (0 if loop_state == "healthy" else 1)
+
+
+@pytest.mark.parametrize("poll,max_polls", [(None, 0), (60.0, 10)])
+async def test_positions_poll_respects_config(poll, max_polls):
+    rig = Rig(MONDAY_OPEN, config=SafetyConfig(positions_poll_s=poll))
+    rig.gateway.last_tick = lambda: rig.clock.timestamp()
+    rig.gateway.positions = [{"account_id": "ACC", "instrument": MES, "size": 1, "avg_cost": 1.0, "currency": "USD"}]
+    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(minutes=10), 5.0)
+    polls = rig.gateway.names().count("get_positions")
+    assert (polls == 0) if poll is None else (1 <= polls <= max_polls)
+
+
+async def test_strategy_committed_after_start_is_repaired():
+    now = MONDAY_OPEN.timestamp()
+    rig = Rig(MONDAY_OPEN)
+    await rig.monitor.repair(rig.book.strategies)
+    late = PendingStrategy("late", MES, [order(95, MES, 10, now)])
+    rig.book.strategies.append(late)
+    rig.gateway.executions = [execution(95, MES, 5000.0, now)]
+    await rig.monitor.repair(rig.book.strategies)
+    assert [f["order_id"] for f in rig.buffer.of_type("repaired_fill")] == [95]
+
+
+async def test_stuck_check_runs_every_interval():
+    now = MONDAY_OPEN.timestamp()
+    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(96, MES, 5, now)])])
+    rig.gateway.last_tick = lambda: rig.clock.timestamp()
+    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(minutes=10), 5.0)
+    assert rig.gateway.names().count("get_executions") == 10
+
+
+async def test_stuck_check_does_not_block_bar_dispatch():
+    import asyncio
+    now = MONDAY_OPEN.timestamp()
+    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(97, MES, 5, now)])])
+    rig.gateway.last_tick = lambda: rig.clock.timestamp()
+    original = rig.gateway.get_executions
+
+    async def slow(since=None):
+        await asyncio.sleep(0.05)
+        return await original(since)
+
+    rig.gateway.get_executions = slow
+    ticks = []
+    checking = asyncio.create_task(rig.monitor.stuck_check())
+    while not checking.done():
+        ticks.append(1)
+        await asyncio.sleep(0)
+    assert len(ticks) > 5
+
+
+async def test_reconnect_repairs_every_strategy_in_every_phase():
+    now = MONDAY_OPEN.timestamp()
+    idle_with_resting = PendingStrategy("p", MES, [order(98, MES, 10, now, side="SELL")], processing=False)
+    rig = Rig(MONDAY_OPEN, strategies=[idle_with_resting])
+    rig.gateway.executions = [execution(98, MES, 4990.0, now, side="SELL")]
+    await rig.monitor.reconnect_forever()
+    assert [f["order_id"] for f in rig.buffer.of_type("repaired_fill")] == [98]
