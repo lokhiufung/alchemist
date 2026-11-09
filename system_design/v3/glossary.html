@@ -151,7 +151,7 @@
 <tr><td><strong>Closed status</strong></td><td>Filled, Cancelled or Rejected; terminal.</td><td><code>order_manager.CLOSED</code></td><td>—</td></tr>
 <tr><td><strong>Cancelling</strong></td><td>An open order the slot sent a cancel for, with no answer yet.</td><td><code>OrderState.CANCELLING</code></td><td>—</td></tr>
 <tr><td><strong>FSM repair</strong></td><td>Safety re-creating fills or rejects a slot missed during an outage, from broker executions, by order id.</td><td><code>safety.repair_stuck_strategies</code></td><td>—</td></tr>
-<tr><td><strong>Golden sample</strong></td><td>The one frozen synthetic run every component is tested against.</td><td>—</td><td>Long on L-cross, exit at T.</td></tr>
+<tr><td><strong>Golden sample</strong></td><td>The one frozen replay run of the real deployment path that every component is tested against.</td><td>tests/golden</td><td><code>macd_rsi_rth_long</code> on one scripted MES session: one buy, one sell at the target.</td></tr>
 </tbody></table></div>
 </section>
 </div>

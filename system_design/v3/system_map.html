@@ -36,8 +36,9 @@
 <div class="lede"><p>The top-level boundary of the Alchemist v3 execution engine: what it is for, the components it is split into, what each one owns, and the one frozen example every component is tested against.</p></div>
 <div class="meta"><p><strong>v3 draft, 2026-11-06 — not agreed.</strong></p>
 <p>v3 is a seven-component execution engine. Its first requirement is multi-asset and multi-currency trading (<a href="#r1">R1</a>, <a href="#multi-asset">decisions 37–41</a>), and a signal is a Python <code>SignalDag</code> class that holds its own params, behind an abstract interface (<a href="#d42">decision 42</a>).</p>
-<p>Decisions 1–24 are settled. Decisions 25–47 are proposed and become agreed only once confirmed. Decision 44 proposes an eighth component, Aux Data.</p>
+<p>Decisions 1–24 are settled, except the proposed changes to 11 and 12. Decisions 25–48 are proposed and become agreed only once confirmed. Decision 44 proposes an eighth component, Aux Data.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-09</strong> — New proposed golden sample: the real entry point, a real config and a frozen copy of the example strategy <code>macd_rsi_rth_long</code> replay one scripted full NY_RTH session on the simulated broker; the test compares a broker journal byte for byte and checks values from the designed price path (<a href="#golden-sample-frozen">Golden sample</a>). <a href="#d11">Decisions 11</a> and <a href="#d12">12</a> changed; new <a href="#d48">decision 48</a>.</li>
 <li><strong>2026-11-07</strong> — <a href="#d35">Decision 35</a> changed: the deploy client is its own script, <code>deploy_strategy.py --config FILE --key KEY</code>; <code>run_strategies.py</code> no longer takes <code>--deploy</code> (<a href="#d43">43</a>, <a href="#d47">47</a> updated).</li>
 <li><strong>2026-11-07</strong> — Code names follow the glossary's new Code column. <a href="#d43">Decision 43</a>: a slot names its <em>strat</em>; <em>strategy key</em> is the slot's own name. "Replay gateway" is now "simulated broker".</li>
 <li><strong>2026-11-07</strong> — New proposed decisions 44–47: an eighth component, <a href="aux_data_map.html">Aux Data</a>, takes auxiliary series and arming from the Event Loop (<a href="#d44">44</a>; would change <a href="#d4">4</a> and <a href="#d23">23</a>; <a href="#d32">32</a> updated); the simulated broker prepares replay data on request (<a href="#d45">45</a>); a shared <code>Clock</code> and <code>RunMode</code> remove mode branches (<a href="#d46">46</a>); <code>run_strategies.py</code> becomes a thin startup module (<a href="#d47">47</a>). Diagram, component table, boundary and golden sample gain Aux Data. Shared code gains Clock and RunMode.</li>
@@ -270,29 +271,109 @@
 <tr><td><strong>Is the broker timestamp precise enough?</strong></td><td>R3's 5 ms starts at the closing tick's broker timestamp. If the broker stamps ticks only to the second, or its clock is not in step with ours, the number cannot be measured to 5 ms. How the start time is taken, and how clock offset is handled, is not decided (<a href="#d25">decision 25</a>).</td></tr>
 <tr><td><strong>Bars closed without a tick?</strong></td><td>A bar can also be closed by the flush timer after its grace (1.0 s) when no tick arrives. Such a bar has no closing tick, so whether it counts toward the 5 ms budget, and from what start, is not decided.</td></tr>
 <tr><td><strong>Size beyond 1 unit?</strong></td><td><a href="#d24">Decision 24</a> keeps every entry at 1 unit (1 share, or 1 contract). Stock books in particular may want larger sizes; changing it reopens partial fills everywhere.</td></tr>
+<tr><td><strong>Broker journal (golden sample)?</strong></td><td>The golden test reads a broker journal that the simulated broker writes when the config sets <code>replay.journal</code>. <a href="gateway_map.html#f12">Gateway feature 12</a> and <code>ReplayConfig</code> do not have this option yet. Proposed: add it to the simulated broker only (<a href="#d48">decision 48</a>).</td></tr>
+<tr><td><strong>Config key that picks the gateway?</strong></td><td>The golden config uses <code>gateway: name: simulation</code>. <a href="#d30">Decision 30</a> picks gateways by registry name but does not name the config key.</td></tr>
+<tr><td><strong>Where does the <code>golden_session</code> generator live?</strong></td><td>The real entry point must find the generator by name, so the generator must sit in the engine's synthetic tape registry, not in <code>tests/</code>. The module path is not decided.</td></tr>
+<tr><td><strong>Component samples still show the L-cross run?</strong></td><td>The Sample sections on the component pages (for example <a href="gateway_map.html">Gateway</a>) still describe the L-cross run. The component pages change after this golden sample is agreed.</td></tr>
 </table></div>
 </section>
 
 <section id="golden-sample-frozen">
 <div class="eyebrow">System map · Golden sample · frozen</div>
 <h2>Golden sample · frozen</h2>
-<h3>Input</h3>
-<p>A few minutes of synthetic 1-second ticks entering through the Gateway in replay mode, run with a trivial fixed-rule strategy: go long 1 contract once on the first bar closing above a fixed level L, and exit on the first bar reaching a fixed target T. The price path rises through L, later reaches T, and there is no connection outage.</p>
-<p>It is small because it is a few minutes of hand-made prices. Its known answer is exactly one buy on the L-cross bar and one sell on the T bar.</p>
-<h3>Per component</h3>
+<p><strong>Proposed 2026-11-09.</strong> This sample replaces the earlier L-cross sample (a fixed rule on a few minutes of hand-made prices) once it is agreed (<a href="#d11">decisions 11</a>, <a href="#d12">12</a>, <a href="#d48">48</a>).</p>
+<p>The golden sample is one replay run of the real deployment path. The run uses the real entry point, a real deployment config and a real strategy. Only the broker is different: the simulated broker replaces IBKR (<a href="#d6">decision 6</a>). The run is deterministic: the same input files give the same output bytes on every machine. Thus every pass and fail condition is an exact value.</p>
+
+<h3 id="golden-input">Input</h3>
+<div class="table-wrap"><table>
+<tr><th>Input</th><th>What it is</th><th>Where it is</th></tr>
+<tr><td>Entry point</td><td><code>python run_strategies.py --config tests/golden/config.yaml --mode replay</code>, started as a child process. The entry point runs the same <code>Runtime.build</code> that paper and live use (<a href="#d47">decision 47</a>).</td><td><code>run_strategies.py</code></td></tr>
+<tr><td>Strategy</td><td>A frozen copy of the public example strategy <code>macd_rsi_rth_long</code> (signal <code>macd_signal_dag</code>, default params). The copy keeps the golden answer stable when a person edits the public example.</td><td><code>tests/golden/strategies/macd_rsi_rth_long/</code></td></tr>
+<tr><td>Config</td><td>A real deployment config: the simulated broker, a <code>replay:</code> section, one slot that trades MES on MES, and <code>strategies_root</code> set to the frozen copy.</td><td><code>tests/golden/config.yaml</code></td></tr>
+<tr><td>Data</td><td>A synthetic tape of 1-second bars from the scripted generator <code>golden_session</code>. The generator uses no random numbers. The tape holds one full NY_RTH session on the replay date, and the prior sessions that warmup needs.</td><td>A synthetic tape source behind the simulated broker (<a href="gateway_map.html#f12">Gateway feature 12</a>)</td></tr>
+<tr><td>Expected output</td><td>The frozen broker journal and the frozen tape fingerprint.</td><td><code>tests/golden/expected/</code></td></tr>
+</table></div>
+<p>The config file (the output folder comes from the environment variable <code>GOLDEN_OUT</code>, so each run writes to its own temporary folder):</p>
+<pre><code>system:
+  bot_id: golden
+  log_path: ${GOLDEN_OUT}
+  strategies_root: tests/golden/strategies
+
+gateway:
+  name: simulation
+
+replay:
+  tape: synthetic:golden_session
+  date: 2026-04-15
+  session: NY_RTH
+  pad_before_s: 0
+  pad_after_s: 0
+  fill_reference: close
+  slippage_ticks: 0
+  journal: ${GOLDEN_OUT}/broker_journal.jsonl
+
+strategies:
+  macd_rsi_rth_long:
+    strat: macd_rsi_rth_long
+    account_id: SIM
+    signal_instrument: MES
+    execution_instrument: MES</code></pre>
+
+<h3 id="golden-path">Synthetic session</h3>
+<p>The generator draws the price path in phases. Each phase makes one part of the strategy do a known thing. The replay date 2026-04-15 is a Wednesday with a full session.</p>
+<div class="table-wrap"><table>
+<tr><th>Phase</th><th>Time (New York)</th><th>Bars</th><th>Price path</th><th>Designed effect</th></tr>
+<tr><td>Prior sessions</td><td>The 60 sessions before the replay date</td><td>23,400 each</td><td>Each session opens at 5000.00, rises to 5010.00, falls to 4990.00 and closes at 5000.00.</td><td>Each daily bar has a true range of 20.00, so the daily ATR(14) is exactly 20.00. The signal is warm on the first replay bar.</td></tr>
+<tr><td>A · Quiet open</td><td>09:30:00–09:39:59</td><td>600</td><td>Flat at 5000.00.</td><td>The MACD line equals the signal line, so the strict condition <code>macd_line &gt; macd_signal</code> is false. Phase A also covers <code>skip_open_bars</code> (300). No entry.</td></tr>
+<tr><td>B · Rise</td><td>From 09:40:00 until the target is reached</td><td>Set by the builder</td><td>A zigzag rise: one bar up by <em>u</em>, the next bar down by <em>d</em>, with <em>u</em> &gt; <em>d</em>.</td><td>RSI stays below 70 and the MACD line rises above its signal line: exactly one entry. The price reaches the target (entry + 0.5 × 20.00 = entry + 10.00) before the stop or <code>macd_below_signal</code> fires.</td></tr>
+<tr><td>C · Rest</td><td>From the end of phase B until 15:59:59</td><td>The rest of the 23,400</td><td>Flat at the last price of phase B.</td><td><code>max_trades_per_day</code> (1) blocks a second entry. The book is flat, so the <code>end_of_day</code> exit and the session-end flatten send no order.</td></tr>
+</table></div>
+<p>The replay session has exactly 23,400 bars (09:30:00 to 15:59:59, one bar per second).</p>
+<div class="table-wrap"><table>
+<tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr>
+<tr><td>Instrument</td><td>Fixed for now (one instrument keeps the answer easy to check by hand)</td><td>MES</td><td>MES</td></tr>
+<tr><td>Session</td><td>Fixed for now</td><td>NY_RTH</td><td>NY_RTH</td></tr>
+<tr><td>Replay date</td><td>Fixed (a change moves every timestamp in the expected journal)</td><td>2026-04-15</td><td>2026-04-15</td></tr>
+<tr><td>Prior sessions</td><td>Fixed (enough for <code>warm_up_months</code> = 2 and ATR(14))</td><td>60</td><td>60</td></tr>
+<tr><td>Base price; daily range</td><td>Fixed</td><td>5000.00; 20.00</td><td>—</td></tr>
+<tr><td>Zigzag steps <em>u</em>, <em>d</em></td><td>Set by the builder, then frozen with the expected journal</td><td>Multiples of the MES tick (0.25) that give the phase B effect</td><td>not stated</td></tr>
+<tr><td>Fill reference; slippage</td><td>Fixed for the golden run</td><td>bar close; 0 ticks</td><td>bar close; 0 ticks</td></tr>
+<tr><td>Flat-bar padding</td><td>Fixed for the golden run</td><td>off</td><td>off</td></tr>
+</table></div>
+
+<h3 id="golden-per-component">Per component</h3>
 <div class="table-wrap"><table>
 <tr><th>Component</th><th>Expected behaviour</th></tr>
-<tr><td>Gateway</td><td>Delivers every tick of the session in order, followed by end of data; accepts exactly two orders and returns a fill for each.</td></tr>
-<tr><td>Event Loop</td><td>Delivers each completed 1-second bar to the strategy exactly once, in time order; delivers both fills; stops after the data ends.</td></tr>
-<tr><td>Strategy</td><td>Steps the signal on every bar and passes every bar and both fills on; books a long 1 position on the buy fill and flat on the sell fill; ends flat.</td></tr>
-<tr><td>StrategySignal</td><td>Is warm from the first bar; entry true only on the L-cross bar; exit true on the T bar.</td></tr>
-<tr><td>StrategyExecution</td><td>Stays flat until the L-cross bar and decides one buy; moves to in-position on its fill; decides one sell on the T bar; returns to flat on its fill and decides nothing afterwards.</td></tr>
-<tr><td>Order Manager</td><td>Submits exactly two market orders, tracks each to filled, and ends with no open or submitted order.</td></tr>
+<tr><td>Gateway</td><td>The simulated broker answers daily history and seed bars from the 60 prior sessions, delivers all 23,400 replay bars in time order, then end of data. The simulated broker accepts exactly two orders, returns one fill for each, and writes four journal rows.</td></tr>
+<tr><td>Event Loop</td><td>Seeds the slot before the first replay bar. Delivers each of the 23,400 bars to the strategy exactly once, in time order. Delivers both fills. Stops after end of data with the book flat.</td></tr>
+<tr><td>Strategy</td><td>Steps the signal on every bar. Books long 1 MES on the buy fill and flat on the sell fill. Ends flat.</td></tr>
+<tr><td>StrategySignal</td><td>Is warm on the first replay bar, with daily ATR = 20.00. Entry is false in phase A and true on one bar in phase B. Exit <code>target</code> is the first exit that is true after the entry.</td></tr>
+<tr><td>StrategyExecution</td><td>Stays flat in phase A. Decides one buy in phase B. Moves to in-position on the buy fill. Decides one sell when the target is reached. Returns to flat on the sell fill. Decides nothing in phase C.</td></tr>
+<tr><td>Order Manager</td><td>Submits exactly two market orders, tracks each one to filled, and ends with no open or submitted order.</td></tr>
 <tr><td>Safety</td><td>Requests no reconnect and repairs nothing.</td></tr>
-<tr><td>Aux Data <em>(proposed)</em></td><td>The strategy reads no auxiliary name: reads no source, arms nothing, adds nothing to any bar.</td></tr>
+<tr><td>Aux Data <em>(proposed)</em></td><td>The strategy reads no auxiliary name: Aux Data reads no source, arms nothing and adds nothing to any bar.</td></tr>
 </table></div>
-<h3>End to end</h3>
-<p>The broker receives exactly one buy and one sell of 1 contract, on the L-cross bar and the T bar, and the book ends flat.</p>
+
+<h3 id="golden-end-to-end">End to end</h3>
+<p>The broker journal is the output that the test reads. The simulated broker writes one JSON line for each order that the simulated broker receives (time, order id, side, quantity, order type, instrument) and one JSON line for each fill that the simulated broker sends (time, order id, price, quantity).</p>
+<div class="table-wrap"><table>
+<tr><th>Label</th><th>Value</th></tr>
+<tr><td>Input</td><td>The entry point, config, frozen strategy copy and synthetic tape above.</td></tr>
+<tr><td>Expected</td><td>One BUY 1 MES MKT in phase B and its fill; one SELL 1 MES MKT at the target and its fill; the book ends flat.</td></tr>
+<tr><td>Passes when</td><td>All of these checks are true:
+<ol>
+<li>The process exit code is 0.</li>
+<li>The sha256 of the generated replay bars equals <code>expected/tape.sha256</code>.</li>
+<li>The broker journal equals <code>expected/broker_journal.jsonl</code> byte for byte.</li>
+<li>The journal has exactly 4 rows: BUY order, BUY fill, SELL order, SELL fill, in this order. Each order is 1 MES, type MKT.</li>
+<li>The BUY order time is at or after 09:40:00 (phase B) and before 15:30:00 (<code>last_entry_bars</code> = 1800).</li>
+<li>SELL fill price − BUY fill price ≥ 10.00. Thus the realised profit is at least 10.00 × 5 USD = 50.00 USD.</li>
+<li>A second run with the same input gives a byte-identical broker journal.</li>
+<li>The log has 0 ERROR lines and 0 CRITICAL lines.</li>
+</ol></td></tr>
+<tr><td>Fails when</td><td>One or more of the checks is false. The test report names each false check; for check 3 it shows the first journal row that is different.</td></tr>
+</table></div>
+<p>Checks 4 to 6 come from the designed price path, not from the frozen journal. Thus a wrong journal cannot become the expected answer by a careless refresh. The frozen journal and the tape fingerprint change only in a commit that says why they changed.</p>
 </section>
 
 <section id="decisions-already-made">
@@ -312,8 +393,9 @@
 <h3>Golden sample</h3>
 <div class="decision" id="d9"><h3><span class="num">9</span>Where does the golden sample sit?</h3><p class="q">A normal input through the Gateway on the normal path.</p><p class="rej">Rejected: its own harness component.</p></div>
 <div class="decision" id="d10"><h3><span class="num">10</span>How detailed is its expected behaviour?</h3><p class="q">Both: one behaviour per component and one end-to-end result.</p></div>
-<div class="decision" id="d11"><h3><span class="num">11</span>What is its data?</h3><p class="q">A synthetic session.</p><p class="rej">Rejected: a small real day (slower, and its right answer is not known by hand).</p></div>
-<div class="decision" id="d12"><h3><span class="num">12</span>Which strategy runs on it?</h3><p class="q">A trivial fixed rule (long on L-cross, exit at target T).</p><p class="rej">Rejected: a real book strategy.</p></div>
+<div class="decision" id="d11"><h3><span class="num">11</span>What is its data?</h3><p class="q">One full synthetic NY_RTH session of 1-second bars, plus the 60 prior sessions that warmup needs, from a scripted generator that uses no random numbers. The price path has phases, and each phase makes the strategy do one known thing (<a href="#golden-path">Synthetic session</a>).</p><p class="rej">Rejected: a small real day (slower, and its right answer is not known by hand); a few minutes of hand-made prices (too short for warmup, the open skip and the last-entry window); a seeded random generator (its output can change with a library version).</p><p class="when">proposed change 2026-11-09 · was "a synthetic session" of a few minutes</p></div>
+<div class="decision" id="d12"><h3><span class="num">12</span>Which strategy runs on it?</h3><p class="q">A frozen copy of the public example strategy <code>macd_rsi_rth_long</code> with its default params, in <code>tests/golden/strategies/</code>.</p><p class="rej">Rejected: a trivial fixed rule (it does not run the calculation DAG, the daily warmup or the session conditions that a real strategy uses); the public example in place (an edit to the example would move the golden answer).</p><p class="when">proposed change 2026-11-09 · was a trivial fixed rule</p></div>
+<div class="decision" id="d48"><h3><span class="num">48</span>How is the golden sample run and judged?</h3><p class="q">The test starts the real entry point <code>run_strategies.py</code> as a child process, with a real config and <code>--mode replay</code>. Only the broker is the simulated one (<a href="#d6">decision 6</a>). The simulated broker writes a broker journal: one row per order received and one row per fill sent. The test passes only when the exit code is 0, the tape fingerprint and the journal equal the frozen files byte for byte, the checks from the designed price path hold, a second run gives the same journal, and the log has no ERROR or CRITICAL line (<a href="#golden-end-to-end">End to end</a>).</p><p class="rej">Rejected: building <code>Runtime</code> in the test process (it skips the entry point, argument parsing, config loading and logging setup); comparing log text (log wording changes); comparing with a tolerance (a deterministic run needs none).</p><p class="when">proposed · 2026-11-09</p></div>
 <div class="decision" id="d13"><h3><span class="num">13</span>Does it include a broker outage?</h3><p class="q">No; Safety's expected behaviour is to do nothing.</p></div>
 
 <h3>Splitting the slot</h3>
@@ -362,7 +444,7 @@
 <div class="decision" id="d43"><h3><span class="num">43</span>How does the engine load a custom strategy?</h3><p class="q"><code>run_strategies.py</code> is the only entry point that runs strategies. At start it imports every folder under <code>local/strategies/</code> by file path: <code>calculations.py</code>, <code>strategy_signal.py</code> and <code>strategy.py</code>. The three files do not import from each other; they connect by registry names. <code>register_calc</code> binds a calculation in its folder's scope; <code>register_signal_dag</code> and <code>register_strategy</code> bind global names. A slot's config names its strat (the registered strategy name); the strategy names its signal; the signal's graph names its calculations, looked up in the folder's scope first and then in the built-in library. Lookups run when a slot is built, after every import, so import order does not matter. A name bound twice in the same scope stops startup and names both files.</p><p class="rej">Rejected: imports between the files of a strategy folder (the folder is not a package on the engine's import path); one global calculation namespace (two folders could not each have their own <code>rsi</code>).</p><p class="when">proposed · v3 · 2026-11-07</p></div>
 <h4 id="maintainability">Smaller code (R2, R4)</h4>
 <div class="decision" id="d44"><h3><span class="num">44</span>Is auxiliary data its own component?</h3><p class="q">Yes: <a href="aux_data_map.html">Aux Data</a>, the eighth component. It has its own outside input, its own failure modes (source down, value not settled, provisional value changed, backup not confirmed) and its own clock (arming by each session's open, on each exchange's clock). It meets the rest of the engine at three points only: values on a bar (called by the Event Loop before dispatch), frames for a cold rebuild (read by Strategy), and ready / not ready (sent to Strategy). A group's arm session comes from the exchange profile. Once confirmed, decision 4 reads "eight" and decision 23 keeps only broker history in the Event Loop.</p><p class="rej">Rejected: keeping it in the Event Loop (its widest part, with most of its outside I/O); behind the Gateway (decision 7); a component for resampling too (a small pure module with no outside input; see the Event Loop map, decision 7).</p><p class="when">proposed · 2026-11-07</p></div>
-<div class="decision" id="d45"><h3><span class="num">45</span>Who prepares replay data?</h3><p class="q">The simulated broker, on request (<a href="gateway_map.html">Gateway</a> behaviour 15). It reads the tape lazily, checks it against the session from the exchange profile with one generic check, and answers daily-history and prior-session requests like the broker gateway. Padding and synthetic tapes are simulated broker options. The Gateway builds daily bars in live and replay; the Event Loop only requests them. This follows decision 6.</p><p class="rej">Rejected: the runner slicing the tape and writing history files before start (a second history path that must read strategies before they exist); one hand-written session check per exchange.</p><p class="when">proposed · 2026-11-07</p></div>
+<div class="decision" id="d45"><h3><span class="num">45</span>Who prepares replay data?</h3><p class="q">The simulated broker, on request (<a href="gateway_map.html#f12">Gateway feature 12</a>). It reads the tape lazily, checks it against the session from the exchange profile with one generic check, and answers daily-history and prior-session requests like the broker gateway. Padding and synthetic tapes are simulated broker options. The Gateway builds daily bars in live and replay; the Event Loop only requests them. This follows decision 6.</p><p class="rej">Rejected: the runner slicing the tape and writing history files before start (a second history path that must read strategies before they exist); one hand-written session check per exchange.</p><p class="when">proposed · 2026-11-07</p></div>
 <div class="decision" id="d46"><h3><span class="num">46</span>How do components differ between replay and live?</h3><p class="q">Only through what the runner passes in. A shared <code>Clock</code> (<code>now()</code>, <code>wait(timeout)</code>) is a <code>WallClock</code> live and a <code>ReplayClock</code> in replay, moving forward on each bar close; the bar flush, session-end flatten, reconcile and the session-active flag read it. <code>RunMode</code> is built once by the runner, which uses it to choose components and do-nothing stand-ins (recorders, Safety, state stores). No component reads the mode or checks a collaborator for <code>None</code>.</p><p class="rej">Rejected: checking a mode string inside components (it spreads, and a check that matches the wrong mode runs the wall clock against replayed data).</p><p class="when">proposed · 2026-11-07</p></div>
 <div class="decision" id="d47"><h3><span class="num">47</span>What does <code>run_strategies.py</code> do?</h3><p class="q">It is a thin startup module. It parses <code>--config</code> and <code>--mode</code> only (the deploy client is <code>deploy_strategy.py</code>, <a href="#d35">decision 35</a>); replay settings (tape, date, session) sit in a <code>replay:</code> section of the config. It builds a <code>Runtime</code> from the config and the mode: the gateway by registry name (decision 30), the clock, the stand-ins and each component with its own typed config section. Every long-lived part follows one <code>Service</code> protocol (<code>start()</code>, <code>stop()</code>); <code>Runtime</code> starts them in order and stops them in reverse, also when start-up fails, then runs the Event Loop. Logging is one queue-handler setup (decision 29) with a logger per module. Comparing results with research stays outside (decision 3).</p><pre><code>async def main(cfg, mode):
     async with Runtime.build(cfg, mode) as rt:
