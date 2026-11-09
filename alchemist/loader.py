@@ -11,9 +11,9 @@ class StrategyLoadError(Exception):
     pass
 
 
-def load_strategies(root: Path = Path("local/strategies")) -> list[str]:
+def load_strategies(root: Path = Path("local/strategies"), exclude: frozenset[str] | set[str] = frozenset()) -> list[str]:
     loaded = []
-    for folder in sorted(p for p in Path(root).iterdir() if p.is_dir() and not p.name.startswith(("_", "."))):
+    for folder in sorted(p for p in Path(root).iterdir() if p.is_dir() and not p.name.startswith(("_", ".")) and p.name not in exclude):
         for file_name in STRATEGY_FILES:
             path = folder / file_name
             if path.exists():

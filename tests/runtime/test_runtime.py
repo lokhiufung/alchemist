@@ -87,7 +87,9 @@ def test_paper_and_live_build_wall_clock_safety_and_file_stand_ins(mode, tmp_pat
     assert isinstance(runtime.event_loop.trade_recorder, TradeRecorder)
     assert isinstance(runtime.slots[0].stores.calc_state, CalcStateStore)
     assert isinstance(runtime.slots[0].stores.round_trips, RoundTripStore)
-    assert runtime.services[-1][1] is runtime.safety
+    names = [name for name, _ in runtime.services]
+    assert names[-2:] == ["safety", "deploy_socket"]
+    assert runtime.services[-2][1] is runtime.safety
 
 
 class RecordingService:
@@ -209,3 +211,28 @@ def test_no_component_reads_the_run_mode():
     offenders = [p.name for p in Path("alchemist").rglob("*.py")
                  if p.name not in allowed and "constants.mode" in p.read_text()]
     assert offenders == []
+
+
+async def test_cold_start_admits_every_slot_then_hands_the_book_to_the_loop():
+    from alchemist.runtime import SlotsService
+
+    admitted, switched = [], []
+
+    class Book:
+        async def admit(self, slot):
+            admitted.append(slot)
+
+    class Aux:
+        async def members_changed(self):
+            switched.append("aux")
+
+    service = SlotsService(Book(), ["a", "b"], Aux(), after_cold_start=lambda book: switched.append("loop"))
+    await service.start()
+    assert admitted == ["a", "b"] and switched == ["aux", "loop"]
+
+
+def test_deploy_client_without_a_running_process_exits_nonzero(tmp_path):
+    config = write_config(tmp_path, ROOT / "local" / "strategies")
+    result = subprocess.run([sys.executable, "deploy_strategy.py", "--config", str(config), "--key",
+                             "macd_rsi_rth_long"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 1 and "deploy socket" in result.stderr

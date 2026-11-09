@@ -11,7 +11,9 @@ import alchemist.calculations  # noqa: F401  registers the built-in calculations
 from alchemist.clock import Clock, ReplayClock, WallClock
 from alchemist.config import Configuration
 from alchemist.constants.mode import Mode
+from alchemist.deploy_socket import DeploySocketServer
 from alchemist.event_loop.book import RuntimeBook
+from alchemist.event_loop.deploy import DeployService
 from alchemist.event_loop.buffer import EventBuffer
 from alchemist.event_loop.loop import EventLoop
 from alchemist.event_loop.recorders import BarRecorder, NullRecorder, TradeRecorder, load_recorded_bars
@@ -30,6 +32,7 @@ from alchemist.strategy_builder.strategy import Stores
 logger = logging.getLogger(__name__)
 
 NOT_FLAT_EXIT_CODE = 2
+SOCKET_FILE = "deploy.sock"
 
 
 @runtime_checkable
@@ -67,14 +70,20 @@ class EventLoopService:
         return None
 
 
+def keep_run_op(run_op) -> None:
+    return None
+
+
 class SlotsService:
-    def __init__(self, book: RuntimeBook, slots: list, aux: AuxProvider) -> None:
+    def __init__(self, book: RuntimeBook, slots: list, aux: AuxProvider, after_cold_start=keep_run_op) -> None:
         self.book, self.slots, self.aux = book, slots, aux
+        self.after_cold_start = after_cold_start
 
     async def start(self) -> None:
         for slot in self.slots:
             await self.book.admit(slot)
         await self.aux.members_changed()
+        self.after_cold_start(self.book)
 
     async def stop(self) -> None:
         for task in [t for tasks in self.book.retry_tasks.values() for t in tasks]:
@@ -114,7 +123,7 @@ class Runtime:
     @classmethod
     def build(cls, config: Configuration, mode: Mode) -> Runtime:
         is_replay = mode is Mode.REPLAY
-        load_strategies(config.system.strategies_root)
+        loaded_folders = set(load_strategies(config.system.strategies_root))
         check_strategy_folders(config.system.strategies_root)
         buffer = EventBuffer(config.event_loop)
         clock: Clock = ReplayClock(replay_clock_start(config)) if is_replay else WallClock(buffer.drain_wakeup)
@@ -140,14 +149,30 @@ class Runtime:
         sources = {name: get_aux_source(options["source"])(**{k: v for k, v in options.items() if k != "source"})
                    for name, options in config.aux_sources.items()}
         aux = AuxProvider(sources, book, clock, aux_config)
-        slots = [get_strategy(cfg.strat)(cfg, gateway, clock, stores, config.execution,
-                                         config.event_loop.rebuild_yield_budget_s)
-                 for cfg in config.strategies.values()]
+        def build_slot(strategy_config):
+            try:
+                strategy_class = get_strategy(strategy_config.strat)
+            except KeyError as exc:
+                raise StrategyLoadError(f"{strategy_config.strat}: no such strategy is registered") from exc
+            return strategy_class(strategy_config, gateway, clock, stores, config.execution,
+                                  config.event_loop.rebuild_yield_budget_s)
+
+        slots = [build_slot(cfg) for cfg in config.strategies.values()]
         shutdown = ShutdownCoordinator(book, gateway, clock, config.event_loop)
         loop = EventLoop(buffer, book, gateway, aux, safety, bar_recorder, trade_recorder, shutdown, clock,
                          config.event_loop, clock_advance=clock.advance if is_replay else None)
+        after_cold_start = keep_run_op if is_replay else (lambda b: setattr(b, "run_op", loop.enqueue_book_op))
         services = [("gateway", GatewayService(gateway)), ("event_loop", EventLoopService(buffer)),
-                    ("aux_data", aux), ("slots", SlotsService(book, slots, aux)), ("safety", safety)]
+                    ("aux_data", aux), ("slots", SlotsService(book, slots, aux, after_cold_start)),
+                    ("safety", safety)]
+        if not is_replay:
+            def build_from_config(strategy_config):
+                loaded_folders.update(load_strategies(config.system.strategies_root, exclude=loaded_folders))
+                return build_slot(strategy_config)
+
+            service = DeployService(config.path, config, book, gateway, clock, build_from_config, lambda: None,
+                                    lambda: loop.book_closed or shutdown.shutdown_requested)
+            services.append(("deploy_socket", DeploySocketServer(root / SOCKET_FILE, service)))
         return cls(config, mode, services, loop, shutdown, gateway, clock, safety, slots)
 
     async def __aenter__(self) -> Runtime:

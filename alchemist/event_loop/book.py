@@ -80,13 +80,24 @@ class RuntimeBook:
             exchange_profile(strategy.signal_instrument).data_session)
         self.retry_tasks[strategy.name] = list(retry_tasks)
 
-    async def admit(self, strategy) -> None:
+    async def admit(self, strategy, guard: Callable[["RuntimeBook"], None] | None = None) -> None:
         created: list[Instrument] = []
         try:
             await self.stage(strategy, created)
             await self.prepare(strategy)
-            await self.run_op(lambda book: book.commit(strategy, self.pending_retries(strategy)))
+
+            def commit(book: "RuntimeBook") -> None:
+                if guard is not None:
+                    guard(book)
+                book.commit(strategy, self.pending_retries(strategy))
+
+            await self.run_op(commit)
         except BaseException:
+            for instrument in created:
+                if instrument in self.subscribed:
+                    await self.gateway.unsubscribe_tick(self.contracts[instrument])
+                    self.subscribed.discard(instrument)
+                    self.resamplers.pop(instrument, None)
             await self.run_op(lambda book: [book.release_instrument(i) for i in created])
             raise
 

@@ -21,6 +21,8 @@ class SeedGateway:
         self.subscribed, self.resolved, self.sessions = [], [], []
         self.unsubscribed = []
         self.delay = 0.0
+        self.positions, self.open_orders = [], []
+        self.exposure_unreadable = False
 
     def market_data_type(self, instrument):
         return (self.message_type, self.resolution if self.message_type == "bar_update" else None)
@@ -54,6 +56,16 @@ class SeedGateway:
     async def unsubscribe_tick(self, contract):
         self.unsubscribed.append(contract["instrument"])
 
+    async def get_positions(self, timeout=5.0):
+        if self.exposure_unreadable:
+            raise TimeoutError("no answer")
+        return list(self.positions)
+
+    async def get_open_orders(self, timeout=5.0):
+        if self.exposure_unreadable:
+            raise TimeoutError("no answer")
+        return list(self.open_orders)
+
     def set_instrument_sessions(self, sessions):
         self.sessions.append(dict(sessions))
 
@@ -62,12 +74,14 @@ class SeedStrategy:
     resolution_s = 1.0
 
     def __init__(self, name="s", instrument=MES, execution_instrument=None, warmup_error=None, daily_months=2,
-                 intraday=("sma5",)) -> None:
+                 intraday=("sma5",), account="ACC", session="NY_RTH") -> None:
         from alchemist.strategy_builder.strategy_signal import WarmupRequirements
         self.name = name
         self.signal_instrument = instrument
         self.execution_instrument = execution_instrument or instrument
-        self.session = "NY_RTH"
+        self.session = session
+        from alchemist.config import StrategyConfig
+        self.config = StrategyConfig(name, "stub", account, (instrument,), (self.execution_instrument,))
         self.warmup_error = warmup_error
         self.requirements = WarmupRequirements(daily_months=daily_months, intraday=intraday)
         self.histories, self.replayed, self.seed_states = [], [], []
