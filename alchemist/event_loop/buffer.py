@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections import deque
 
 from alchemist.config import EventLoopConfig
@@ -30,11 +31,13 @@ class EventBuffer:
         return self.control if event["event_type"] in CONTROL_EVENTS else self.data
 
     def push(self, event: dict, wake: bool = True) -> None:
+        event.setdefault("pushed_at", time.time())
         self.lane_for(event).append(event)
         if wake:
             self.raise_wakeup()
 
     def push_front(self, event: dict) -> None:
+        event.setdefault("pushed_at", time.time())
         self.control.appendleft(event)
         self.raise_wakeup()
 

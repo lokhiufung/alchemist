@@ -129,6 +129,12 @@ class StubShutdown:
     async def process_due(self):
         return None
 
+    def flattening_names(self):
+        return set()
+
+    async def flatten_on_bar(self, instrument, bar):
+        return None
+
     def ready_to_exit(self):
         return True
 

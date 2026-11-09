@@ -303,3 +303,35 @@ async def test_snapshot_every_n_bars(interval, expected, caplog):
             strategy.on_bar(deque([bar]), bar)
     rows = [r.snapshot_row for r in caplog.records if hasattr(r, "snapshot_row")]
     assert len(rows) == expected and all("stale" not in row for row in rows)
+
+
+async def test_rebuild_replay_yields_within_budget():
+    import asyncio
+    import time
+
+    class SlowSignal(StubSignal):
+        def step(self, bars, strategy_data):
+            time.sleep(0.0003)
+            super().step(bars, strategy_data)
+
+    from alchemist.registry import register_signal_dag
+    register_signal_dag("slow_signal")(SlowSignal)
+    strategy = make_strategy(strategy_class=type("Slow", (StubStrategy,), {"signal_dag": "slow_signal"}))
+    strategy.rebuild_yield_budget_s = 0.001
+    bars = [make_bar(i) for i in range(1, 400)]
+    gaps, stop = [], False
+
+    async def ticker():
+        last = time.perf_counter()
+        while not stop:
+            await asyncio.sleep(0)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    watcher = asyncio.create_task(ticker())
+    await asyncio.sleep(0)
+    await strategy.rebuild_intraday_state(bars)
+    stop = True
+    await watcher
+    assert max(gaps) <= strategy.rebuild_yield_budget_s + 0.004 and len(gaps) > 20

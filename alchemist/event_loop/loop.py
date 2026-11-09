@@ -13,6 +13,7 @@ from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
 from alchemist.event_loop.book import BookClosed, RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
+from alchemist.event_loop.metrics import LatencyMetrics
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
 
@@ -36,7 +37,8 @@ class EventLoop:
     def __init__(self, event_buffer: EventBuffer, book: RuntimeBook, gateway: Any, aux: Any, safety: Any,
                  bar_recorder: Any, trade_recorder: Any, shutdown: Any, clock: Clock,
                  config: EventLoopConfig | None = None,
-                 clock_advance: Callable[[datetime], None] | None = None) -> None:
+                 clock_advance: Callable[[datetime], None] | None = None,
+                 metrics: LatencyMetrics | None = None, wall: Callable[[], float] = time.time) -> None:
         self.event_buffer = event_buffer
         self.book = book
         self.gateway = gateway
@@ -48,6 +50,10 @@ class EventLoop:
         self.clock = clock
         self.config = config or EventLoopConfig()
         self.clock_advance = clock_advance or (lambda moment: None)
+        self.metrics = metrics or LatencyMetrics(wall)
+        self.wall = wall
+        self.slot_cost = 0.0
+        self.current_arrival = 0.0
         self.last_bar_ts: dict[Instrument, float] = {}
         self.errors: dict[str, int] = {}
         self.end_of_data_seen = False
@@ -57,13 +63,17 @@ class EventLoop:
         self.feed_types: dict[Instrument, str] = {}
 
     def finished(self) -> bool:
-        return self.stopping or (self.end_of_data_seen and not len(self.event_buffer))
+        return self.should_stop() or (self.end_of_data_seen and not len(self.event_buffer))
+
+    def should_stop(self) -> bool:
+        return self.stopping or self.shutdown.shutdown_requested
 
     async def run(self) -> None:
         sys.setswitchinterval(self.config.gil_switch_interval_s)
         self.event_buffer.bind_loop(asyncio.get_running_loop())
         while not self.finished():
             self.safety.check_in()
+            self.metrics.maybe_flush(self.wall())
             await self.drain_pass()
             await self.fire_due_bars()
             await self.shutdown.process_due()
@@ -75,6 +85,8 @@ class EventLoop:
                 await self.event_buffer.wait(self.clock)
         self.book_closed = True
         await self.shutdown.finalize(self.drain_remaining)
+        self.bar_recorder.finalize()
+        self.trade_recorder.finalize()
 
     async def drain_pass(self) -> None:
         self.event_buffer.begin_pass()
@@ -82,7 +94,7 @@ class EventLoop:
         deadline = time.perf_counter() + self.config.drain_batch_budget_s
         while (event := self.event_buffer.pop()) is not None:
             await self.safe_dispatch(event)
-            if time.perf_counter() >= deadline:
+            if time.perf_counter() >= deadline or self.should_stop():
                 break
 
     def alert_on_backlog(self) -> None:
@@ -98,10 +110,31 @@ class EventLoop:
             await self.safe_dispatch(event)
 
     async def safe_dispatch(self, event: dict) -> None:
+        started = self.wall()
+        self.current_arrival = event.get("pushed_at", started)
+        self.slot_cost = 0.0
         try:
             await self.dispatch(event)
         except Exception:
             logger.exception("dispatch of %s failed", event.get("event_type"))
+        self.record_latency(event, started)
+
+    def record_latency(self, event: dict, started: float) -> None:
+        kind = event["event_type"]
+        if kind not in ("bar", "order_update", "repaired_fill"):
+            return
+        done = self.wall()
+        arrival = event.get("pushed_at", started)
+        data = event["data"]
+        origin = data.get("origin") if kind == "bar" else None
+        recv = origin["recv_ts"] if origin else arrival
+        instrument = data["instrument"]
+        feed = precision = None
+        if origin:
+            feed = origin["recv_ts"] - origin["broker_ts"]
+            precision = self.metrics.precision(instrument)
+        self.metrics.record_processing(instrument, recv, done, max(0.0, started - arrival), done - started,
+                                       self.slot_cost, kind, feed, precision)
 
     async def dispatch(self, event: dict) -> None:
         handler = HANDLERS.get(event["event_type"])
@@ -117,25 +150,30 @@ class EventLoop:
         self.event_buffer.push(make_event("book_op", {"fn": fn, "future": future}, self.clock.timestamp()))
         return await future
 
-    async def emit_bar(self, instrument: Instrument, bar: dict, source: str) -> None:
+    async def emit_bar(self, instrument: Instrument, bar: dict, source: str, origin: dict | None = None) -> None:
         bar["instrument"] = instrument
-        self.event_buffer.push(make_event("bar", {"instrument": instrument, "bar": bar, "source": source},
-                                          self.clock.timestamp()), wake=False)
+        self.event_buffer.push(make_event("bar", {"instrument": instrument, "bar": bar, "source": source,
+                                                  "origin": origin}, self.clock.timestamp()), wake=False)
 
     async def dispatch_bar(self, instrument: Instrument, bar: dict) -> None:
         self.clock_advance(datetime.fromtimestamp(bar["end_ts"], timezone.utc))
+        await self.shutdown.process_due()
         self.aux.annotate(instrument, bar)
         self.gateway.on_bar(instrument, bar)
         history = self.book.bars.setdefault(instrument, deque(maxlen=BAR_HISTORY))
         history.append(bar)
         self.bar_recorder.record(instrument, bar)
-        await self.fan_out(self.book.strategies_for(instrument), "on_bar", history, bar)
+        flattening = self.shutdown.flattening_names()
+        members = [s for s in self.book.strategies_for(instrument) if s.name not in flattening]
+        await self.fan_out(members, "on_bar", history, bar)
+        await self.shutdown.flatten_on_bar(instrument, bar)
 
     async def fan_out(self, strategies: list, method: str, *args: Any) -> None:
         for strategy in list(strategies):
             is_bar = method == "on_bar"
             if is_bar and strategy.is_quarantined():
                 continue
+            began = time.perf_counter()
             try:
                 result = getattr(strategy, method)(*args)
                 if inspect.isawaitable(result):
@@ -146,6 +184,7 @@ class EventLoop:
                 logger.exception("[%s] %s failed", strategy.name, method)
                 if is_bar:
                     self.count_error(strategy)
+            self.slot_cost += time.perf_counter() - began
 
     def count_error(self, strategy: Any) -> None:
         count = self.errors.get(strategy.name, 0) + 1
@@ -177,9 +216,13 @@ async def on_tick_update(loop: EventLoop, data: dict) -> None:
     resampler = loop.book.resamplers.get(instrument)
     if resampler is None:
         return
+    loop.metrics.record_feed(instrument, data["broker_ts"], data["recv_ts"])
+    if "decode_s" in data:
+        loop.metrics.record_decode(instrument, data["decode_s"])
     bar = resampler.update_from_tick(data["broker_ts"], data["price"], data["size"])
     if bar is not None:
-        await loop.emit_bar(instrument, bar, "tick_update")
+        await loop.emit_bar(instrument, bar, "tick_update",
+                            {"recv_ts": data["recv_ts"], "broker_ts": data["broker_ts"]})
 
 
 @handles("bar_update")
@@ -190,7 +233,9 @@ async def on_bar_update(loop: EventLoop, data: dict) -> None:
         logger.debug("rejected %s bar %s not later than %s", instrument.symbol, data["start_ts"], last)
         return
     loop.last_bar_ts[instrument] = data["start_ts"]
-    await loop.emit_bar(instrument, dict(data), "bar_update")
+    origin = {"recv_ts": loop.current_arrival, "broker_ts": data["broker_ts"]}
+    loop.metrics.record_feed(instrument, data["broker_ts"], loop.current_arrival)
+    await loop.emit_bar(instrument, dict(data), "bar_update", origin)
 
 
 @handles("bar")

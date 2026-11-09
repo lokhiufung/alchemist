@@ -58,9 +58,9 @@ async def test_every_bar_close_passes_one_function(cause):
     emitted = []
     original = harness.loop.emit_bar
 
-    async def spy(instrument, bar, source):
+    async def spy(instrument, bar, source, origin=None):
         emitted.append(source)
-        await original(instrument, bar, source)
+        await original(instrument, bar, source, origin)
 
     harness.loop.emit_bar = spy
     bar_events = []

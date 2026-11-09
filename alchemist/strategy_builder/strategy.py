@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupReq
 logger = logging.getLogger(__name__)
 snapshot_logger = logging.getLogger("alchemist.snapshots")
 
-REPLAY_YIELD_EVERY = 2000
+REBUILD_YIELD_BUDGET_S = 0.001
 REPLAY_WINDOW = 2000
 
 
@@ -37,8 +38,10 @@ class Strategy:
     resolution_s = 1.0
 
     def __init__(self, config: StrategyConfig, gateway, clock: Clock, stores: Stores,
-                 execution_config: ExecutionConfig | None = None) -> None:
+                 execution_config: ExecutionConfig | None = None,
+                 rebuild_yield_budget_s: float = REBUILD_YIELD_BUDGET_S) -> None:
         self.config = config
+        self.rebuild_yield_budget_s = rebuild_yield_budget_s
         self.name = config.name
         self.clock = clock
         self.stores = stores
@@ -244,12 +247,14 @@ class Strategy:
     async def rebuild_intraday_state(self, seed_bars: list) -> None:
         async with self.deferring_bars():
             window: deque = deque(maxlen=REPLAY_WINDOW)
-            for count, bar in enumerate(seed_bars, start=1):
+            slice_began = time.perf_counter()
+            for bar in seed_bars:
                 if self.in_session(bar):
                     window.append(bar)
                     self.signal.step(window, {"entry_price": None, "secs_since_entry": None})
-                if count % REPLAY_YIELD_EVERY == 0:
+                if time.perf_counter() - slice_began >= self.rebuild_yield_budget_s:
                     await asyncio.sleep(0)
+                    slice_began = time.perf_counter()
         self.sync_ready_flags()
 
     @asynccontextmanager
