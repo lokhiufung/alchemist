@@ -289,6 +289,9 @@ class SignalDag(StrategySignal):
         self.stale: set[str] = set()
         self.entry_answer = False
         self.warned_day = None
+        self.gate_day = None
+        self.previous_raw: bool | None = None
+        self.frozen: dict[str, dict[str, Any]] | None = None
 
     @property
     def rearm_required(self) -> bool:
@@ -337,7 +340,10 @@ class SignalDag(StrategySignal):
             return bar.get(spec.field)
         if spec.kind == "strategy_data":
             return strategy_data.get(spec.field)
-        inputs = [values[i.name] for i in spec.inputs]
+        frozen = self.frozen is not None and spec.exit_side
+        if frozen and spec.kind == "calc":
+            return self.frozen["held"][spec.name]
+        inputs = [self.input_value(i, values, strategy_data, frozen) for i in spec.inputs]
         if spec.kind in ("condition", "any_of"):
             if spec.kind == "any_of":
                 return kleene_or(inputs)
@@ -355,13 +361,27 @@ class SignalDag(StrategySignal):
             stale.add(spec.name)
             return None
 
-    def update_entry(self, bar: dict, raw: bool | None) -> None:
-        self.entry_answer = raw is True
-        if raw is None and self.rearm_required:
-            self.warn_null_entry(bar)
+    def trading_day(self, bar: dict):
+        return datetime.fromtimestamp(bar["end_ts"], ZoneInfo(self.profile.tz)).date()
 
-    def warn_null_entry(self, bar: dict) -> None:
-        day = datetime.fromtimestamp(bar["end_ts"], ZoneInfo(self.profile.tz)).date()
+    def input_value(self, node: Node, values: dict, strategy_data: dict, frozen: bool) -> Any:
+        if not frozen:
+            return values[node.name]
+        if node.kind == "strategy_data":
+            return strategy_data.get(self.by_name[node.name].field)
+        return self.frozen["inputs"][node.name]
+
+    def update_entry(self, bar: dict, raw: bool | None) -> None:
+        day = self.trading_day(bar)
+        if day != self.gate_day:
+            self.gate_day, self.previous_raw = day, None
+        rising = raw is True and self.previous_raw is not True
+        self.previous_raw = raw
+        self.entry_answer = (rising and self.is_warm()) if self.rearm_required else raw is True
+        if raw is None and self.rearm_required:
+            self.warn_null_entry(day)
+
+    def warn_null_entry(self, day) -> None:
         if day == self.warned_day:
             return
         self.warned_day = day
@@ -386,10 +406,16 @@ class SignalDag(StrategySignal):
         return self.entry_answer
 
     def evaluate_exit_conditions(self) -> dict[str, bool]:
-        raise NotImplementedError
+        return {n.name: self.node_values.get(n.name) is True for n in self.exit_nodes}
 
     def exit_condition_level(self, name: str) -> float | None:
-        raise NotImplementedError
+        spec = self.by_name[name]
+        if spec not in [self.by_name[n.name] for n in self.exit_nodes]:
+            raise KeyError(f"{name!r} is not an exit condition")
+        left = spec.inputs[0]
+        if left.name != "close" or left.kind != "bar" or spec.has_constant or spec.op not in COMPARISON:
+            return None
+        return self.level(spec.inputs[1].name)
 
     def level(self, name: str) -> float | None:
         value = self.node_values.get(name)
@@ -414,10 +440,21 @@ class SignalDag(StrategySignal):
         return dict(self.node_values)
 
     def freeze_exit_inputs(self, bar: dict) -> None:
-        raise NotImplementedError
+        inputs: dict[str, Any] = {}
+        held: dict[str, Any] = {}
+        for spec in self.specs:
+            if not spec.exit_side:
+                continue
+            for node in spec.inputs:
+                if node.kind != "strategy_data":
+                    source = self.by_name[node.name]
+                    inputs[node.name] = bar.get(source.field) if node.kind == "bar" else self.node_values.get(node.name)
+            if spec.kind == "calc":
+                held[spec.name] = self.node_values.get(spec.name)
+        self.frozen = {"inputs": inputs, "held": held}
 
     def release_exit_inputs(self) -> None:
-        raise NotImplementedError
+        self.frozen = None
 
     def snapshot_session_state(self) -> dict:
         state = {}

@@ -245,3 +245,213 @@ def test_restore_session_state_puts_value_back():
     assert not second.is_warm()
     second.restore_session_state(snapshot)
     assert second.is_warm() and second.values()["held"] == snapshot["held"]["stored"] == 20.0
+
+
+def run_closes(signal, closes, strategy_data=None):
+    stepper = Stepper(signal)
+    answers = []
+    for close in closes:
+        stepper.step(close, strategy_data)
+        answers.append(signal.evaluate_entry())
+    return answers
+
+
+@pytest.mark.parametrize("rearm,entries", [(True, 1), (False, 5)])
+def test_sustained_entry_run_entries(rearm, entries):
+    def build(g, p):
+        entry_exit(g, g.bar("close"))
+
+    signal = make_signal(build, rearm_required=rearm).from_config(strategy_config())
+    assert sum(run_closes(signal, [101.0] * 5)) == entries
+
+
+def test_rearm_edge_resets_on_a_new_trading_date():
+    def build(g, p):
+        entry_exit(g, g.bar("close"))
+
+    stepper = Stepper(make_signal(build, rearm_required=True).from_config(strategy_config()))
+    stepper.step(101.0)
+    first_day = stepper.signal.evaluate_entry()
+    stepper.step(101.0)
+    same_day = stepper.signal.evaluate_entry()
+    stepper.index = 86_400
+    stepper.step(101.0)
+    assert (first_day, same_day, stepper.signal.evaluate_entry()) == (True, False, True)
+
+
+def test_rearm_gate_closed_until_warm():
+    def build(g, p):
+        close = g.bar("close")
+        g.warmup(g.calc("sma5", "sma", close, period=5), history="intraday")
+        entry_exit(g, close)
+
+    signal = make_signal(build, rearm_required=True).from_config(strategy_config())
+    stepper = Stepper(signal)
+    stepper.step(101.0)
+    cold = signal.evaluate_entry()
+    signal.seed({"intraday": [make_bar(i, 100.0) for i in range(5)]})
+    stepper.step(101.0)
+    assert (cold, signal.evaluate_entry()) == (False, False)
+
+
+@pytest.mark.parametrize("case,expected", [("or", True), ("and", False), ("alone", False)])
+def test_null_leg_follows_kleene_rules(case, expected):
+    def build(g, p):
+        close = g.bar("close")
+        unknown = g.condition("unknown", g.expr("a", lambda e: e, g.strategy_data("entry_price")), ">", 0.0)
+        true_leg = g.condition("true_leg", close, ">", 0.0)
+        false_leg = g.condition("false_leg", close, "<", 0.0)
+        if case == "or":
+            g.entry(g.any_of("either", unknown, true_leg))
+        elif case == "and":
+            g.entry(unknown, false_leg)
+        else:
+            g.entry(unknown)
+        g.exit("stop", close, "<", -1.0)
+
+    assert run_closes(make_signal(build).from_config(strategy_config()), [5.0]) == [expected]
+
+
+def test_evaluate_twice_same_answers():
+    def build(g, p):
+        entry_exit(g, g.bar("close"))
+
+    signal = make_signal(build, rearm_required=True).from_config(strategy_config())
+    Stepper(signal).step(101.0)
+    first = (signal.evaluate_entry(), signal.evaluate_exit_conditions(), signal.entry_conditions())
+    second = (signal.evaluate_entry(), signal.evaluate_exit_conditions(), signal.entry_conditions())
+    assert first == second and first[0] is True
+
+
+def test_exit_is_or_of_named_conditions():
+    def build(g, p):
+        close = g.bar("close")
+        g.entry(g.condition("above", close, ">", 1000.0))
+        g.exit("low", close, "<", 10.0)
+        g.exit("high", close, ">", 90.0)
+        g.exit("middle", close, "==", 50.0)
+
+    signal = make_signal(build).from_config(strategy_config())
+    stepper = Stepper(signal)
+    for close, expected in ((50.0, True), (95.0, True), (60.0, False), (5.0, True)):
+        stepper.step(close)
+        answers = signal.evaluate_exit_conditions()
+        assert list(answers) == ["low", "high", "middle"]
+        assert signal.evaluate_exit() is expected is any(answers.values())
+
+
+def test_condition_names_listed_before_first_bar():
+    def build(g, p):
+        close = g.bar("close")
+        first = g.condition("first", close, ">", 1.0)
+        second = g.condition("second", close, ">", 2.0)
+        g.entry(g.any_of("either", first, second))
+        g.exit("stop", close, "<", 0.0)
+
+    signal = make_signal(build).from_config(strategy_config())
+    assert signal.condition_names() >= {"first", "second", "either"}
+    assert signal.exit_condition_names() == ["stop"]
+    assert signal.entry_conditions() == {"either": None}
+
+
+def test_values_returns_a_copy():
+    def build(g, p):
+        entry_exit(g, g.bar("close"))
+
+    signal = make_signal(build).from_config(strategy_config())
+    Stepper(signal).step(101.0)
+    copy = signal.values()
+    copy["close"] = -1.0
+    assert signal.values()["close"] == 101.0
+
+
+def freeze_fixture(late_series_at_entry):
+    @register_aux_source("late_series")
+    class Late:
+        supplied_sessions = None
+
+    def build(g, p):
+        close = g.bar("close")
+        late = g.bar("late_series")
+        g.freeze_at_entry(g.expr("stop_px", lambda value: value - 1.0, late))
+        g.entry(g.condition("above", close, ">", 1000.0))
+        g.exit("stop", close, "<", 1.0)
+
+    return Stepper(make_signal(build).from_config(strategy_config()))
+
+
+def test_input_missing_at_entry_stays_unavailable():
+    stepper = freeze_fixture(None)
+    stepper.step(100.0)
+    stepper.signal.freeze_exit_inputs(stepper.bars[-1])
+    stepper.step(100.0, aux_late_series=50.0)
+    held = stepper.signal.values()["stop_px"]
+    stepper.signal.release_exit_inputs()
+    stepper.step(100.0, aux_late_series=50.0)
+    assert (held, stepper.signal.values()["stop_px"]) == (None, 49.0)
+
+
+def test_release_returns_exit_inputs_to_live():
+    stepper = freeze_fixture(40.0)
+    stepper.step(100.0, aux_late_series=40.0)
+    stepper.signal.freeze_exit_inputs(stepper.bars[-1])
+    stepper.step(100.0, aux_late_series=60.0)
+    frozen = stepper.signal.values()["stop_px"]
+    stepper.signal.release_exit_inputs()
+    stepper.step(100.0, aux_late_series=60.0)
+    assert (frozen, stepper.signal.values()["stop_px"]) == (39.0, 59.0)
+
+
+def test_signal_without_exit_side_nodes_ignores_freeze():
+    def build(g, p):
+        entry_exit(g, g.bar("close"))
+
+    stepper = Stepper(make_signal(build).from_config(strategy_config()))
+    stepper.step(101.0)
+    stepper.signal.freeze_exit_inputs(stepper.bars[-1])
+    stepper.step(95.0)
+    assert stepper.signal.values()["close"] == 95.0
+    stepper.signal.release_exit_inputs()
+
+
+def test_strategy_data_stays_live_while_frozen():
+    def build(g, p):
+        close = g.bar("close")
+        g.expr("target_px", lambda entry, atr: entry + atr, g.strategy_data("entry_price"),
+               g.expr("atr_like", lambda c: c * 0.1, close))
+        g.entry(g.condition("above", close, ">", 1000.0))
+        g.exit("stop", close, "<", 1.0)
+
+    stepper = Stepper(make_signal(build).from_config(strategy_config()))
+    stepper.step(100.0, {"entry_price": 100.0})
+    stepper.signal.freeze_exit_inputs(stepper.bars[-1])
+    stepper.step(200.0, {"entry_price": 150.0})
+    assert stepper.signal.values()["target_px"] == 160.0
+
+
+def test_each_freeze_replaces_the_previous_one():
+    stepper = freeze_fixture(1.0)
+    stepper.step(100.0, aux_late_series=10.0)
+    stepper.signal.freeze_exit_inputs(stepper.bars[-1])
+    stepper.step(100.0, aux_late_series=20.0)
+    stepper.signal.freeze_exit_inputs(stepper.bars[-1])
+    stepper.step(100.0, aux_late_series=30.0)
+    assert stepper.signal.values()["stop_px"] == 19.0
+
+
+def test_rebuild_and_replay_equals_fresh_process():
+    def build(g, p):
+        close = g.bar("close")
+        sma = g.calc("sma3", "sma", close, period=3)
+        g.entry(g.condition("above", close, ">", sma))
+        g.exit("stop", close, "<", 1.0)
+
+    signal_class = make_signal(build, rearm_required=True)
+    closes = [10.0, 11.0, 12.0, 11.0, 13.0]
+    first, second = Stepper(signal_class.from_config(strategy_config())), None
+    for close in closes:
+        first.step(close)
+    second = Stepper(signal_class.from_config(strategy_config()))
+    for close in closes:
+        second.step(close)
+    assert first.signal.values() == second.signal.values()
