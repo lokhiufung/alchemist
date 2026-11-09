@@ -1,4 +1,4 @@
-from alchemist.stores import CalcStateStore, RoundTripStore
+from alchemist.stores import CalcStateStore, InMemoryCalcStateStore, InMemoryRoundTripStore, RoundTripStore
 
 
 def test_round_trip_store_survives_reload(tmp_path):
@@ -33,3 +33,11 @@ def test_calc_state_corrupt_file_is_none(tmp_path):
     store.save("s1", "2026-04-15", {"atr": 20.0})
     next((tmp_path / "bot").glob("*")).write_text("{not json")
     assert store.load("s1", "2026-04-15") is None
+
+
+def test_in_memory_stores_follow_the_file_store_contract():
+    trips, calcs = InMemoryRoundTripStore(), InMemoryCalcStateStore()
+    trips.record("s1", "2026-04-15")
+    calcs.save("s1", "2026-04-15", {"atr": 1.0})
+    assert (trips.count("s1", "2026-04-15"), trips.count("s1", "2026-04-16")) == (1, 0)
+    assert calcs.load("s1", "2026-04-15") == {"atr": 1.0} and calcs.load("s1", "2026-04-16") is None

@@ -50,3 +50,27 @@ class RoundTripStore:
     def record(self, strategy_key: str, trading_date: str) -> None:
         count = self.count(strategy_key, trading_date) + 1
         write_json(self.path(strategy_key), {"trading_date": trading_date, "count": count})
+
+
+class InMemoryCalcStateStore:
+    def __init__(self) -> None:
+        self.records: dict[str, tuple[str, dict]] = {}
+
+    def save(self, strategy_key: str, trading_date: str, state: dict) -> None:
+        self.records[strategy_key] = (trading_date, state)
+
+    def load(self, strategy_key: str, trading_date: str) -> dict | None:
+        stored = self.records.get(strategy_key)
+        return stored[1] if stored and stored[0] == trading_date else None
+
+
+class InMemoryRoundTripStore:
+    def __init__(self) -> None:
+        self.counts: dict[tuple[str, str], int] = {}
+
+    def record(self, strategy_key: str, trading_date: str) -> None:
+        key = (strategy_key, trading_date)
+        self.counts[key] = self.counts.get(key, 0) + 1
+
+    def count(self, strategy_key: str, trading_date: str) -> int:
+        return self.counts.get((strategy_key, trading_date), 0)

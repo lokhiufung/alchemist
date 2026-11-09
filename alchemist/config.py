@@ -71,6 +71,11 @@ class AuxConfig:
 
 
 @dataclass(frozen=True)
+class ExecutionConfig:
+    reminder_interval_s: float = 300.0
+
+
+@dataclass(frozen=True)
 class StrategyConfig:
     name: str
     strat: str
@@ -98,6 +103,7 @@ class Configuration:
     safety: SafetyConfig
     aux_sources: dict
     aux: AuxConfig
+    execution: ExecutionConfig
     event_loop: EventLoopConfig
     strategies: dict[str, StrategyConfig] = field(default_factory=dict)
     replay: ReplayConfig | None = None
@@ -167,6 +173,7 @@ def load_config(path: Path) -> Configuration:
         safety=build_safety(raw.get("safety")),
         aux_sources=raw.get("aux_sources") or {},
         aux=AuxConfig(**(raw.get("aux") or {})),
+        execution=ExecutionConfig(**(raw.get("execution") or {})),
         event_loop=EventLoopConfig(**(raw.get("event_loop") or {})),
         strategies={name: build_strategy(name, body) for name, body in (raw.get("strategies") or {}).items()},
         replay=replay,
