@@ -4,7 +4,7 @@ Frozen top-level boundary of Alchemist v3. Agents read this file to decide which
 
 The top-level boundary of the Alchemist v3 execution engine: what it is for, the components it is split into, what each one owns, and the one frozen example every component is tested against.
 
-**Last agreed: 2026-11-09 — v3 final.** v3 is an eight-component execution engine (decision 44). Its first requirement is multi-asset and multi-currency trading (R1, decisions 37–41), and a signal is a Python `SignalDag` class that holds its own params, behind an abstract interface (decision 42). All decisions 1–58 are agreed. Decisions 52–58 (and 44) were decided on 2026-11-09, when the human delegated the open questions. The human accepted every remaining proposed decision and finalized v3 on 2026-11-09. Change history: see `system_map.html`.
+**Last agreed: 2026-11-09 — v3 final.** v3 is an eight-component execution engine (decision 44). Its first requirement is multi-asset and multi-currency trading (R1, decisions 37–41), and a signal is a Python `SignalDag` class that holds its own params, behind an abstract interface (decision 42). All decisions 1–59 are agreed. Decisions 52–58 (and 44) were decided on 2026-11-09, when the human delegated the open questions. The human accepted every remaining proposed decision and finalized v3 on 2026-11-09. Change history: see `system_map.html`.
 
 ## Goal
 
@@ -150,7 +150,7 @@ For each component: what it owns, what it leaves to others, what it receives, an
 - **Receives** — From Gateway: `tick_update` and `bar_update` messages, order, position and balance updates, and warmup history. From Aux Data: values on each bar. From Safety: repaired fill and Rejected events, position updates, and a check-in request.
 - **Produces** — To Strategy: completed bars, order, position and balance updates, warmup history, flatten requests and quarantine calls. To Gateway: history requests and each completed bar. To Safety: check-ins and read access to the runtime book's members. To disk: bar and trade recordings (paper and live).
 - **Runtime book** — Also owns the runtime book, the one registry of the strategies the process runs and the per-instrument resources serving them, and adding one strategy to it while the process runs (decisions 34–36). Receives, from the runner's deploy socket in paper/live (decision 51): deploy requests as book operations. Produces, to the runner: one status per step until a terminal status, which the runner streams to the operator. Produces, to Gateway: contract, subscribe and unsubscribe requests for a new strategy's instruments.
-- **Why a component** — not stated on the design pages (open question 1 below).
+- **Why a component** — no component-test question passes; a component by the human's decision (decision 59).
 
 ### Aux Data *(decision 44)*
 
@@ -182,7 +182,7 @@ For each component: what it owns, what it leaves to others, what it receives, an
 - **Does not own** — The signal's logic or when it is stepped (StrategySignal, Strategy); the position (Strategy); an order's life at the broker (Order Manager); talking to the Event Loop (Strategy).
 - **Receives** — From Strategy: bars and order updates. From StrategySignal: entry/exit signals. From Order Manager: answers about its orders (status and filled quantity, submitted and open orders, group finality).
 - **Produces** — To Order Manager: entry and exit orders, cancels, and order queries. To StrategySignal: entry/exit questions and exit-input freeze/release. To Strategy: its phase, through query answers.
-- **Why a component** — not stated as a component-test answer on the design pages; decision 14 gives separation of work (open question 1 below).
+- **Why a component** — no component-test question passes; a component by the human's decision (decision 59).
 
 ### Order Manager
 
@@ -190,7 +190,7 @@ For each component: what it owns, what it leaves to others, what it receives, an
 - **Does not own** — Deciding to enter or exit (StrategyExecution); the position (Strategy); broker communication (Gateway).
 - **Receives** — From StrategyExecution: entry and exit orders, cancels, and order queries. From Strategy: order updates and ownership checks.
 - **Produces** — To Gateway: orders and cancels. To Strategy: ownership answers. To StrategyExecution: query answers (its submitted and open orders, group finality, filled quantities).
-- **Why a component** — not stated as a component-test answer on the design pages; decision 14 gives separation of work (open question 1 below).
+- **Why a component** — no component-test question passes; a component by the human's decision (decision 59).
 
 ### Safety
 
@@ -756,6 +756,16 @@ async def main(cfg, mode):
 
 *agreed 2026-11-09*
 
+### Component status
+
+#### 59. Why are the Event Loop, StrategyExecution and Order Manager components?
+
+**Answer:** By the human's decision. Each of the three has its own owner and its own frozen contract (component map) that other components build against. None of the three passes a component-test question (own failing outside source, independent recovery, extension point); they stay components anyway. StrategyExecution and Order Manager keep the split of decision 14.
+
+**Rejected:** Rejected: folding StrategyExecution and Order Manager back into Strategy as modules, and the Event Loop into the runner (a large boundary change for no gain in v3).
+
+*decided 2026-11-09*
+
 ## Open questions
 
-1. **Why a component — Event Loop, StrategyExecution, Order Manager.** The design pages do not state which component-test question (own failing outside source, independent recovery, extension point) these three pass. Decision 14 splits StrategyExecution and Order Manager out of Strategy for separation of work, which the component test does not accept as a reason. The human decides: record the passing question, or fold the part back as a module.
+None.
