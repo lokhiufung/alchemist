@@ -449,3 +449,18 @@ def test_rebuild_and_replay_equals_fresh_process():
     for close in closes:
         second.step(close)
     assert first.signal.values() == second.signal.values()
+
+
+def test_aux_names_lists_the_series_the_signal_reads():
+    register_aux_name("vix_close")
+
+    def with_aux(g, p):
+        close = g.bar("close")
+        g.entry(g.condition("calm", g.bar("vix_close"), "<", 20.0))
+        g.exit("stop", close, "<", 90.0)
+
+    def without_aux(g, p):
+        entry_exit(g, g.bar("close"))
+
+    assert make_signal(with_aux).from_config(strategy_config()).aux_names() == frozenset({"vix_close"})
+    assert make_signal(without_aux).from_config(strategy_config()).aux_names() == frozenset()

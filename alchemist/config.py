@@ -83,7 +83,7 @@ class StrategyConfig:
     signal_instruments: tuple[Instrument, ...]
     execution_instruments: tuple[Instrument, ...]
     execution: dict | None = None
-    snapshot_interval: int = 0
+    snapshot_interval: int = 60
 
     @property
     def signal_instrument(self) -> Instrument:
@@ -137,7 +137,7 @@ def build_strategy(name: str, raw: dict) -> StrategyConfig:
         signal_instruments=instruments_from(raw["signal_instrument"]),
         execution_instruments=instruments_from(raw["execution_instrument"]),
         execution=raw.get("execution"),
-        snapshot_interval=raw.get("snapshot_interval", 0),
+        snapshot_interval=raw.get("snapshot_interval", 60),
     )
 
 

@@ -82,6 +82,9 @@ class StrategySignal(ABC):
     @abstractmethod
     def release_exit_inputs(self) -> None: ...
 
+    def aux_names(self) -> frozenset[str]:
+        return frozenset()
+
     def snapshot_session_state(self) -> dict:
         return {}
 

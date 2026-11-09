@@ -300,6 +300,9 @@ class SignalDag(StrategySignal):
     def warmup_specs(self) -> list[NodeSpec]:
         return [s for s in self.specs if s.history is not None]
 
+    def aux_names(self) -> frozenset[str]:
+        return frozenset(s.field[4:] for s in self.specs if s.kind == "bar" and s.field.startswith("aux_"))
+
     def warmup_requirements(self) -> WarmupRequirements:
         by_kind = {kind: tuple(s.name for s in self.warmup_specs() if s.history == kind) for kind in HISTORY_KINDS}
         daily_months = max([self.params.warm_up_months]
