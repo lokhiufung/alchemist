@@ -51,6 +51,17 @@ class SafetyConfig:
     reconnect_cap_s: float = 120.0
     maintenance_windows: tuple[tuple[str, str], ...] = ()
     positions_poll_s: float | None = None
+    heartbeat_interval_s: float = 5.0
+    heartbeat_timeout_s: float = 3.0
+    stale_tick_s: float = 45.0
+    stale_overrides: dict = field(default_factory=dict)
+    resubscribe_max_attempts: int = 4
+    resubscribe_without_tick_cap: int = 3
+    resubscribe_backoff_base_s: float = 5.0
+    check_interval_s: float = 60.0
+    reject_synthesis_min_age_s: float = 120.0
+    freeze_threshold: int = 10
+    check_in_interval_s: float = 1.0
 
 
 @dataclass(frozen=True)
