@@ -3,7 +3,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from alchemist.config import StrategyConfig
 
 
 @dataclass(frozen=True)
@@ -20,7 +23,7 @@ class StrategySignal(ABC):
 
     @classmethod
     @abstractmethod
-    def from_config(cls, strategy_config: dict) -> StrategySignal:
+    def from_config(cls, strategy_config: StrategyConfig) -> StrategySignal:
         """Behaviours 1, 6: build cold from the slot config; refuse a bad signal."""
 
     @abstractmethod

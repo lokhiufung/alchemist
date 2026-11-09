@@ -96,5 +96,9 @@ def get_aux_source(name: str) -> type:
     return lookup(_aux_sources, "aux source", name)
 
 
+def find_aux_source(name: str) -> type | None:
+    return _aux_sources[name][0] if name in _aux_sources else None
+
+
 def scope_of_class(cls: Any) -> str:
     return scope_of(Path(sys.modules[cls.__module__].__file__ or "<unknown>").resolve())

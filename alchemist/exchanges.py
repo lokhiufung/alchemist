@@ -70,15 +70,18 @@ class ExchangeProfile:
         return (datetime.combine(open_day, session.open, zone),
                 datetime.combine(d, close, zone))
 
-    def is_open(self, name: str, at: datetime) -> bool:
+    def session_window_at(self, name: str, at: datetime) -> tuple[datetime, datetime] | None:
         local_day = at.astimezone(ZoneInfo(self.session(name).tz)).date()
         for d in (local_day, local_day + timedelta(days=1)):
             if not self.is_trading_day(d):
                 continue
             start, end = self.session_window(name, d)
             if start <= at < end:
-                return True
-        return False
+                return start, end
+        return None
+
+    def is_open(self, name: str, at: datetime) -> bool:
+        return self.session_window_at(name, at) is not None
 
     def _roll_date(self, expiry: date) -> date:
         assert self.roll is not None

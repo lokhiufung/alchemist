@@ -78,3 +78,13 @@ def test_no_branch_on_exchange_name():
     offenders = [p for p in Path("alchemist").rglob("*.py")
                  if p.name != "exchanges.py" and re.search(r"['\"](CME|EUREX|NASDAQ)['\"]", p.read_text())]
     assert offenders == []
+
+
+def test_session_window_at_finds_window_containing_instant():
+    cme = exchange_profile("CME")
+    ny = ZoneInfo("America/New_York")
+    start, end = cme.session_window_at("NY_RTH", datetime(2026, 4, 15, 12, 0, tzinfo=ny))
+    assert (start.hour, end.hour) == (9, 16)
+    assert cme.session_window_at("NY_RTH", datetime(2026, 4, 15, 16, 0, tzinfo=ny)) is None
+    globex = cme.session_window_at("NY_GLOBEX", datetime(2026, 4, 15, 20, 0, tzinfo=ny))
+    assert globex[1].date() == date(2026, 4, 16)
