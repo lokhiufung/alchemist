@@ -3,8 +3,7 @@ from pathlib import Path
 import pytest
 
 from alchemist import registry
-from alchemist.registry import (get_aux_source, get_calc, get_gateway, get_tape, register_aux_source,
-                                register_calc, register_gateway, register_signal_dag, register_tape)
+from alchemist.registry import get_aux_source, get_calc, get_tape, register_aux_source, register_calc, register_tape
 
 
 def run_in_folder(folder: Path, source: str) -> None:
@@ -42,31 +41,12 @@ def test_unknown_calc_names_scope(tmp_path):
         get_calc("nope", str(tmp_path))
 
 
-def test_gateway_tape_and_aux_registries_bind_by_name():
-    @register_gateway("fake")
-    class FakeGateway: ...
-
+def test_tape_and_aux_registries_bind_by_name():
     @register_tape("fake_tape")
     class FakeTape: ...
 
     @register_aux_source("fake_source")
     class FakeSource: ...
 
-    assert (get_gateway("fake"), get_tape("fake_tape"), get_aux_source("fake_source")) == (
-        FakeGateway, FakeTape, FakeSource)
+    assert (get_tape("fake_tape"), get_aux_source("fake_source")) == (FakeTape, FakeSource)
 
-
-def test_gateway_double_bind_is_refused():
-    @register_gateway("dup")
-    class First: ...
-
-    with pytest.raises(ValueError, match="dup"):
-        register_gateway("dup")(type("Second", (), {}))
-
-
-def test_unknown_gateway_lists_known():
-    @register_gateway("known_one")
-    class Known: ...
-
-    with pytest.raises(KeyError, match="known_one"):
-        get_gateway("missing")

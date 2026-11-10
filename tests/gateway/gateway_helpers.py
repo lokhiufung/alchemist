@@ -5,7 +5,7 @@ from alchemist.clock import ReplayClock
 from alchemist.config import GatewayConfig, ReplayConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.simulation_gateway import SimulationGateway
-from alchemist.gateways.tapes import TapeSource
+from alchemist.gateways.simulation_gateway.tapes import TapeSource
 from alchemist.instruments import MES
 
 REPLAY_DATE = date(2026, 4, 15)

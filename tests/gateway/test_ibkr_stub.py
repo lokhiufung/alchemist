@@ -7,9 +7,9 @@ import pytest
 
 import alchemist.gateways  # noqa: F401
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.ibkr.errors import CANCEL_REFUSAL_CODES, ORDER_REJECT_CODES
+from alchemist.gateways.ib_gateway.errors import CANCEL_REFUSAL_CODES, ORDER_REJECT_CODES
 from alchemist.instruments import ES, FDAX, FDXM, MES, AssetClass, Instrument
-from alchemist.registry import get_gateway
+from alchemist.gateways import get_gateway
 
 from ibkr_helpers import StubTransport, connected, make_ibkr, mkt_order
 
@@ -19,8 +19,8 @@ def updates(buffer):
 
 
 def test_ibkr_gateway_picked_by_registered_name():
-    from alchemist.gateways.ibkr.gateway import IbkrGateway
-    assert get_gateway("ibkr") is IbkrGateway
+    from alchemist.gateways.ib_gateway.gateway import IbGateway
+    assert get_gateway("ibkr") is IbGateway
 
 
 async def test_reconnect_restores_order_account_and_tick_streams():
@@ -181,7 +181,7 @@ async def test_heartbeat_is_false_when_disconnected():
 
 def test_real_transport_builds_without_connecting():
     pytest.importorskip("ibapi")
-    from alchemist.gateways.ibkr.client import create_transport
+    from alchemist.gateways.ib_gateway.client import create_transport
     gateway, buffer, transport = make_ibkr()
     real = create_transport(gateway)
     assert not real.isConnected()

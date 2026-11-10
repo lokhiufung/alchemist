@@ -6,7 +6,7 @@ import pytest
 
 import alchemist.gateways  # noqa: F401  registers the golden tape
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.tapes import ParquetTape, ReplayDataError, SyntheticTape, check_tape_in_session, tape_from_spec
+from alchemist.gateways.simulation_gateway.tapes import ParquetTape, ReplayDataError, SyntheticTape, check_tape_in_session, tape_from_spec
 from alchemist.instruments import FDAX, MES
 from alchemist.registry import get_tape
 

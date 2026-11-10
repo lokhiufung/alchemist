@@ -15,12 +15,11 @@ from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.gateway import Gateway, log_broker
-from alchemist.gateways.ibkr.errors import (CANCEL_REFUSAL_CODES, CONNECTION_LOST_CODE, CONNECTION_RESTORED_CODES,
+from alchemist.gateways.ib_gateway.errors import (CANCEL_REFUSAL_CODES, CONNECTION_LOST_CODE, CONNECTION_RESTORED_CODES,
                                             DATA_FARM_OK_CODES, ORDER_REJECT_CODES, REQUEST_ID_FLOOR)
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
-from alchemist.registry import register_gateway
 
 logger = logging.getLogger("gateway")
 
@@ -62,8 +61,7 @@ class IbTransport(ABC):
     def req_historical_data(self, req_id: int, contract: dict, end: datetime, duration: str, bar_size: str) -> None: ...
 
 
-@register_gateway("ibkr")
-class IbkrGateway(Gateway):
+class IbGateway(Gateway):
     def __init__(self, event_buffer, config: GatewayConfig, clock: Clock, transport: IbTransport | None = None) -> None:
         super().__init__(event_buffer, config, clock)
         options = config.options
@@ -72,7 +70,7 @@ class IbkrGateway(Gateway):
         self.request_timeout_s = options.get("request_timeout_s", 10.0)
         self.position_timeout_s = options.get("position_timeout_s", 5.0)
         if transport is None:
-            from alchemist.gateways.ibkr.client import create_transport
+            from alchemist.gateways.ib_gateway.client import create_transport
             transport = create_transport(self)
         self.transport = transport
         self.ids = OrderIdSequence(1)

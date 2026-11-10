@@ -12,7 +12,7 @@ import alchemist.gateways  # noqa: F401
 from alchemist.clock import WallClock
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.ibkr.gateway import IbkrGateway
+from alchemist.gateways.ib_gateway.gateway import IbGateway
 from alchemist.gateways.utils import round_price
 from alchemist.instruments import AssetClass, Instrument, register_instrument
 
@@ -50,7 +50,7 @@ async def gateway():
     config = GatewayConfig("ibkr", options={"host": os.environ["IBKR_HOST"], "port": int(os.environ["IBKR_PORT"]),
                                             "client_id": int(os.environ["IBKR_CLIENT_ID"]),
                                             "accounts": [os.environ["IBKR_ACCOUNT"]]})
-    live = IbkrGateway(buffer, config, WallClock())
+    live = IbGateway(buffer, config, WallClock())
     await live.connect()
     await live.subscribe_order_update()
     await live.subscribe_account_update()

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from alchemist.clock import WallClock
 from alchemist.config import GatewayConfig
-from alchemist.gateways.ibkr.gateway import IbkrGateway
+from alchemist.gateways.ib_gateway.gateway import IbGateway
 from alchemist.instruments import FDAX, MES
 
 from gateway_helpers import RecordingBuffer
@@ -98,7 +98,7 @@ def make_ibkr(options=None, transport=None):
     buffer = RecordingBuffer()
     config = GatewayConfig("ibkr", options={"host": "127.0.0.1", "port": 7497, "client_id": 7,
                                             "accounts": ["DU1"], **(options or {})})
-    gateway = IbkrGateway(buffer, config, WallClock(), transport=transport)
+    gateway = IbGateway(buffer, config, WallClock(), transport=transport)
     transport.gateway = gateway
     return gateway, buffer, transport
 

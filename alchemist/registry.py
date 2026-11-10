@@ -11,7 +11,6 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _calcs: dict[str, dict[str, tuple[type, str]]] = {}
 _signal_dags: dict[str, tuple[type, str]] = {}
 _strategies: dict[str, tuple[type, str]] = {}
-_gateways: dict[str, tuple[type, str]] = {}
 _tapes: dict[str, tuple[type, str]] = {}
 _aux_sources: dict[str, tuple[type, str]] = {}
 _aux_names: dict[str, "AuxName"] = {}
@@ -72,14 +71,6 @@ def register_strategy(name: str) -> Callable[[type], type]:
 
 def get_strategy(name: str) -> type:
     return lookup(_strategies, "strategy", name)
-
-
-def register_gateway(name: str) -> Callable[[type], type]:
-    return _decorator(lambda f: _gateways, name)
-
-
-def get_gateway(name: str) -> type:
-    return lookup(_gateways, "gateway", name)
 
 
 def register_tape(name: str) -> Callable[[type], type]:

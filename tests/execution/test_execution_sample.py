@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 
 from alchemist.clock import ReplayClock
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.tapes import tape_from_spec
+from alchemist.gateways.simulation_gateway.tapes import tape_from_spec
 from alchemist.instruments import MES
 
 import alchemist.gateways  # noqa: F401

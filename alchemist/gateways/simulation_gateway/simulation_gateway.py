@@ -12,11 +12,10 @@ from alchemist.config import GatewayConfig
 from alchemist.exchanges import EXCHANGES, exchange_profile
 from alchemist.gateways.gateway import Gateway
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
-from alchemist.gateways.tapes import (BAR_SECONDS, ReplayDataError, TapeSource, check_tape_in_session,
+from alchemist.gateways.simulation_gateway.tapes import (BAR_SECONDS, ReplayDataError, TapeSource, check_tape_in_session,
                                       tape_from_spec)
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
-from alchemist.registry import register_gateway
 
 SEED_LOOKBACK_SESSIONS = 10
 SESSION_MARGIN = timedelta(hours=6)
@@ -102,7 +101,6 @@ class OrderFillingEngine:
         return bar["open"] if through else level
 
 
-@register_gateway("simulation")
 class SimulationGateway(Gateway):
     def __init__(self, event_buffer, config: GatewayConfig, clock: Clock, tape: TapeSource | None = None) -> None:
         super().__init__(event_buffer, config, clock)

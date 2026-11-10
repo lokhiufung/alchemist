@@ -6,7 +6,7 @@ import pytest
 from alchemist.config import GatewayConfig
 from alchemist.gateways import Gateway, OrderIdSequence, check_order, round_price
 from alchemist.instruments import MES
-from alchemist.registry import get_gateway, register_gateway
+from alchemist.gateways import get_gateway
 
 
 class RecordingBuffer:
@@ -146,15 +146,12 @@ async def test_async_capability_defaults():
     assert await gateway.unsubscribe_tick(object()) is None
 
 
-def test_gateway_picked_by_registered_name():
-    from alchemist.gateways import SimulationGateway
-    assert get_gateway("simulation") is SimulationGateway
-    register_gateway("stub")(gateway_class())
-    assert get_gateway("stub").__name__ == "StubGateway"
+def test_gateway_picked_by_name():
+    from alchemist.gateways import IbGateway, SimulationGateway
+    assert (get_gateway("simulation"), get_gateway("ibkr")) == (SimulationGateway, IbGateway)
 
 
 def test_unknown_gateway_name_lists_known():
-    import alchemist.gateways  # noqa: F401
     with pytest.raises(KeyError, match="simulation"):
         get_gateway("nope")
 

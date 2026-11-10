@@ -4,10 +4,10 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from alchemist.gateways.ibkr.gateway import BOT, IbkrGateway, IbTransport
+from alchemist.gateways.ib_gateway.gateway import BOT, IbGateway, IbTransport
 
 
-def create_transport(gateway: IbkrGateway) -> IbTransport:
+def create_transport(gateway: IbGateway) -> IbTransport:
     from ibapi.client import EClient
     from ibapi.common import BarData
     from ibapi.contract import Contract

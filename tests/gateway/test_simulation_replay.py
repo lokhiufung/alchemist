@@ -8,7 +8,7 @@ import pytest
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways import get_gateway
 from alchemist.gateways.simulation_gateway import SimulationGateway
-from alchemist.gateways.tapes import ParquetTape, ReplayDataError
+from alchemist.gateways.simulation_gateway.tapes import ParquetTape, ReplayDataError
 from alchemist.instruments import FDAX, MES, MNQ
 
 from gateway_helpers import REPLAY_DATE, ListTape, make_gateway, session_seconds, tape_bar
