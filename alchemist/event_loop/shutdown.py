@@ -11,7 +11,7 @@ from alchemist.config import EventLoopConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("shutdown")
 
 POLL_S = 0.005
 RECHECK_OUTSIDE_SESSION_S = 30.0
@@ -32,7 +32,7 @@ class ShutdownCoordinator:
         self.cutoffs: dict[str, tuple[float, float, float]] = {}
 
     def request_shutdown(self, reason: str) -> None:
-        logger.warning("shutdown requested: %s", reason)
+        logger.warning("shutdown requested", extra={"event": "shutdown_requested", "reason": reason})
         self.shutdown_requested = True
 
     def install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -84,7 +84,7 @@ class ShutdownCoordinator:
             strategy.request_flatten(reason, at_ts)
             await strategy.settle()
         except Exception:
-            logger.exception("[%s] flatten request failed", strategy.name)
+            logger.exception("flatten request failed", extra={"event": "flatten_failed", "strategy": strategy.name})
 
     async def flatten_on_bar(self, instrument: Instrument, bar: dict) -> None:
         now = self.clock.timestamp()
@@ -131,7 +131,8 @@ class ShutdownCoordinator:
         try:
             return list(await self.gateway.get_open_orders())
         except Exception as exc:
-            logger.critical("open orders unreadable at shutdown (%r); every configured instrument is blocked", exc)
+            logger.critical("open orders unreadable at shutdown; every configured instrument is blocked",
+                            extra={"event": "open_orders_unreadable", "reason": repr(exc)})
             return None
 
     async def exit_sweep(self, drain_remaining) -> None:
@@ -144,7 +145,8 @@ class ShutdownCoordinator:
         try:
             positions = [p for p in await self.gateway.get_positions() if p["instrument"] in configured and p["size"]]
         except Exception as exc:
-            logger.critical("positions unreadable at shutdown: %r", exc)
+            logger.critical("positions unreadable at shutdown", extra={"event": "positions_unreadable",
+                                                                       "reason": repr(exc)})
             self.not_flat_at_shutdown = True
             return
         for position in positions:
@@ -154,8 +156,9 @@ class ShutdownCoordinator:
         await drain_remaining()
         if not await self.is_flat() or blocked_all or working:
             self.not_flat_at_shutdown = True
-            logger.critical("book is not flat at shutdown (blocked=%s, working=%s)", blocked_all,
-                            sorted(i.symbol for i in working))
+            logger.critical("book is not flat at shutdown", extra={
+                "event": "not_flat_at_shutdown", "blocked_all": blocked_all,
+                "working": sorted(i.symbol for i in working)})
 
     async def cancel_working(self, configured: set[Instrument], orders: list[dict], drain_remaining) -> list[dict]:
         mine = [o for o in orders if o["instrument"] in configured]
@@ -175,7 +178,8 @@ class ShutdownCoordinator:
     async def force_flatten(self, position: dict) -> None:
         instrument = position["instrument"]
         side = "SELL" if position["size"] > 0 else "BUY"
-        logger.warning("force-flattening %s %s at shutdown", abs(position["size"]), instrument.symbol)
+        logger.warning("force-flattening at shutdown", extra={
+            "event": "force_flatten", "instrument": instrument.symbol, "qty": abs(position["size"])})
         await self.gateway.place_order({
             "order_id": self.gateway.next_order_id(), "account_id": position["account_id"], "instrument": instrument,
             "side": side, "qty": abs(position["size"]), "order_type": "MKT", "stop_price": None,

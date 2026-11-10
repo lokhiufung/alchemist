@@ -18,7 +18,7 @@ from alchemist.exchanges import exchange_profile
 from alchemist.loader import StrategyLoadError
 from alchemist.strategy_builder.signal_dag import SignalBuildError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("deploy")
 
 TERMINAL_SUCCESS = ("registered", "noop")
 NEXT_SESSION_LOOKAHEAD_DAYS = 10
@@ -66,7 +66,9 @@ class DeployService:
         self.busy = True
         try:
             async for line in self.run_request(key, config_sha256):
-                logger.info("deploy %s: %s %s revision=%s", key, line["status"], line["reason"], line["revision"])
+                logger.info("deploy status", extra={
+                    "event": "deploy_status", "strategy": key, "status": line["status"], "reason": line["reason"],
+                    "revision": line["revision"]})
                 yield line
         finally:
             self.busy = False
@@ -84,7 +86,7 @@ class DeployService:
             yield self.line(refusal.status, refusal.reason)
             return
         except Exception as exc:
-            logger.exception("deploy of %s failed", key)
+            logger.exception("deploy failed", extra={"event": "deploy_failed", "strategy": key})
             yield self.line("failed", str(exc))
             return
         self.running_config, self.revision = new_config, self.file_sha()
@@ -147,7 +149,7 @@ class DeployService:
             positions = await self.gateway.get_positions()
             orders = await self.gateway.get_open_orders()
         except Exception as exc:
-            logger.warning("exposure unreadable: %r", exc)
+            logger.warning("exposure unreadable", extra={"event": "exposure_unreadable", "reason": repr(exc)})
             raise DeployRefused("rejected", "unmanaged_exposure") from exc
         exposed = any(p["account_id"] == account and p["instrument"] == instrument and p["size"] for p in positions)
         exposed = exposed or any(o.get("account_id", account) == account and o["instrument"] == instrument

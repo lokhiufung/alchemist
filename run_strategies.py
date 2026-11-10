@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
@@ -40,9 +41,10 @@ def main(argv=None) -> None:
         sys.exit(STARTUP_FAILURE_EXIT_CODE)
     listener = setup_logging(config.system.log_path)
     try:
-        log_deploy_fingerprint(config)
+        log_deploy_fingerprint(config, Mode(args.mode))
         asyncio.run(run(config, Mode(args.mode)))
     except (StrategyLoadError, KeyError, ValueError) as exc:
+        logging.getLogger("startup").critical("startup failed", extra={"event": "startup_failed", "reason": str(exc)})
         print(f"startup failed: {exc}", file=sys.stderr)
         sys.exit(STARTUP_FAILURE_EXIT_CODE)
     finally:

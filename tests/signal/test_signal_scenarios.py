@@ -105,8 +105,8 @@ def test_scenario_three_valued_logic(caplog):
             results[name] = stepper.signal.evaluate_entry()
         stepper.step(5.0)
     assert results == {"or": True, "and": False, "alone": False}
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "entry_price" in warnings[0]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert [(r.event, "entry_price" in r.missing_refs) for r in warnings] == [("entry_null", True)]
 
 
 def test_scenario_failed_step():

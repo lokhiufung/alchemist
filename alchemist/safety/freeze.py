@@ -9,7 +9,7 @@ from typing import Callable
 
 from alchemist.config import SafetyConfig
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("freeze")
 
 
 class FreezeDetector:
@@ -35,7 +35,8 @@ class FreezeDetector:
         self.missed += 1
         if self.missed >= self.config.freeze_threshold and not self.dumped:
             self.dumped = True
-            logger.critical("event loop frozen: %d check-ins missed; dumping every thread's stack", self.missed)
+            logger.critical("event loop frozen; dumping every thread's stack",
+                            extra={"event": "event_loop_frozen", "missed_check_ins": self.missed})
             self.dump()
 
     def dump_all_stacks(self) -> None:

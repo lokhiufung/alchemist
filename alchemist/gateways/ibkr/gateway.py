@@ -22,7 +22,7 @@ from alchemist.instruments import Instrument
 from alchemist.messages import make_event
 from alchemist.registry import register_gateway
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("gateway")
 
 ROLL_THIN_DAYS = 5
 SEED_CHUNK_BARS = 2000
@@ -339,7 +339,8 @@ class IbkrGateway(Gateway):
     def on_exec_details(self, req_id: int, row: dict) -> None:
         instrument = self.instrument_of(row)
         if instrument is None or row.get("order_id") is None or not row.get("currency"):
-            logger.warning("execution row dropped, it cannot be attributed: %s", row)
+            logger.warning("execution row dropped, it cannot be attributed",
+                           extra={"event": "execution_row_dropped", "row": row})
             return
         side = "BUY" if row["side"] == BOT else "SELL"
         self.collected.setdefault(("executions", req_id), []).append({

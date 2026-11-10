@@ -13,7 +13,7 @@ from alchemist.config import EventLoopConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("event_loop")
 
 DAYS_PER_MONTH = 31
 
@@ -111,10 +111,12 @@ class Seeder:
             try:
                 await self.seed(strategy)
             except TerminalSeedError as exc:
-                logger.error("[%s] seeding failed for good: %s", name, exc)
+                logger.error("seeding failed for good", extra={
+                    "event": "seed_failed_terminal", "strategy": name, "reason": str(exc)})
                 self.set_state(name, SeedState.QUARANTINED_TERMINAL)
             except Exception as exc:
-                logger.warning("[%s] seeding failed, will retry: %r", name, exc)
+                logger.warning("seeding failed, will retry", extra={
+                    "event": "seed_failed_recoverable", "strategy": name, "reason": repr(exc)})
                 self.set_state(name, SeedState.QUARANTINED_RECOVERABLE)
             return self.state_of(name)
 

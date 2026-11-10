@@ -5,7 +5,7 @@ import logging
 from alchemist.config import SafetyConfig
 from alchemist.messages import make_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("fsm_repair")
 
 
 def pending_orders(strategy) -> list[dict]:
@@ -37,7 +37,8 @@ async def repair_stuck_strategies(strategies: list, gateway, event_buffer, now: 
         executions = await gateway.get_executions(None)
         open_orders = await gateway.get_open_orders()
     except Exception as exc:
-        logger.warning("repair skipped, the broker state is unreadable: %r", exc)
+        logger.warning("repair skipped, the broker state is unreadable",
+                       extra={"event": "repair_skipped", "reason": repr(exc)})
         return 0
     by_order: dict[int, list[dict]] = {}
     for row in executions:

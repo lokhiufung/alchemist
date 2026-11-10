@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("deploy")
 
 
 class DeploySocketServer:
@@ -42,7 +42,7 @@ class DeploySocketServer:
                 writer.write((json.dumps(line) + "\n").encode())
                 await writer.drain()
         except Exception as exc:
-            logger.exception("deploy request failed")
+            logger.exception("deploy request failed", extra={"event": "deploy_request_failed"})
             writer.write((json.dumps({"status": "failed", "reason": str(exc), "revision": None}) + "\n").encode())
         finally:
             writer.close()

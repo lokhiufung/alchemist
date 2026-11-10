@@ -14,10 +14,11 @@ from zoneinfo import ZoneInfo
 from alchemist.calculations.calculation import Calculation, SessionFixedCalculation
 from alchemist.exchanges import ExchangeProfile, exchange_profile
 from alchemist.instruments import Instrument
+from alchemist.logger import strategy_logger
 from alchemist.registry import find_aux_name, get_calc, scope_of_class
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
 
-logger = logging.getLogger(__name__)
+SIGNAL_LOGGER = logging.getLogger("signal")
 
 BAR_FIELDS = ("open", "high", "low", "close", "volume", "start_ts", "end_ts")
 HISTORY_KINDS = ("daily", "intraday", "aux")
@@ -233,9 +234,12 @@ class SignalDag(StrategySignal):
 
     @classmethod
     def from_config(cls, strategy_config) -> SignalDag:
-        return cls(strategy_config.signal_instrument)
+        signal = cls(strategy_config.signal_instrument)
+        signal.log = strategy_logger(strategy_config.name)
+        return signal
 
     def __init__(self, instrument: Instrument) -> None:
+        self.log = SIGNAL_LOGGER
         self.instrument = instrument
         self.profile = exchange_profile(instrument)
         self.params = self.checked_params()
@@ -360,7 +364,8 @@ class SignalDag(StrategySignal):
         try:
             return spec.calc.step(*inputs) if spec.kind == "calc" else spec.fn(*inputs)
         except Exception:
-            logger.warning("node %s failed on bar ending %s", spec.name, bar.get("end_ts"), exc_info=True)
+            self.log.warning("signal node failed", exc_info=True,
+                             extra={"event": "node_failed", "node": spec.name, "bar_ts": bar.get("end_ts")})
             stale.add(spec.name)
             return None
 
@@ -388,7 +393,8 @@ class SignalDag(StrategySignal):
         if day == self.warned_day:
             return
         self.warned_day = day
-        logger.warning("entry is null on %s; missing refs: %s", day, sorted(self.missing_refs()))
+        self.log.warning("entry is null", extra={
+            "event": "entry_null", "trading_day": day.isoformat(), "missing_refs": sorted(self.missing_refs())})
 
     def missing_refs(self) -> set[str]:
         missing: set[str] = set()

@@ -8,7 +8,7 @@ from typing import Callable
 
 from alchemist.instruments import Instrument
 
-logger = logging.getLogger("alchemist.latency")
+logger = logging.getLogger("event_loop")
 
 FLUSH_INTERVAL_S = 60.0
 SECOND_PRECISION_S = 1.0
@@ -112,7 +112,7 @@ class LatencyMetrics:
                    "decode_p50": decode[0], "decode_p99": decode[1],
                    "ts_precision_s": self.precision(instrument)}
             rows.append(row)
-            logger.info("latency %s", " ".join(f"{k}={v}" for k, v in row.items()), extra={"latency_row": row})
+            logger.info("latency per minute", extra=row)
         for table in self.series.values():
             table.clear()
         return rows

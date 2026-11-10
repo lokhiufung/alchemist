@@ -8,7 +8,7 @@ from alchemist.instruments import FDAX, MES
 from alchemist.registry import register_signal_dag
 from alchemist.stores import CalcStateStore, InMemoryCalcStateStore
 
-from strategy_helpers import (SESSION_OPEN, StubSignal, StubStrategy, fill_update, install_stub_signal, make_bar,
+from strategy_helpers import (snapshot_rows, SESSION_OPEN, StubSignal, StubStrategy, fill_update, install_stub_signal, make_bar,
                               make_strategy, place_and_fill, settle)
 
 
@@ -167,16 +167,16 @@ async def test_scenario_snapshots(caplog):
         with caplog.at_level(logging.INFO):
             for index in range(1, 181):
                 send_bar(strategy, index)
-        rows = [r.snapshot_row for r in caplog.records if hasattr(r, "snapshot_row")]
+        rows = snapshot_rows(caplog)
         assert len(rows) == expected
-        assert all(row["instrument"] == "MES" and row["event"] == "snapshot" and "stale" not in row for row in rows)
+        assert all(row["instrument"] == "MES" and row["event"] == "signal_snapshot" and "stale" not in row for row in rows)
     strategy = make_strategy(snapshot_interval=60)
     strategy.quarantine("boom")
     caplog.clear()
     with caplog.at_level(logging.INFO):
         for index in range(1, 181):
             send_bar(strategy, index)
-    assert [r.snapshot_row["stale"] for r in caplog.records if hasattr(r, "snapshot_row")] == [True] * 3
+    assert [row["stale"] for row in snapshot_rows(caplog)] == [True] * 3
 
 
 @pytest.mark.parametrize("case", ["flat_later_in_session", "session_ends_in_position"])

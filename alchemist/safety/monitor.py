@@ -11,7 +11,7 @@ from alchemist.messages import make_event
 from alchemist.safety.fsm_repair import repair_stuck_strategies
 from alchemist.safety.freeze import FreezeDetector
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("safety")
 
 __all__ = ["SafetyConfig", "SafetyMonitor", "backoff_delay"]
 
@@ -26,7 +26,8 @@ def parse_clock_time(text: str) -> time:
 
 
 async def no_restart() -> None:
-    logger.critical("broker gateway restart requested, but no restart action is configured")
+    logger.critical("broker gateway restart requested, but no restart action is configured",
+                    extra={"event": "gateway_restart_unconfigured"})
 
 
 class SafetyMonitor:
@@ -79,7 +80,7 @@ class SafetyMonitor:
         try:
             positions = await self.gateway.get_positions()
         except Exception as exc:
-            logger.warning("positions poll failed: %r", exc)
+            logger.warning("positions poll failed", extra={"event": "positions_poll_failed", "reason": repr(exc)})
             return
         for row in positions:
             self.event_buffer.push(make_event("position_update", dict(row), self.clock.timestamp()))
@@ -92,7 +93,7 @@ class SafetyMonitor:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("safety step failed")
+                logger.exception("safety step failed", extra={"event": "safety_step_failed"})
             await self.sleep(self.config.heartbeat_interval_s)
 
     async def step(self) -> None:
@@ -189,9 +190,11 @@ class SafetyMonitor:
                 break
             except Exception as exc:
                 if attempt > 1:
-                    logger.critical("reconnect attempt %d failed: %r", attempt, exc)
+                    logger.critical("reconnect failed again", extra={
+                        "event": "reconnect_failed", "attempt": attempt, "reason": repr(exc)})
                 else:
-                    logger.error("reconnect failed: %r", exc)
+                    logger.error("reconnect failed", extra={
+                        "event": "reconnect_failed", "attempt": attempt, "reason": repr(exc)})
                 if not restarted and self.in_maintenance_window():
                     restarted = True
                     await self.restart_gateway()

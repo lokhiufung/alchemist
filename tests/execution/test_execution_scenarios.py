@@ -186,7 +186,7 @@ async def test_scenario_quarantine(case, caplog):
         for step in range(70):
             await slot.bar(10 + step * 10)
     assert len(slot.orders) == placed
-    reminders = [r for r in caplog.records if "quarantine" in r.getMessage().lower()]
+    reminders = [r for r in caplog.records if getattr(r, "event", None) == "quarantine_reminder"]
     assert 1 <= len(reminders) <= 3
     slot.execution.release_quarantine()
     assert slot.execution.state.value == ("WAITING_FOR_WORKING_HOURS" if case == "seeking" else "DONE")

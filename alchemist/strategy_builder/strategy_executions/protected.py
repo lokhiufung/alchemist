@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import logging
-
 from alchemist.managers.order_manager import CLOSED, OrderState
 from alchemist.strategy_builder.strategy_executions.strategy_execution import (ExecutionConfigError, Phase,
                                                                               StrategyExecution)
 
-logger = logging.getLogger(__name__)
 
 LEG_TYPES = ("STP", "LMT")
 WORKING = {OrderState.SUBMITTED, OrderState.OPEN, OrderState.PARTIALLY_FILLED}
@@ -92,16 +89,17 @@ class ProtectedStrategyExecution(StrategyExecution):
             return
         covered = [name for name in true_names if name in masked]
         if covered:
-            logger.info("[%s] exit skipped: %s covered by a resting leg (raw answers %s)", self.slot, covered, answers)
+            self.log.info("exit skipped, a resting leg covers it", extra={
+                "event": "exit_skipped", "bar_ts": bar["end_ts"], "covered": covered, "conditions": answers})
             return
-        logger.info("[%s] exit decision, conditions=%s", self.slot, answers)
+        self.log.info("exit decision", extra={"event": "exit_decision", "bar_ts": bar["end_ts"], "conditions": answers})
         self.send_exit(bar)
 
     def attempt_protection(self, bar: dict) -> bool:
         self.protection_attempted = True
         legs = self.build_legs(bar)
         if legs is None:
-            logger.warning("[%s] trade runs unprotected", self.slot)
+            self.log.warning("trade runs unprotected", extra={"event": "trade_unprotected"})
             return False
         self.expected_legs = len(legs)
         self.set_phase(Phase.PROCESSING_PROTECTION_ORDERS)
@@ -123,10 +121,11 @@ class ProtectedStrategyExecution(StrategyExecution):
         for name, kind in self.resting_exits.items():
             level = self.signal.exit_condition_level(name)
             if level is None:
-                logger.warning("[%s] no level for %s", self.slot, name)
+                self.log.warning("no level for a resting exit", extra={"event": "level_missing", "level_name": name})
                 return None
             if kind == "STP" and self.stop_crossed(bar, level):
-                logger.warning("[%s] close %s already crossed the stop %s", self.slot, bar["close"], level)
+                self.log.warning("close already crossed the stop", extra={
+                    "event": "stop_crossed", "close": bar["close"], "stop_price": level})
                 return None
             legs.append(self.leg(kind, level))
         return legs
@@ -189,8 +188,8 @@ class ProtectedStrategyExecution(StrategyExecution):
             self.promote_if_protected()
 
     def lose_protection(self, order: dict) -> None:
-        logger.critical("[%s] protective leg %s ended %s; falling back to bar-close exits", self.slot,
-                        order["order_id"], order["status"])
+        self.log.critical("protective leg ended; falling back to bar-close exits", extra={
+            "event": "protection_lost", "order_id": order["order_id"], "status": order["status"]})
         self.set_phase(Phase.IN_POSITION_ACTIVITY)
 
     def on_exit_update(self, order: dict) -> None:
@@ -203,7 +202,8 @@ class ProtectedStrategyExecution(StrategyExecution):
             else:
                 self.set_phase(Phase.IN_POSITION_ACTIVITY)
             return
-        logger.warning("[%s] exit order %s ended %s in position", self.slot, order["order_id"], order["status"])
+        self.log.warning("exit order ended unfilled in position", extra={
+            "event": "exit_order_unfilled", "order_id": order["order_id"], "status": order["status"]})
         self.exit_failed_pending = True
         self.set_phase(Phase.IN_POSITION_PROTECTED if self.all_legs_open() else Phase.IN_POSITION_ACTIVITY)
 
@@ -238,10 +238,11 @@ class StopLossProtectedStrategyExecution(ProtectedStrategyExecution):
     def build_legs(self, bar: dict) -> list[dict] | None:
         level = self.signal.level(self.level_name)
         if level is None:
-            logger.warning("[%s] no level for %s", self.slot, self.level_name)
+            self.log.warning("no level for the stop", extra={"event": "level_missing", "level_name": self.level_name})
             return None
         price = level - self.offset_points if self.direction == "long" else level + self.offset_points
         if self.stop_crossed(bar, price):
-            logger.warning("[%s] close %s already crossed the stop %s", self.slot, bar["close"], price)
+            self.log.warning("close already crossed the stop", extra={
+                "event": "stop_crossed", "close": bar["close"], "stop_price": price})
             return None
         return [self.leg("STP", price)]

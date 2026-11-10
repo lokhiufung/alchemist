@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from alchemist.clock import ReplayClock
 from alchemist.config import StrategyConfig
 from alchemist.instruments import FDAX, MES, NQ
+from alchemist.logger import fields_of
 from alchemist.registry import register_signal_dag
 from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
 from alchemist.strategy_builder.strategy import Stores, Strategy
@@ -195,3 +196,7 @@ async def place_and_fill(strategy, side="BUY", price=5001.0, instrument=None):
 async def settle():
     for _ in range(10):
         await asyncio.sleep(0)
+
+
+def snapshot_rows(caplog):
+    return [fields_of(r) for r in caplog.records if getattr(r, "event", None) == "signal_snapshot"]

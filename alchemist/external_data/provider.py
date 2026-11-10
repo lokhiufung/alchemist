@@ -11,7 +11,7 @@ from alchemist.exchanges import ExchangeProfile, exchange_profile
 from alchemist.external_data.sources import AuxSource
 from alchemist.instruments import Instrument
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("aux_data")
 
 Column = tuple[Instrument, str]
 
@@ -114,8 +114,9 @@ class AuxArmGroup:
             fetched.items(), key=lambda item: (item[0][0].symbol, item[0][1])))
         if fingerprint != self.served_fingerprint:
             self.served_fingerprint = fingerprint
-            logger.warning("aux source serves %s but target %s is needed (%s)", fingerprint, self.target,
-                           self.profile.name)
+            logger.warning("aux source serves another date than the target", extra={
+                "event": "aux_target_mismatch", "group": self.profile.name, "target": self.target,
+                "served": fingerprint})
 
     def arm(self, aux: "AuxProvider", values: dict[Column, float], frames: dict[Column, list[dict]], now: datetime) -> bool:
         self.values, self.frames = values, frames
@@ -133,7 +134,8 @@ class AuxArmGroup:
                 member.on_aux_ready(True, self.member_frames(member))
                 self.notified.add(member.name)
         except Exception:
-            logger.critical("aux seeding failed for group %s on %s", self.profile.name, self.target, exc_info=True)
+            logger.critical("aux seeding failed for the group", exc_info=True, extra={
+                "event": "aux_seed_failed", "group": self.profile.name, "target": self.target})
             for member in self.members_of(aux):
                 if member.name in self.notified:
                     member.on_aux_ready(False, {})
@@ -169,7 +171,8 @@ class AuxArmGroup:
         try:
             fetched = await self.fetch_columns(aux)
         except Exception as exc:
-            logger.warning("aux fetch failed for %s: %s", self.profile.name, exc)
+            logger.warning("aux fetch failed", extra={"event": "aux_fetch_failed", "group": self.profile.name,
+                                                      "reason": str(exc)})
             return
         self.frame_loaded = any(fetched.values())
         values = self.settled_values(fetched) if now >= self.settle_at else None
@@ -186,7 +189,8 @@ class AuxArmGroup:
                 member.on_aux_ready(True, self.member_frames(member))
                 self.notified.add(member.name)
             except Exception:
-                logger.critical("aux seeding failed for member %s", member.name, exc_info=True)
+                logger.critical("aux seeding failed for a member", exc_info=True, extra={
+                    "event": "aux_seed_failed", "group": self.profile.name, "strategy": member.name})
                 self.notified.add(member.name)
 
     async def recheck(self, aux: "AuxProvider", now: datetime) -> None:
@@ -194,12 +198,15 @@ class AuxArmGroup:
         try:
             fetched = await self.fetch_columns(aux)
         except Exception as exc:
-            logger.warning("aux recheck failed for %s: %s", self.profile.name, exc)
+            logger.warning("aux recheck failed", extra={"event": "aux_recheck_failed", "group": self.profile.name,
+                                                        "reason": str(exc)})
             return
         values = self.settled_values(fetched)
         if values is None or values == self.values:
             return
-        logger.warning("aux value changed for %s on %s: %s -> %s", self.profile.name, self.target, self.values, values)
+        logger.warning("aux value changed", extra={
+            "event": "aux_value_changed", "group": self.profile.name, "target": self.target,
+            "old_values": self.values, "new_values": values})
         self.values, self.frames = values, fetched
         if not self.seed_members(aux):
             self.disarm(aux)
@@ -251,7 +258,7 @@ class AuxProvider:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.critical("aux data resident task crashed", exc_info=True)
+            logger.critical("aux data resident task crashed", exc_info=True, extra={"event": "aux_task_crashed"})
 
     async def stop(self) -> None:
         if self.task is not None:
@@ -294,7 +301,8 @@ class AuxProvider:
         results = await asyncio.gather(*(g.step(self, now) for g in self.groups), return_exceptions=True)
         for group, result in zip(self.groups, results):
             if isinstance(result, Exception):
-                logger.error("aux group %s failed: %r", group.profile.name, result)
+                logger.error("aux group failed", extra={"event": "aux_group_failed", "group": group.profile.name,
+                                                        "reason": repr(result)})
 
     async def resolve_all(self) -> None:
         self.sync_groups()

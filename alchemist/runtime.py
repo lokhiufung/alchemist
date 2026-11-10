@@ -23,13 +23,15 @@ from alchemist.exchanges import EXCHANGES, exchange_profile
 from alchemist.external_data.provider import AuxProvider
 from alchemist.gateways import get_gateway
 from alchemist.loader import STRATEGY_FILES, StrategyLoadError, load_strategies
+from alchemist.logger import attach_clock
 from alchemist.registry import get_aux_source, get_strategy
 from alchemist.safety.monitor import SafetyMonitor
 from alchemist.safety.null import NullSafety
 from alchemist.stores import CalcStateStore, InMemoryCalcStateStore, InMemoryRoundTripStore, RoundTripStore
 from alchemist.strategy_builder.strategy import Stores
 
-logger = logging.getLogger(__name__)
+startup_logger = logging.getLogger("startup")
+shutdown_logger = logging.getLogger("shutdown")
 
 NOT_FLAT_EXIT_CODE = 2
 SOCKET_FILE = "deploy.sock"
@@ -41,9 +43,13 @@ class Service(Protocol):
     async def stop(self) -> None: ...
 
 
-def log_deploy_fingerprint(config: Configuration) -> None:
-    logger.info("config_sha256=%s bot_id=%s strategies=%s", config.sha256, config.system.bot_id,
-                sorted(config.strategies))
+def log_deploy_fingerprint(config: Configuration, mode: Mode) -> None:
+    strategies = {key: {"strat": s.strat, "signal_instrument": s.signal_instrument.symbol,
+                        "execution_instrument": s.execution_instrument.symbol}
+                  for key, s in sorted(config.strategies.items())}
+    startup_logger.info("deploy fingerprint", extra={
+        "event": "deploy_fingerprint", "mode": mode.value, "bot_id": config.system.bot_id,
+        "config_sha256": config.sha256, "strategies": strategies})
 
 
 class GatewayService:
@@ -127,6 +133,7 @@ class Runtime:
         check_strategy_folders(config.system.strategies_root)
         buffer = EventBuffer(config.event_loop)
         clock: Clock = ReplayClock(replay_clock_start(config)) if is_replay else WallClock(buffer.drain_wakeup)
+        attach_clock(clock)
         gateway = get_gateway(config.gateway.name)(buffer, config.gateway, clock)
         book = RuntimeBook()
         root = config.system.log_path
@@ -180,6 +187,7 @@ class Runtime:
             for name, service in self.services:
                 await service.start()
                 self.started.append((name, service))
+                startup_logger.info("service started", extra={"event": "service_started", "service": name})
         except BaseException:
             await self.stop_started()
             raise
@@ -193,8 +201,10 @@ class Runtime:
             name, service = self.started.pop()
             try:
                 await service.stop()
+                shutdown_logger.info("service stopped", extra={"event": "service_stopped", "service": name})
             except Exception:
-                logger.exception("service %s failed to stop", name)
+                shutdown_logger.exception("service failed to stop", extra={"event": "service_stop_failed",
+                                                                           "service": name})
 
     async def run(self) -> None:
         if self.mode is not Mode.REPLAY:

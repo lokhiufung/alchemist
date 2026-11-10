@@ -157,6 +157,6 @@ async def test_scenario_rejected_order(caplog):
         other.on_order_update(update(order["order_id"], "REJECTED", reason="margin"))
     stored = owner.get_order(order["order_id"])
     assert (stored["status"], stored["filled"]) == ("REJECTED", 0)
-    lines = [r.getMessage() for r in caplog.records]
-    assert len(lines) == 1 and "owner" in lines[0]
+    rejected = [(r.event, r.strategy, r.reason) for r in caplog.records]
+    assert rejected == [("order_rejected", "owner", "margin")]
     assert len(shared.placed) == 1

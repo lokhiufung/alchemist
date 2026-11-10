@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
 import time
 import zlib
 from collections import deque
@@ -15,14 +13,12 @@ from zoneinfo import ZoneInfo
 from alchemist.clock import Clock
 from alchemist.config import ExecutionConfig, StrategyConfig
 from alchemist.exchanges import exchange_profile
+from alchemist.logger import strategy_logger
 from alchemist.managers.order_manager import OrderManager
 from alchemist.registry import get_signal_dag
 from alchemist.stores import CalcStateStore, RoundTripStore
 from alchemist.strategy_builder.strategy_executions import make_execution
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
-
-logger = logging.getLogger(__name__)
-snapshot_logger = logging.getLogger("alchemist.snapshots")
 
 REBUILD_YIELD_BUDGET_S = 0.001
 REPLAY_WINDOW = 2000
@@ -44,6 +40,7 @@ class Strategy:
         self.config = config
         self.rebuild_yield_budget_s = rebuild_yield_budget_s
         self.name = config.name
+        self.log = strategy_logger(config.name)
         self.clock = clock
         self.stores = stores
         self.signal_instrument = config.signal_instrument
@@ -131,11 +128,11 @@ class Strategy:
         return dict(self.signal.values())
 
     def log_snapshot(self) -> None:
-        row = {**self.signal_snapshot(), "instrument": self.execution_instrument.symbol, "event": "snapshot",
-               "slot": self.name}
+        fields = {"event": "signal_snapshot", "instrument": self.signal_instrument.symbol,
+                  "bar_ts": self.current_bar["end_ts"], "values": self.signal_snapshot()}
         if self.execution.is_quarantined():
-            row["stale"] = True
-        snapshot_logger.info("snapshot %s", json.dumps(row, default=str, sort_keys=True), extra={"snapshot_row": row})
+            fields["stale"] = True
+        self.log.info("signal snapshot", extra=fields)
 
     def on_order_update(self, update: dict) -> None:
         change = self.om.on_order_update(update)
@@ -171,8 +168,9 @@ class Strategy:
 
     def on_position_update(self, update: dict) -> None:
         if update["account_id"] == self.config.account_id and update["instrument"] == self.execution_instrument:
-            logger.info("[%s] broker position %s at %s (logged, not booked)", self.name, update["size"],
-                        update["avg_cost"])
+            self.log.info("broker position logged, not booked", extra={
+                "event": "broker_position", "instrument": self.execution_instrument.symbol,
+                "size": update["size"], "avg_cost": update["avg_cost"]})
 
     def on_balance_update(self, update: dict) -> None:
         if update["account_id"] == self.config.account_id and update["currency"] == self.execution_instrument.currency:
@@ -277,13 +275,15 @@ class Strategy:
 
     def request_flatten(self, reason: str, bar_ts: float) -> None:
         if reason == "session_end" and (self.pending_warmup is not None or self.pending_aux is not None):
-            logger.warning("[%s] rebuild still pending at session end; it never ran", self.name)
+            self.log.warning("rebuild still pending at session end; it never ran",
+                             extra={"event": "rebuild_never_ran"})
         self.execution.request_flatten(self.position_view(), reason)
 
     def restore_signal_state(self) -> None:
         state = self.stores.calc_state.load(self.name, self.trading_date())
         if state:
-            logger.warning("[%s] restoring session-fixed signal state after a restart: %s", self.name, state)
+            self.log.warning("session-fixed signal state restored after a restart",
+                             extra={"event": "signal_state_restored", "state": state})
             self.signal.restore_session_state(state)
 
     def persist_signal_state(self) -> None:

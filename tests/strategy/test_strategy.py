@@ -16,7 +16,7 @@ from alchemist.gateways.simulation_gateway import SimulationGateway
 from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
 from alchemist.strategy_builder.strategy import Stores
 
-from strategy_helpers import (SESSION_OPEN, StubSignal, StubStrategy, fill_update, make_bar, make_strategy,
+from strategy_helpers import (snapshot_rows, snapshot_rows, SESSION_OPEN, StubSignal, StubStrategy, fill_update, make_bar, make_strategy,
                               place_and_fill, settle)
 
 ENTRY_INDEX, TARGET_INDEX = 601, 618
@@ -304,7 +304,7 @@ async def test_snapshot_every_n_bars(interval, expected, caplog):
         for index in range(1, 101):
             bar = make_bar(index)
             strategy.on_bar(deque([bar]), bar)
-    rows = [r.snapshot_row for r in caplog.records if hasattr(r, "snapshot_row")]
+    rows = snapshot_rows(caplog)
     assert len(rows) == expected and all("stale" not in row for row in rows)
 
 
@@ -356,10 +356,10 @@ async def test_snapshots_are_staggered_across_slots(caplog):
     first_snapshot_bar = {}
     for index in range(1, 61):
         for strategy in strategies:
-            before = len([r for r in caplog.records if hasattr(r, "snapshot_row")])
+            before = len(snapshot_rows(caplog))
             with caplog.at_level(logging.INFO):
                 bar = make_bar(index)
                 strategy.on_bar(deque([bar]), bar)
-            if len([r for r in caplog.records if hasattr(r, "snapshot_row")]) > before:
+            if len(snapshot_rows(caplog)) > before:
                 first_snapshot_bar.setdefault(strategy.name, index)
     assert len(first_snapshot_bar) == 8 and len(set(first_snapshot_bar.values())) > 1

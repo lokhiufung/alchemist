@@ -155,9 +155,11 @@ def test_unset_environment_variable_exits_nonzero_naming_it(tmp_path):
 def test_log_deploy_fingerprint_names_hash_bot_and_strategies(tmp_path, caplog):
     config = load_config(write_config(tmp_path, ROOT / "local" / "strategies"))
     with caplog.at_level(logging.INFO):
-        log_deploy_fingerprint(config)
-    message = caplog.records[-1].getMessage()
-    assert message == f"config_sha256={config.sha256} bot_id=test_bot strategies=['macd_rsi_rth_long']"
+        log_deploy_fingerprint(config, Mode.REPLAY)
+    record = caplog.records[-1]
+    assert (record.name, record.event, record.mode) == ("startup", "deploy_fingerprint", "replay")
+    assert (record.config_sha256, record.bot_id) == (config.sha256, "test_bot")
+    assert list(record.strategies) == ["macd_rsi_rth_long"]
 
 
 async def test_sigterm_flattens_then_exits():

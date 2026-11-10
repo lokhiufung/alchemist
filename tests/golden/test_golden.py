@@ -72,7 +72,29 @@ def test_7_second_run_identical(runs):
     assert (a / "broker_journal.jsonl").read_bytes() == (b / "broker_journal.jsonl").read_bytes()
 
 
+def log_lines(out):
+    return {f.name: [json.loads(l) for l in f.read_text().splitlines()] for f in (out / "logs").glob("*.log")}
+
+
 def test_8_no_error_lines(runs):
     (_, out), _ = runs
-    log = (out / "engine.log").read_text()
-    assert " ERROR " not in log and " CRITICAL " not in log
+    levels = {line["level"] for lines in log_lines(out).values() for line in lines}
+    assert not levels & {"ERROR", "CRITICAL"}
+
+
+def test_9_logs_are_json_lines_per_component(runs):
+    (_, out), _ = runs
+    logs = log_lines(out)
+    assert {"startup.log", "shutdown.log", "order_manager.log", "macd_rsi_rth_long_strategy.log"} <= set(logs)
+    for name, lines in logs.items():
+        assert lines, name
+        for line in lines:
+            assert {"timestamp", "clock_time", "level", "logger", "message", "event"} <= set(line), (name, line)
+            assert f"{line['logger']}.log" == name
+    strategy_events = {line["event"] for line in logs["macd_rsi_rth_long_strategy.log"]}
+    assert {"signal_snapshot", "state_transition", "entry_decision", "exit_decision"} <= strategy_events
+    assert [line["event"] for line in logs["order_manager.log"]] == ["order_placed", "order_filled"] * 2
+    tape_lines = logs["macd_rsi_rth_long_strategy.log"] + logs["order_manager.log"]
+    assert {line["clock_time"][:10] for line in tape_lines} == {"2026-04-15"}
+    assert [line["clock_time"] for line in logs["order_manager.log"]][::2] == [
+        "2026-04-15T13:40:02+00:00", "2026-04-15T13:40:19+00:00"]

@@ -17,7 +17,7 @@ from alchemist.event_loop.metrics import LatencyMetrics
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("event_loop")
 
 BAR_HISTORY = 5000
 
@@ -100,8 +100,9 @@ class EventLoop:
     def alert_on_backlog(self) -> None:
         exceeded = self.event_buffer.control_backlog_exceeded()
         if exceeded and not self.backlog_alerted:
-            logger.error("control lane backlog %d is over the threshold %d", len(self.event_buffer.control),
-                         self.config.backlog_alert)
+            logger.error("control lane backlog is over the threshold", extra={
+                "event": "control_backlog", "backlog": len(self.event_buffer.control),
+                "threshold": self.config.backlog_alert})
         self.backlog_alerted = exceeded
 
     async def drain_remaining(self) -> None:
@@ -116,7 +117,7 @@ class EventLoop:
         try:
             await self.dispatch(event)
         except Exception:
-            logger.exception("dispatch of %s failed", event.get("event_type"))
+            logger.exception("dispatch failed", extra={"event": "dispatch_failed", "event_type": event.get("event_type")})
         self.record_latency(event, started)
 
     def record_latency(self, event: dict, started: float) -> None:
@@ -139,7 +140,7 @@ class EventLoop:
     async def dispatch(self, event: dict) -> None:
         handler = HANDLERS.get(event["event_type"])
         if handler is None:
-            logger.error("no handler for event type %r", event["event_type"])
+            logger.error("no handler for event type", extra={"event": "no_handler", "event_type": event["event_type"]})
             return
         await handler(self, event["data"])
 
@@ -184,7 +185,8 @@ class EventLoop:
                 if is_bar:
                     self.errors[strategy.name] = 0
             except Exception:
-                logger.exception("[%s] %s failed", strategy.name, method)
+                logger.exception("strategy handler failed", extra={
+                    "event": "strategy_handler_failed", "strategy": strategy.name, "handler": method})
                 if is_bar:
                     self.count_error(strategy)
             self.slot_cost += time.perf_counter() - began
@@ -193,7 +195,8 @@ class EventLoop:
         count = self.errors.get(strategy.name, 0) + 1
         self.errors[strategy.name] = count
         if count >= self.config.on_bar_error_quarantine:
-            logger.critical("[%s] quarantined after %d consecutive on_bar errors", strategy.name, count)
+            logger.critical("strategy quarantined after consecutive on_bar errors", extra={
+                "event": "strategy_quarantined", "strategy": strategy.name, "errors": count})
             strategy.quarantine(f"{count} consecutive on_bar errors")
 
     def ticked_resamplers(self) -> list[tuple[Instrument, Any]]:
@@ -233,7 +236,8 @@ async def on_bar_update(loop: EventLoop, data: dict) -> None:
     instrument = data["instrument"]
     last = loop.last_bar_ts.get(instrument)
     if last is not None and data["start_ts"] <= last:
-        logger.debug("rejected %s bar %s not later than %s", instrument.symbol, data["start_ts"], last)
+        logger.debug("bar rejected, not later than the last bar", extra={
+            "event": "bar_rejected", "instrument": instrument.symbol, "start_ts": data["start_ts"], "last_ts": last})
         return
     loop.last_bar_ts[instrument] = data["start_ts"]
     origin = {"recv_ts": loop.current_arrival, "broker_ts": data["broker_ts"]}

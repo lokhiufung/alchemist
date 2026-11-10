@@ -98,7 +98,7 @@ async def test_scenario_broken_strategy_quarantined(caplog):
         await harness.run()
     assert first.bars == third.bars == [OPEN + i for i in range(5)]
     assert broken.quarantined and broken.bars == []
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR and "[B]" in r.getMessage()]
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and getattr(r, "strategy", None) == "B"]
     assert len(errors) == 3
 
 

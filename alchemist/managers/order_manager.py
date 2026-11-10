@@ -7,7 +7,7 @@ from enum import Enum
 
 from alchemist.instruments import Instrument
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("order_manager")
 
 OCA_GROUP_MAX_LEN = 48
 OCA_SLOT_PREFIX_LEN = 24
@@ -81,6 +81,11 @@ class OrderManager:
         return order
 
     async def send(self, order: dict) -> None:
+        logger.info("order placed", extra={
+            "event": "order_placed", "strategy": self.slot, "order_id": order["order_id"],
+            "instrument": order["instrument"].symbol, "side": order["side"], "qty": order["qty"],
+            "order_type": order["order_type"], "stop_price": order["stop_price"],
+            "limit_price": order["limit_price"], "oca_group": order["oca_group"]})
         await self.gateway.place_order({k: v for k, v in order.items()
                                         if k not in ORDER_RECORD_ONLY})
 
@@ -100,7 +105,9 @@ class OrderManager:
         try:
             status = OrderState(str(update["status"]).upper())
         except ValueError:
-            logger.warning("[%s] order %s: unknown status %r", self.slot, order_id, update["status"])
+            logger.warning("order update has an unknown status", extra={
+                "event": "unknown_order_status", "strategy": self.slot, "order_id": order_id,
+                "status": update["status"]})
             return None
         order = self.stores[where][order_id]
         delta = self.apply_fill(order, update)
@@ -142,10 +149,14 @@ class OrderManager:
         return where == "submitted"
 
     def log_closed(self, order: dict, status: OrderState, update: dict) -> None:
-        if status is OrderState.REJECTED:
-            logger.warning("[%s] order %s rejected: %s", self.slot, order["order_id"], update.get("reason"))
+        fields = {"strategy": self.slot, "order_id": order["order_id"], "instrument": order["instrument"].symbol}
+        if status is OrderState.FILLED:
+            logger.info("order filled", extra={"event": "order_filled", **fields, "side": order["side"],
+                                               "filled": order["filled"], "avg_fill_price": order["avg_fill_price"]})
+        elif status is OrderState.REJECTED:
+            logger.warning("order rejected", extra={"event": "order_rejected", **fields, "reason": update.get("reason")})
         elif status is OrderState.CANCELLED:
-            logger.info("[%s] order %s cancelled", self.slot, order["order_id"])
+            logger.info("order cancelled", extra={"event": "order_cancelled", **fields, "filled": order["filled"]})
 
     def get_order(self, order_id: int) -> dict | None:
         where = self.locate(order_id)
@@ -175,7 +186,8 @@ class OrderManager:
 
     async def cancel_order(self, order_id: int) -> str | None:
         if self.locate(order_id) != "open":
-            logger.warning("[%s] cancel refused: order %s is not open", self.slot, order_id)
+            logger.warning("cancel refused, the order is not open", extra={
+                "event": "cancel_refused", "strategy": self.slot, "order_id": order_id})
             return CANCEL_REJECTED_INTERNALLY
         await self.send_cancel(order_id)
         return None

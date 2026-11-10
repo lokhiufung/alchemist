@@ -190,4 +190,4 @@ async def test_unknown_event_type_is_logged_and_skipped(caplog):
     harness.push({"event_type": "mystery", "data": {}, "enqueued_at": 0.0}, bar_update(OPEN), end_of_data())
     with caplog.at_level(logging.ERROR):
         await harness.run()
-    assert any("mystery" in r.getMessage() for r in caplog.records)
+    assert any(getattr(r, "event_type", None) == "mystery" for r in caplog.records)

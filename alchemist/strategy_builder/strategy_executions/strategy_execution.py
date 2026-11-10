@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from functools import cached_property
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -12,9 +11,9 @@ from alchemist.clock import Clock
 from alchemist.config import ExecutionConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
+from alchemist.logger import strategy_logger
 from alchemist.managers.order_manager import CLOSED, OrderManager, OrderState
 
-logger = logging.getLogger(__name__)
 
 EXECUTION_CLASSES: dict[str, type[StrategyExecution]] = {}
 
@@ -83,6 +82,7 @@ class StrategyExecution:
         self.instrument = instrument
         self.account_id = account_id
         self.slot = slot
+        self.log = strategy_logger(slot)
         self.session = session
         self.clock = clock
         self.roundtrip_store = roundtrip_store
@@ -139,7 +139,8 @@ class StrategyExecution:
             return
         if phase not in self.FROM_ANYWHERE and phase not in self.TRANSITIONS.get(self.state, set()):
             raise RuntimeError(f"[{self.slot}] illegal phase change {self.state.value} -> {phase.value}")
-        logger.debug("[%s] %s -> %s", self.slot, self.state.value, phase.value)
+        self.log.info("state transition", extra={
+            "event": "state_transition", "from_state": self.state.value, "to_state": phase.value})
         self.state = phase
 
     def spawn(self, coroutine) -> None:
@@ -155,7 +156,7 @@ class StrategyExecution:
         try:
             await coroutine
         except Exception:
-            logger.critical("[%s] order request failed", self.slot, exc_info=True)
+            self.log.critical("order request failed", exc_info=True, extra={"event": "order_request_failed"})
 
     def session_state(self, bar: dict) -> tuple[bool, date | None]:
         start = bar["start_ts"]
@@ -223,7 +224,8 @@ class StrategyExecution:
             self.send_entry(bar)
 
     def send_entry(self, bar: dict) -> None:
-        logger.info("[%s] entry decision, conditions=%s", self.slot, self.signal.entry_conditions())
+        self.log.info("entry decision", extra={
+            "event": "entry_decision", "bar_ts": bar["end_ts"], "conditions": self.signal.entry_conditions()})
         self.signal.freeze_exit_inputs(bar)
         self.reset_trade_state()
         self.entry_order_bar_ts = bar["start_ts"]
@@ -239,8 +241,8 @@ class StrategyExecution:
         if self.exit_failed_pending:
             self.exit_failed_pending = False
             self.flatten_needed = True
-            logger.critical("[%s] exit failed and the slot is still in position; no further exit, flatten wanted",
-                            self.slot)
+            self.log.critical("exit failed in position; no further exit, flatten wanted",
+                              extra={"event": "exit_failed_flatten_wanted"})
         return self.flatten_needed
 
     def judge_in_position(self, bar: dict) -> None:
@@ -248,7 +250,8 @@ class StrategyExecution:
             return
         answers = self.signal.evaluate_exit_conditions()
         if any(answers.values()):
-            logger.info("[%s] exit decision, conditions=%s", self.slot, answers)
+            self.log.info("exit decision", extra={"event": "exit_decision", "bar_ts": bar["end_ts"],
+                                                   "conditions": answers})
             self.send_exit(bar)
 
     def send_exit(self, bar: dict) -> None:
@@ -290,7 +293,8 @@ class StrategyExecution:
             self.trade_qty = order["filled"]
             self.set_phase(Phase.IN_POSITION_ACTIVITY)
         else:
-            logger.warning("[%s] entry order %s ended %s without a fill", self.slot, order["order_id"], order["status"])
+            self.log.warning("entry order ended without a fill", extra={
+                "event": "entry_order_unfilled", "order_id": order["order_id"], "status": order["status"]})
             self.signal.release_exit_inputs()
             self.set_phase(Phase.ENTRY_LOOP_ACTIVITY)
 
@@ -304,7 +308,8 @@ class StrategyExecution:
             else:
                 self.set_phase(Phase.IN_POSITION_ACTIVITY)
         else:
-            logger.warning("[%s] exit order %s ended %s in position", self.slot, order["order_id"], order["status"])
+            self.log.warning("exit order ended unfilled in position", extra={
+                "event": "exit_order_unfilled", "order_id": order["order_id"], "status": order["status"]})
             self.exit_failed_pending = True
             self.set_phase(Phase.IN_POSITION_ACTIVITY)
 
@@ -341,7 +346,7 @@ class StrategyExecution:
         if self.state is Phase.ERROR or (self.state is Phase.DONE and position["size"] == 0):
             return
         if self.state is not Phase.SESSION_END_FLATTENING:
-            logger.info("[%s] flatten requested (%s)", self.slot, reason)
+            self.log.info("flatten requested", extra={"event": "flatten_requested", "reason": reason})
             self.set_phase(Phase.SESSION_END_FLATTENING)
         self.spawn(self.flatten_step(position["size"]))
 
@@ -369,8 +374,8 @@ class StrategyExecution:
         self.flatten_final = True
         self.flatten_needed = False
         if order["filled"] == 0:
-            logger.critical("[%s] flatten order %s ended %s; it will not be resent today", self.slot,
-                            order["order_id"], order["status"])
+            self.log.critical("flatten order ended unfilled; it will not be resent today", extra={
+                "event": "flatten_order_unfilled", "order_id": order["order_id"], "status": order["status"]})
 
     def advance_flatten(self, bar: dict) -> None:
         if self.flatten_final:
@@ -386,7 +391,7 @@ class StrategyExecution:
         self.quarantine_reason = reason
         self.quarantined_at = self.clock.timestamp()
         self.last_reminder = None
-        logger.error("[%s] parked in ERROR: %s", self.slot, reason)
+        self.log.error("strategy quarantined", extra={"event": "quarantined", "reason": reason})
         self.set_phase(Phase.ERROR)
 
     def release_quarantine(self) -> None:
@@ -404,8 +409,9 @@ class StrategyExecution:
         if self.last_reminder is not None and now - self.last_reminder < self.config.reminder_interval_s:
             return
         self.last_reminder = now
-        logger.warning("[%s] still quarantined for %.0f s: %s", self.slot, now - self.quarantined_at,
-                       self.quarantine_reason)
+        self.log.warning("still quarantined", extra={
+            "event": "quarantine_reminder", "quarantined_s": round(now - self.quarantined_at),
+            "reason": self.quarantine_reason})
 
 
 EXECUTION_CLASSES[StrategyExecution.__name__] = StrategyExecution
