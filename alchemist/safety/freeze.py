@@ -9,7 +9,7 @@ from typing import Callable
 
 from alchemist.config import SafetyConfig
 
-logger = logging.getLogger("freeze")
+logger = logging.getLogger("safety")
 
 
 class FreezeDetector:

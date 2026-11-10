@@ -5,7 +5,7 @@ import logging
 from alchemist.config import SafetyConfig
 from alchemist.messages import make_event
 
-logger = logging.getLogger("fsm_repair")
+logger = logging.getLogger("safety")
 
 
 def pending_orders(strategy) -> list[dict]:

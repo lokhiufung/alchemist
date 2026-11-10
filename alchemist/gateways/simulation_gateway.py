@@ -168,12 +168,12 @@ class SimulationGateway(Gateway):
     def next_order_id(self) -> int:
         return self.ids.next()
 
-    def emit(self, event_type: str, data: dict) -> None:
-        self.event_buffer.push(make_event(event_type, data, self.clock.timestamp()))
+    def emit(self, event_type: str, data: dict, caller_depth: int = 1) -> None:
+        self.push_broker_event(event_type, data, self.clock.timestamp(), caller_depth + 1)
 
     def emit_status(self, order: dict, status: str, ts: float, filled: int = 0,
                     price: float | None = None, reason: str | None = None) -> None:
-        self.emit("order_update", {
+        self.emit("order_update", caller_depth=2, data={
             "order_id": order["order_id"], "status": status, "filled": filled, "remaining": order["qty"] - filled,
             "avg_fill_price": price, "last_fill_price": price, "ts": ts, "account_id": order["account_id"],
             "instrument": order["instrument"], "reason": reason})
@@ -187,6 +187,7 @@ class SimulationGateway(Gateway):
             field = "stop_price" if order["order_type"] == "STP" else "limit_price"
             order[field] = round_price(order[field], instrument.tick_size, order["side"], order["order_type"])
         now = self.clock.now()
+        self.log_order_sent(order)
         self.journal.write({"instrument": instrument.symbol, "order_id": order["order_id"],
                             "order_type": order["order_type"], "qty": order["qty"], "side": order["side"],
                             "time": iso_ms(now)})
@@ -267,6 +268,7 @@ class SimulationGateway(Gateway):
                 self.fill(self.resting.pop(order_id), price, bar["end_ts"])
 
     async def cancel_order(self, order_id: int) -> None:
+        self.log_cancel_sent(order_id)
         order = self.resting.pop(order_id, None)
         if order is not None:
             self.emit_status(order, "CANCELLED", self.clock.timestamp())

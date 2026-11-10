@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from datetime import date
 from typing import Any
@@ -7,9 +8,23 @@ from typing import Any
 from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
 from alchemist.instruments import Instrument
+from alchemist.messages import make_event
 from alchemist.registry import get_gateway, register_gateway
 
-__all__ = ["Gateway", "get_gateway", "register_gateway"]
+__all__ = ["Gateway", "get_gateway", "register_gateway", "log_broker"]
+
+broker_logger = logging.getLogger("gateway")
+ORDER_SENT_KEYS = ("order_id", "account_id", "instrument", "side", "qty", "order_type", "stop_price", "limit_price",
+                   "oca_group", "tif", "outside_rth")
+
+
+def loggable(value: Any) -> Any:
+    return value.symbol if isinstance(value, Instrument) else value
+
+
+def log_broker(event: str, fields: dict[str, Any], caller_depth: int = 1) -> None:
+    broker_logger.info(event.replace("_", " "), stacklevel=caller_depth + 1,
+                       extra={"event": event, **{key: loggable(value) for key, value in fields.items()}})
 
 
 class Gateway(ABC):
@@ -19,6 +34,16 @@ class Gateway(ABC):
         self.event_buffer = event_buffer
         self.config = config
         self.clock = clock
+
+    def log_order_sent(self, order: dict[str, Any]) -> None:
+        log_broker("order_sent", {key: order.get(key) for key in ORDER_SENT_KEYS}, caller_depth=2)
+
+    def log_cancel_sent(self, order_id: int) -> None:
+        log_broker("cancel_sent", {"order_id": order_id}, caller_depth=2)
+
+    def push_broker_event(self, event_type: str, data: dict[str, Any], ts: float, caller_depth: int = 1) -> None:
+        log_broker(f"broker_{event_type}", data, caller_depth + 1)
+        self.event_buffer.push(make_event(event_type, data, ts))
 
     @abstractmethod
     async def connect(self) -> None: ...

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.gateway import Gateway
+from alchemist.gateways.gateway import Gateway, log_broker
 from alchemist.gateways.ibkr.errors import (CANCEL_REFUSAL_CODES, CONNECTION_LOST_CODE, CONNECTION_RESTORED_CODES,
                                             DATA_FARM_OK_CODES, ORDER_REJECT_CODES, REQUEST_ID_FLOOR)
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
@@ -274,6 +274,7 @@ class IbkrGateway(Gateway):
             self.resolve_waiter(key, epoch)
 
     def on_error(self, req_id: int, code: int, message: str) -> None:
+        log_broker("broker_error", {"req_id": req_id, "code": code, "error_message": message})
         if code in DATA_FARM_OK_CODES or code in CONNECTION_RESTORED_CODES:
             self.resubscribe_requested = True
         elif code == CONNECTION_LOST_CODE:
@@ -297,10 +298,12 @@ class IbkrGateway(Gateway):
                   "remaining": order["qty"] - filled if remaining is None else remaining,
                   "avg_fill_price": avg, "last_fill_price": last, "ts": now, "account_id": order["account_id"],
                   "instrument": order["instrument"], "reason": reason}
-        self.event_buffer.push(make_event("order_update", update, now))
+        self.push_broker_event("order_update", update, now, caller_depth=2)
 
     def on_order_status(self, order_id: int, status: str, filled: int, remaining: int, avg: float,
                         last: float, ts: float | None = None) -> None:
+        log_broker("broker_order_status", {"order_id": order_id, "status": status, "filled": filled,
+                                           "remaining": remaining, "avg_fill_price": avg, "last_fill_price": last})
         order = self.orders.get(order_id)
         translated = STATUS_TO_UPDATE.get(status)
         if order is None or translated is None:
@@ -318,6 +321,7 @@ class IbkrGateway(Gateway):
             field = "stop_price" if order["order_type"] == "STP" else "limit_price"
             order[field] = round_price(order[field], contract["min_tick"], order["side"], order["order_type"])
         self.orders[order["order_id"]] = order
+        self.log_order_sent(order)
         spec = {"action": order["side"], "qty": order["qty"], "order_type": order["order_type"],
                 "stop_price": order["stop_price"], "limit_price": order["limit_price"], "tif": order["tif"],
                 "outside_rth": order["outside_rth"], "oca_group": order["oca_group"], "oca_type": order["oca_type"],
@@ -325,6 +329,7 @@ class IbkrGateway(Gateway):
         await self.send(lambda: self.transport.place_order(order["order_id"], contract, spec))
 
     async def cancel_order(self, order_id: int) -> None:
+        self.log_cancel_sent(order_id)
         await self.send(lambda: self.transport.cancel_order(order_id))
 
     def instrument_of(self, row: dict) -> Instrument | None:
@@ -337,6 +342,7 @@ class IbkrGateway(Gateway):
         return rows
 
     def on_exec_details(self, req_id: int, row: dict) -> None:
+        log_broker("broker_execution", row)
         instrument = self.instrument_of(row)
         if instrument is None or row.get("order_id") is None or not row.get("currency"):
             logger.warning("execution row dropped, it cannot be attributed",
@@ -355,6 +361,7 @@ class IbkrGateway(Gateway):
         return await self.wait_for(("open_orders", 0), timeout, self.transport.req_open_orders)
 
     def on_open_order(self, row: dict) -> None:
+        log_broker("broker_open_order", row)
         instrument = self.instrument_of(row)
         if instrument is not None:
             self.collected.setdefault(("open_orders", 0), []).append({**row, "instrument": instrument})
@@ -367,6 +374,7 @@ class IbkrGateway(Gateway):
         return await self.wait_for(("positions", 0), timeout, self.transport.req_positions)
 
     def on_position(self, row: dict) -> None:
+        log_broker("broker_position", row)
         instrument = self.instrument_of(row)
         if instrument is not None:
             self.collected.setdefault(("positions", 0), []).append({
@@ -378,8 +386,8 @@ class IbkrGateway(Gateway):
 
     def on_account_value(self, account: str, currency: str, key: str, value: str) -> None:
         if key == "AvailableFunds" and currency:
-            self.event_buffer.push(make_event("balance_update", {"account_id": account, "currency": currency,
-                                                                 "available": float(value)}, time.time()))
+            self.push_broker_event("balance_update", {"account_id": account, "currency": currency,
+                                                      "available": float(value)}, time.time())
 
     def history_instrument(self, instrument: Instrument, today: date) -> dict:
         contract = self.contracts[instrument]

@@ -7,7 +7,7 @@ from enum import Enum
 
 from alchemist.instruments import Instrument
 
-logger = logging.getLogger("order_manager")
+logger = logging.getLogger("om")
 
 OCA_GROUP_MAX_LEN = 48
 OCA_SLOT_PREFIX_LEN = 24

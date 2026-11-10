@@ -32,6 +32,8 @@ from alchemist.strategy_builder.strategy import Stores
 
 startup_logger = logging.getLogger("startup")
 shutdown_logger = logging.getLogger("shutdown")
+SERVICE_LOGGERS = {"gateway": "gateway", "event_loop": "event_loop", "aux_data": "aux_data", "safety": "safety",
+                   "deploy_socket": "deploy"}
 
 NOT_FLAT_EXIT_CODE = 2
 SOCKET_FILE = "deploy.sock"
@@ -41,6 +43,10 @@ SOCKET_FILE = "deploy.sock"
 class Service(Protocol):
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
+
+
+def service_logger(name: str, runner_logger: logging.Logger) -> logging.Logger:
+    return logging.getLogger(SERVICE_LOGGERS[name]) if name in SERVICE_LOGGERS else runner_logger
 
 
 def log_deploy_fingerprint(config: Configuration, mode: Mode) -> None:
@@ -187,7 +193,7 @@ class Runtime:
             for name, service in self.services:
                 await service.start()
                 self.started.append((name, service))
-                startup_logger.info("service started", extra={"event": "service_started", "service": name})
+                service_logger(name, startup_logger).info("service started", extra={"event": "service_started", "service": name})
         except BaseException:
             await self.stop_started()
             raise
@@ -201,10 +207,10 @@ class Runtime:
             name, service = self.started.pop()
             try:
                 await service.stop()
-                shutdown_logger.info("service stopped", extra={"event": "service_stopped", "service": name})
+                service_logger(name, shutdown_logger).info("service stopped", extra={"event": "service_stopped", "service": name})
             except Exception:
-                shutdown_logger.exception("service failed to stop", extra={"event": "service_stop_failed",
-                                                                           "service": name})
+                service_logger(name, shutdown_logger).exception("service failed to stop", extra={
+                    "event": "service_stop_failed", "service": name})
 
     async def run(self) -> None:
         if self.mode is not Mode.REPLAY:

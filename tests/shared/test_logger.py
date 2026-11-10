@@ -18,7 +18,8 @@ def test_logging_creates_missing_dir_and_one_file_per_logger(tmp_path):
         listener.stop()
     [startup] = read(root / "logs" / "startup.log")
     assert startup.pop("timestamp").endswith("+00:00")
-    assert startup == {"clock_time": None, "level": "WARNING", "logger": "startup", "message": "hello",
+    assert startup == {"clock_time": None, "level": "WARNING", "logger": "startup",
+                       "method": "test_logging_creates_missing_dir_and_one_file_per_logger", "message": "hello",
                        "event": "greeting", "who": "world"}
     [snapshot] = read(root / "logs" / "macd_long_strategy.log")
     assert snapshot["values"] == {"rsi": 50.0}

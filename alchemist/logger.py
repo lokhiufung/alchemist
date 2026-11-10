@@ -19,6 +19,7 @@ class JsonFormatter(logging.Formatter):
             "clock_time": vars(record).get("clock_time"),
             "level": record.levelname,
             "logger": record.name,
+            "method": record.funcName,
             "message": record.getMessage(),
         }
         if record.exc_info:

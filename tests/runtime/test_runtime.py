@@ -117,6 +117,19 @@ async def test_services_start_in_order_and_stop_in_reverse():
     assert log == [("start", n) for n in names] + [("stop", n) for n in reversed(names)]
 
 
+async def test_component_services_log_to_their_own_logger(caplog):
+    names = ["gateway", "event_loop", "aux_data", "slots", "safety", "deploy_socket"]
+    with caplog.at_level(logging.INFO):
+        async with bare_runtime([(n, RecordingService(n, [])) for n in names]):
+            pass
+    loggers = {(r.service, r.event): r.name for r in caplog.records if hasattr(r, "service")}
+    assert loggers == {
+        **{(n, "service_started"): n for n in ["gateway", "event_loop", "aux_data", "safety"]},
+        **{(n, "service_stopped"): n for n in ["gateway", "event_loop", "aux_data", "safety"]},
+        ("slots", "service_started"): "startup", ("slots", "service_stopped"): "shutdown",
+        ("deploy_socket", "service_started"): "deploy", ("deploy_socket", "service_stopped"): "deploy"}
+
+
 async def test_failed_start_stops_started_services():
     log = []
     services = [("a", RecordingService("a", log)), ("b", RecordingService("b", log)),
