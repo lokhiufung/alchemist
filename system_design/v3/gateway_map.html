@@ -36,6 +36,7 @@
 <div class="lede"><p>The engine's only line to the broker. Prices come in through the Gateway, orders go out through the Gateway, and fills come back through the Gateway. In simulation, a simulated broker sits behind the same interface.</p></div>
 <div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3).</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-10</strong> — <a href="#f14">Feature 14</a> step 3 changed: gateways are listed in one fixed table, <code>GATEWAYS</code>, instead of a decorator registry (System map decision 30). Step → code gives the new paths, <code>gateways/simulation_gateway/</code> and <code>gateways/ib_gateway/</code>, and the IBKR class name <code>IbGateway</code>.</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
 <li><strong>2026-11-09</strong> — Scenario questions decided: resting distance 2% of the last price; paper account from the test <code>.env</code>; test instruments from a test instrument config.</li>
 <li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (14 scenarios, proposed, not agreed).</li>
@@ -418,7 +419,7 @@
 <dt>Algorithm</dt><dd><ol>
 <li>Declare required operations (connect, disconnect, reconnect, orders, cancels, contracts, subscriptions, history, executions, positions) with no body; building a subclass that misses one fails at once.</li>
 <li>Declare capabilities with a safe default: the market-data message type per instrument (<a href="#f2">feature 2</a>; default <code>tick_update</code>), feed liveness, the resubscribe request, market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal. A subclass overrides a capability only when the broker has it.</li>
-<li>Register each subclass under a name; the runner picks the subclass by that name.</li>
+<li>List each built-in subclass under a name in one fixed gateway table, <code>GATEWAYS</code>; the runner picks the subclass by that name. An unknown name fails at start, and the error lists the known names. Users do not add gateways, so the table has no registration hook.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Gateway name</td><td>Configurable</td><td>IBKR gateway, simulated broker</td><td>—</td></tr>
@@ -662,7 +663,7 @@
 <h2>Reference</h2>
 <p>Implementation detail and history. The skeleton still cites the old behaviour numbers; each feature card lists the behaviours it replaces.</p>
 <h3>Step → code</h3>
-<p>Each box of the algorithm map and the code that carries it. <code>Gateway</code> is in <code>gateways/gateway.py</code>; the simulated broker is in <code>gateways/simulation_gateway.py</code>; the IBKR gateway is Planned.</p>
+<p>Each box of the algorithm map and the code that carries it. <code>Gateway</code> is in <code>gateways/gateway.py</code>; the simulated broker (<code>SimulationGateway</code>) is in <code>gateways/simulation_gateway/simulation_gateway.py</code>, with tapes in <code>gateways/simulation_gateway/tapes.py</code> and <code>synthetic_tapes.py</code>; the IBKR gateway (<code>IbGateway</code>) is in <code>gateways/ib_gateway/gateway.py</code>, with <code>client.py</code> and <code>errors.py</code>; the gateway table <code>GATEWAYS</code> and <code>get_gateway()</code> are in <code>gateways/__init__.py</code>.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Step</th><th>Code</th></tr></thead>
 <tbody>
@@ -679,7 +680,7 @@
 <tr><td>Probe socket</td><td><code>Gateway.heartbeat(timeout=3.0)</code></td></tr>
 <tr><td>Reconnect</td><td><code>Gateway.connect()</code>, <code>disconnect()</code>, <code>reconnect()</code>, <code>subscribe_order_update()</code></td></tr>
 <tr><td>Fetch executions</td><td><code>Gateway.get_executions(since)</code>, <code>get_open_orders()</code>, <code>get_commissions()</code></td></tr>
-<tr><td>Interface and registry</td><td><code>Gateway</code>, <code>register_gateway()</code></td></tr>
+<tr><td>Interface and gateway table</td><td><code>Gateway</code>, <code>GATEWAYS</code>, <code>get_gateway()</code></td></tr>
 </tbody></table></div>
 
 <div id="skeleton-code">

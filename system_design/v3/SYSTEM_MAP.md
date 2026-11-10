@@ -141,7 +141,7 @@ For each component: what it owns, what it leaves to others, what it receives, an
 - **Does not own** — Building bars or deciding who hears an event (Event Loop); deciding what to trade (Strategy, StrategyExecution); tracking an order's life (Order Manager); noticing a dead connection or repairing strategies after one (Safety).
 - **Receives** — From the broker: market data and fills. From Order Manager: orders and cancels, each with its order id. From Safety: heartbeat checks, reconnect and resubscribe requests, requests for executions, open orders and positions. From the Event Loop: history requests for warmup; contract, subscribe and unsubscribe requests; session declarations; each completed bar (the simulated broker fills against it).
 - **Produces** — To the Event Loop: `tick_update` and `bar_update` messages (each gateway declares which one it gives per instrument, decision 49), order, position and balance updates, and warmup history. To Order Manager: the next order id. To the broker: orders and cancels. To Safety: connection health, the last tick time and the broker's executions, open orders and positions.
-- **Why a component** — component test 1 (own outside source that can fail: the broker) and 3 (extension point: one subclass per broker, picked by name from a registry, decision 30).
+- **Why a component** — component test 1 (own outside source that can fail: the broker) and 3 (extension point: one subclass per broker, picked by name from the engine's gateway table, decision 30).
 
 ### Event Loop
 
@@ -529,9 +529,9 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 30. What is the Gateway interface?
 
-**Answer:** An abstract interface. Required methods have no body, so a gateway that misses one fails when it is built instead of returning nothing. Optional methods are gateway capabilities declared on the interface with safe defaults, never looked up by name at runtime. Gateways are picked by name from a registry. History is requested in broker-neutral units (months or dates), not broker-specific duration strings. See [Gateway](GATEWAY_MAP.md).
+**Answer:** An abstract interface. Required methods have no body, so a gateway that misses one fails when it is built instead of returning nothing. Optional methods are gateway capabilities declared on the interface with safe defaults, never looked up by name at runtime. Gateways are picked by name from one fixed gateway table in the engine, `GATEWAYS`, because users do not write their own gateways. History is requested in broker-neutral units (months or dates), not broker-specific duration strings. See [Gateway](GATEWAY_MAP.md).
 
-**Rejected:** Rejected: splitting the Gateway (decision 7 holds).
+**Rejected:** Rejected: splitting the Gateway (decision 7 holds); a decorator registry for gateways (dropped 2026-11-10: only built-in gateways exist, so a fixed table is enough).
 
 *agreed 2026-11-09*
 
@@ -661,7 +661,7 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 47. What does `run_strategies.py` do?
 
-**Answer:** It is a thin startup module. It parses `--config` and `--mode` only (the deploy client is `deploy_strategy.py`, decision 35); replay settings (tape, date, session) sit in a `replay:` section of the config. It builds a `Runtime` from the config and the mode: the gateway by registry name (decision 30), the clock, the stand-ins and each component with its own typed config section. Every long-lived part follows one `Service` protocol (`start()`, `stop()`); `Runtime` starts them in order and stops them in reverse, also when start-up fails, then runs the Event Loop. Logging is one queue-handler setup (decision 29) with a logger per module. Comparing results with research stays outside (decision 3).
+**Answer:** It is a thin startup module. It parses `--config` and `--mode` only (the deploy client is `deploy_strategy.py`, decision 35); replay settings (tape, date, session) sit in a `replay:` section of the config. It builds a `Runtime` from the config and the mode: the gateway by name from the gateway table (decision 30), the clock, the stand-ins and each component with its own typed config section. Every long-lived part follows one `Service` protocol (`start()`, `stop()`); `Runtime` starts them in order and stops them in reverse, also when start-up fails, then runs the Event Loop. Logging is one queue-handler setup (decision 29) with a logger per module. Comparing results with research stays outside (decision 3).
 
 ``` python
 async def main(cfg, mode):
@@ -718,7 +718,7 @@ async def main(cfg, mode):
 
 #### 57. How is the golden run wired?
 
-**Answer:** The config key `gateway.name` picks the gateway by registry name (decision 30). The `golden_session` generator lives in the engine's synthetic tape registry, in `alchemist/gateways/synthetic_tapes.py`, registered under the name `golden_session`, so the real entry point finds it by name. The zigzag steps are u = 2.00 and d = 1.00.
+**Answer:** The config key `gateway.name` picks the gateway by name from the gateway table (decision 30). The `golden_session` generator lives in the engine's synthetic tape registry, in `alchemist/gateways/simulation_gateway/synthetic_tapes.py`, registered under the name `golden_session`, so the real entry point finds it by name. The zigzag steps are u = 2.00 and d = 1.00.
 
 *decided 2026-11-09*
 

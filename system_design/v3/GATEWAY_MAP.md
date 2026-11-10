@@ -587,7 +587,7 @@ Brokers differ in capability: some report feed liveness, commissions or roll mis
 
 1.  Declare required operations (connect, disconnect, reconnect, orders, cancels, contracts, subscriptions, history, executions, positions) with no body; building a subclass that misses one fails at once.
 2.  Declare capabilities with a safe default: the market-data message type per instrument (feature 2; default `tick_update`), feed liveness, the resubscribe request, market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal. A subclass overrides a capability only when the broker has it.
-3.  Register each subclass under a name; the runner picks the subclass by that name.
+3.  List each built-in subclass under a name in one fixed gateway table, `GATEWAYS`; the runner picks the subclass by that name. An unknown name fails at start, and the error lists the known names. Users do not add gateways, so the table has no registration hook.
 
 #### Parameters
 
@@ -903,7 +903,7 @@ Implementation detail and history. The skeleton still cites the old behaviour nu
 
 ### Step → code
 
-Each box of the algorithm map and the code that carries it. `Gateway` is in `gateways/gateway.py`; the simulated broker is in `gateways/simulation_gateway.py`; the IBKR gateway is Planned.
+Each box of the algorithm map and the code that carries it. `Gateway` is in `gateways/gateway.py`; the simulated broker (`SimulationGateway`) is in `gateways/simulation_gateway/simulation_gateway.py`, with tapes in `gateways/simulation_gateway/tapes.py` and `synthetic_tapes.py`; the IBKR gateway (`IbGateway`) is in `gateways/ib_gateway/gateway.py`, with `client.py` and `errors.py`; the gateway table `GATEWAYS` and `get_gateway()` are in `gateways/__init__.py`.
 
 | Step | Code |
 |----|----|
@@ -920,7 +920,7 @@ Each box of the algorithm map and the code that carries it. `Gateway` is in `gat
 | Probe socket | `Gateway.heartbeat(timeout=3.0)` |
 | Reconnect | `Gateway.connect()`, `disconnect()`, `reconnect()`, `subscribe_order_update()` |
 | Fetch executions | `Gateway.get_executions(since)`, `get_open_orders()`, `get_commissions()` |
-| Interface and registry | `Gateway`, `register_gateway()` |
+| Interface and gateway table | `Gateway`, `GATEWAYS`, `get_gateway()` |
 
 ### Skeleton code
 
