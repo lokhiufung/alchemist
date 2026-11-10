@@ -3,6 +3,7 @@ import logging
 
 import pytest
 
+from alchemist.logger import JsonFormatter
 from gateway_helpers import driver, make_order
 from ibkr_helpers import connected, mkt_order
 
@@ -34,7 +35,7 @@ async def test_simulation_logs_order_sent_and_every_broker_reply(caplog):
     assert events(caplog) == ["order_sent", "broker_order_update", "broker_order_update",
                               "broker_position_update", "broker_balance_update"]
     sent = by_event(caplog, "order_sent")[0]
-    assert (sent.order_id, sent.instrument, sent.side, sent.qty, sent.order_type) == (
+    assert (sent.order_id, str(sent.instrument), sent.side, sent.qty, sent.order_type) == (
         order["order_id"], "MES", "BUY", 1, "MKT")
     assert [r.status for r in by_event(caplog, "broker_order_update")] == ["SUBMITTED", "FILLED"]
     assert by_event(caplog, "broker_order_update")[1].avg_fill_price == 5000.0
@@ -57,13 +58,12 @@ async def test_market_data_is_not_logged(caplog):
     assert events(caplog) == []
 
 
-async def test_broker_log_fields_are_json_safe(caplog):
+async def test_broker_log_lines_show_instrument_symbol(caplog):
     d = driver()
     d.show(5000.0)
     await d.gateway.place_order(make_order(d.gateway))
     for record in gateway_records(caplog):
-        json.dumps({k: v for k, v in vars(record).items() if k in ("instrument", "order_id", "status")})
-        assert getattr(record, "instrument", "MES") == "MES"
+        assert json.loads(JsonFormatter().format(record)).get("instrument", "MES") == "MES"
 
 
 async def test_ibkr_logs_raw_order_status_even_when_ignored(caplog):

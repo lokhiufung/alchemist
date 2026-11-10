@@ -21,6 +21,9 @@ class Instrument:
     multiplier: float
     tick_size: float
 
+    def __str__(self) -> str:
+        return self.symbol
+
 
 ES = Instrument(AssetClass.FUTURE, "ES", CME_NAME, "USD", multiplier=50.0, tick_size=0.25)
 NQ = Instrument(AssetClass.FUTURE, "NQ", CME_NAME, "USD", multiplier=20.0, tick_size=0.25)

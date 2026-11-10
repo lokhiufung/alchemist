@@ -17,13 +17,9 @@ ORDER_SENT_KEYS = ("order_id", "account_id", "instrument", "side", "qty", "order
                    "oca_group", "tif", "outside_rth")
 
 
-def loggable(value: Any) -> Any:
-    return value.symbol if isinstance(value, Instrument) else value
-
-
 def log_broker(event: str, fields: dict[str, Any], caller_depth: int = 1) -> None:
     broker_logger.info(event.replace("_", " "), stacklevel=caller_depth + 1,
-                       extra={"event": event, **{key: loggable(value) for key, value in fields.items()}})
+                       extra={"event": event, **fields})
 
 
 class Gateway(ABC):
