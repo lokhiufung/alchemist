@@ -1,230 +1,156 @@
-import logging
-from datetime import timedelta
+import asyncio
+import inspect
+import time
+from datetime import datetime, timezone
 
 import pytest
 
 from alchemist.config import SafetyConfig
+from alchemist.event_loop.buffer import CommandBuffer, EventBuffer
+from alchemist.exchanges import EXCHANGES
 from alchemist.instruments import ES, FDAX, MES
-from alchemist.safety.monitor import backoff_delay
+from alchemist.messages import make_event
+from alchemist.safety.freeze import FreezeDetector
+from alchemist.safety.monitor import SafetyMonitor
 
-from safety_helpers import Rig, utc
-
-MONDAY_OPEN = utc(15, 15, 0)
-
-
-@pytest.mark.parametrize("interval,timeout", [(5.0, 3.0)])
-async def test_socket_failure_caught_within_interval(interval, timeout):
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(heartbeat_interval_s=interval, heartbeat_timeout_s=timeout))
-    drop = MONDAY_OPEN + timedelta(seconds=7)
-    rig.gateway.heartbeat_ok = lambda now: now < drop.timestamp()
-    rig.gateway.last_tick = drop.timestamp()
-    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(seconds=30), interval)
-    first_reconnect = next(c[1] for c in rig.gateway.calls if c[0] == "reconnect")
-    assert first_reconnect - drop.timestamp() <= interval + timeout
+from safety_helpers import FRIDAY_CLOSED, MONDAY_OPEN, Rig, execution, order
 
 
-async def test_heartbeat_timeout_is_passed_to_the_gateway():
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(heartbeat_timeout_s=2.5))
-    await rig.monitor.step()
-    assert rig.gateway.calls[0][2] == 2.5
+def heartbeat(rig):
+    rig.event("heartbeat")
+
+
+@pytest.mark.parametrize("interval,timeout,check", [(5.0, 3.0, 1.0)])
+async def test_heartbeat_gap_requests_reconnect(interval, timeout, check):
+    rig = Rig(config=SafetyConfig(heartbeat_interval_s=interval, heartbeat_timeout_s=timeout,
+                                  watch_check_interval_s=check))
+    rig.event("heartbeat")
+    last = rig.now
+    while not rig.requests("reconnect"):
+        rig.now += check
+        rig.step()
+    assert rig.now - last <= interval + timeout + check
+
+
+async def test_connection_lost_alerts():
+    rig = Rig()
+    rig.event("connection_lost")
+    rig.run(1, on_tick=heartbeat)
+    assert [a["data"]["reason"] for a in rig.alerts()] == ["connection_lost"]
 
 
 @pytest.mark.parametrize("threshold", [45.0])
 async def test_stale_feed_starts_ladder(threshold):
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp()
-    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(seconds=120))
-    first = next(c[1] for c in rig.gateway.calls if c[0] == "subscribe_tick")
-    assert first - MONDAY_OPEN.timestamp() <= threshold + rig.config.heartbeat_interval_s + 1e-9
-    assert first - MONDAY_OPEN.timestamp() > threshold
+    rig = Rig(config=SafetyConfig(stale_feed_s=threshold))
+    rig.subscribe(MES)
+    rig.feed(MES)
+    last = rig.now
+    while not rig.requests("resubscribe"):
+        rig.now += 1
+        heartbeat(rig)
+        rig.step()
+    assert rig.now - last <= threshold + rig.config.watch_check_interval_s
 
 
-@pytest.mark.parametrize("instruments", [(MES,), (MES, FDAX)])
+@pytest.mark.parametrize("instruments", [(MES,), (MES, FDAX)], ids=["CME", "CME+Eurex"])
 async def test_no_stale_alarm_when_every_exchange_in_break(instruments):
-    saturday = utc(18, 12, 0)
-    rig = Rig(saturday, instruments=instruments)
-    rig.gateway.last_tick = utc(17, 21, 0).timestamp()
-    await rig.steps(saturday, saturday + timedelta(minutes=10), 60.0)
-    assert [n for n in rig.gateway.names() if n in ("subscribe_tick", "reconnect")] == []
+    for start in (FRIDAY_CLOSED, datetime(2026, 4, 20, 21, 30, tzinfo=timezone.utc).timestamp()):
+        rig = Rig(start=start)
+        for instrument in instruments:
+            rig.subscribe(instrument)
+            rig.feed(instrument)
+        rig.run(300, on_tick=heartbeat)
+        assert rig.kinds() == []
 
 
 async def test_day_only_book_still_watched_overnight():
-    overnight = utc(15, 3, 0)
-    rig = Rig(overnight, instruments=(MES,))
-    rig.gateway.last_tick = overnight.timestamp() - 100
-    await rig.steps(overnight, overnight + timedelta(seconds=10))
-    assert "subscribe_tick" in rig.gateway.names()
-
-
-async def test_stale_threshold_can_be_overridden_per_exchange():
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(stale_overrides={"CME": 200.0}))
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(seconds=30))
-    assert "subscribe_tick" not in rig.gateway.names()
+    overnight = datetime(2026, 4, 21, 2, 0, tzinfo=timezone.utc).timestamp()
+    rig = Rig(start=overnight)
+    rig.subscribe(ES)
+    rig.feed(ES)
+    rig.run(60, on_tick=heartbeat)
+    assert rig.kinds()[:1] == ["resubscribe"]
 
 
 @pytest.mark.parametrize("attempts", [4])
 async def test_ladder_order(attempts):
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(resubscribe_without_tick_cap=attempts))
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    await rig.monitor.step()
-    names = [n for n in rig.gateway.names() if n in ("subscribe_tick", "reconnect")]
-    assert names[:attempts + 1] == ["subscribe_tick"] * attempts + ["reconnect"]
+    rig = Rig(config=SafetyConfig(resubscribe_max_attempts=attempts))
+    rig.subscribe(MES)
+    rig.feed(MES)
+    rig.run(200, on_tick=heartbeat)
+    kinds = rig.kinds()
+    assert kinds.index("reconnect") > max(i for i, k in enumerate(kinds) if k == "resubscribe")
 
 
 @pytest.mark.parametrize("cap", [3])
-async def test_resubscribe_without_tick_capped(cap):
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(resubscribe_without_tick_cap=cap))
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    await rig.monitor.step()
-    names = [n for n in rig.gateway.names() if n in ("subscribe_tick", "reconnect")]
-    assert names[:cap + 1] == ["subscribe_tick"] * cap + ["reconnect"]
+async def test_resubscribe_without_feed_event_capped(cap):
+    rig = Rig(config=SafetyConfig(resubscribe_without_feed_cap=cap))
+    rig.subscribe(MES)
+    rig.feed(MES)
+    rig.run(200, on_tick=heartbeat)
+    kinds = rig.kinds()
+    assert kinds[:kinds.index("reconnect")].count("resubscribe") == cap
 
 
-async def test_resubscribe_backoff_is_exponential():
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    await rig.monitor.step()
-    base = rig.config.resubscribe_backoff_base_s
-    assert rig.sleeps[:3] == [base, base * 2, base * 4]
+@pytest.mark.parametrize("cap", [3])
+async def test_connection_restored_without_feed_capped_then_reconnect(cap):
+    rig = Rig(config=SafetyConfig(resubscribe_without_feed_cap=cap))
+    rig.subscribe(MES)
+    for _ in range(cap + 1):
+        rig.event("connection_restored", {"next_order_id": 1})
+        rig.run(1, on_tick=heartbeat)
+    assert rig.kinds() == ["resubscribe"] * cap + ["reconnect"]
 
 
-@pytest.mark.parametrize("window,restarts", [(("14:00", "16:00"), 1), (("02:00", "04:00"), 0)])
-async def test_process_restart_only_in_maintenance_window(window, restarts):
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(maintenance_windows=(window,)))
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    rig.gateway.reconnect_failures = 2
-    await rig.monitor.step()
-    assert len(rig.restarts) == restarts
+@pytest.mark.parametrize("inside,restarts", [(True, 1), (False, 0)])
+async def test_restart_only_in_maintenance_window(inside, restarts):
+    windows = (("13:00", "16:00"),) if inside else (("02:00", "03:00"),)
+    rig = Rig(config=SafetyConfig(maintenance_windows=windows))
+    rig.subscribe(MES)
+    rig.feed(MES)
+    rig.run(300, on_tick=heartbeat)
+    assert rig.kinds().count("restart_broker_process") == restarts
 
 
-async def test_cheap_rungs_come_before_a_process_restart():
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(maintenance_windows=(("14:00", "16:00"),)))
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    rig.gateway.reconnect_failures = 1
-    await rig.monitor.step()
-    names = rig.gateway.names()
-    assert names.count("subscribe_tick") >= 3 and "reconnect" in names
-    assert rig.gateway.before_first_reconnect().count("subscribe_tick") == 3
-    assert len(rig.restarts) == 1 and rig.restarts[0] >= rig.gateway.calls[names.index("reconnect")][1]
-
-
-async def test_ticks_resuming_after_the_first_resubscribe_stop_the_ladder():
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp() - 100
-    rig.gateway.on_resubscribe = lambda: setattr(rig.gateway, "last_tick", rig.clock.timestamp())
-    await rig.monitor.step()
-    assert rig.gateway.names().count("subscribe_tick") == 1 and "reconnect" not in rig.gateway.names()
-
-
-async def test_connectivity_restored_signal_resubscribes_and_is_capped():
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.last_tick = MONDAY_OPEN.timestamp()
-    for _ in range(4):
-        rig.gateway.resubscribe_request = True
-        rig.advance_to(rig.clock.now() + timedelta(seconds=1))
-        await rig.monitor.step()
-    names = [n for n in rig.gateway.names() if n in ("subscribe_tick", "reconnect")]
-    assert names[:4] == ["subscribe_tick"] * 3 + ["reconnect"]
-    assert rig.monitor.blind_resubscribes == 0
-
-
-@pytest.mark.parametrize("failures", [1, 50])
-async def test_reconnect_never_gives_up(failures):
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.reconnect_failures = failures
-    await rig.monitor.reconnect_forever()
-    assert rig.gateway.names().count("reconnect") == failures + 1
-    assert max(rig.sleeps) <= rig.config.reconnect_cap_s
-
-
-@pytest.mark.parametrize("base,cap", [(15.0, 120.0)])
-def test_backoff_delays(base, cap):
-    assert [backoff_delay(n, base, cap) for n in range(1, 9)] == [min(cap, base * 2 ** (n - 1)) for n in range(1, 9)]
-
-
-async def test_persistent_reconnect_failure_logs_critical(caplog):
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.reconnect_failures = 3
-    with caplog.at_level(logging.INFO):
-        await rig.monitor.reconnect_forever()
-    assert any(r.levelno == logging.CRITICAL for r in caplog.records)
-
-
-async def test_restore_subscribes_each_fed_instrument_once():
-    rig = Rig(MONDAY_OPEN, instruments=(MES, ES, FDAX))
-    await rig.monitor.restore_subscriptions()
-    ticks = [c[2] for c in rig.gateway.calls if c[0] == "subscribe_tick"]
-    assert sorted(ticks) == ["ES", "FDAX", "MES"]
-    assert {"subscribe_order_update", "subscribe_account_update"} <= set(rig.gateway.names())
-
-
-async def test_failure_counter_only_goes_up_until_restored():
-    rig = Rig(MONDAY_OPEN)
-    rig.gateway.heartbeat_ok = lambda now: False
-    rig.gateway.reconnect_failures = 0
-    await rig.monitor.step()
-    await rig.monitor.step()
-    assert rig.monitor.failures == 2
-    rig.gateway.heartbeat_ok = lambda now: True
-    await rig.monitor.step()
-    assert rig.monitor.failures == 0
-
-
-from safety_helpers import PendingStrategy, execution, order
+def outage(rig, broker_executions, broker_open_orders=()):
+    rig.event("connection_restored", {"next_order_id": 1})
+    rig.broker_executions = list(broker_executions)
+    rig.broker_open_orders = list(broker_open_orders)
+    rig.auto_reply = True
+    rig.run(1, on_tick=heartbeat)
+    return rig.repairs()
 
 
 async def test_resting_stop_filled_while_in_position_repaired():
-    now = MONDAY_OPEN.timestamp()
-    in_position = PendingStrategy("p", MES, [order(70, MES, 30, now, side="SELL")], processing=False)
-    rig = Rig(MONDAY_OPEN, strategies=[in_position])
-    rig.gateway.executions = [execution(70, MES, 4990.0, now, side="SELL")]
-    await rig.monitor.repair(rig.book.strategies)
-    assert [(f["order_id"], f["status"]) for f in rig.buffer.of_type("repaired_fill")] == [(70, "FILLED")]
+    rig = Rig()
+    rig.place(43, "B")
+    rig.event("order_update", {"order_id": 43, "status": "OPEN"})
+    repaired = outage(rig, [execution(43, 4990.0)])
+    assert [(e["data"]["order_id"], e["data"]["status"]) for e in repaired] == [(43, "FILLED")]
 
 
 async def test_two_strategies_same_instrument_attributed_by_id():
-    now = MONDAY_OPEN.timestamp()
-    first = PendingStrategy("first", MES, [order(80, MES, 10, now)])
-    second = PendingStrategy("second", MES, [order(81, MES, 10, now)])
-    rig = Rig(MONDAY_OPEN, strategies=[first, second])
-    rig.gateway.executions = [execution(81, MES, 5001.0, now)]
-    await rig.monitor.repair(rig.book.strategies)
-    fills = rig.buffer.of_type("repaired_fill")
-    assert [f["order_id"] for f in fills] == [81] and fills[0]["avg_fill_price"] == 5001.0
+    rig = Rig()
+    rig.place(1, "A")
+    rig.place(2, "B")
+    repaired = outage(rig, [execution(2, 5000.0), execution(1, 5001.0)])
+    assert sorted((e["data"]["order_id"], e["data"]["strategy"]) for e in repaired) == [(1, "A"), (2, "B")]
 
 
-@pytest.mark.parametrize("age", [100, 150])
+@pytest.mark.parametrize("age", [100.0, 150.0])
 @pytest.mark.parametrize("found_in", ["neither", "open_orders"])
 async def test_dead_order_rejected_only_after_grace_and_absent_both(age, found_in):
-    now = MONDAY_OPEN.timestamp()
-    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(90, MES, age, now)])])
-    if found_in == "open_orders":
-        rig.gateway.open_orders = [{"order_id": 90, "instrument": MES}]
-    await rig.monitor.repair(rig.book.strategies)
-    expected = 1 if (age >= 120 and found_in == "neither") else 0
-    assert len(rig.buffer.of_type("order_update")) == expected
-
-
-async def test_dead_order_check_also_requires_absence_from_executions():
-    now = MONDAY_OPEN.timestamp()
-    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(91, MES, 500, now)])])
-    rig.gateway.executions = [execution(91, MES, 5000.0, now)]
-    await rig.monitor.repair(rig.book.strategies)
-    assert rig.buffer.of_type("order_update") == [] and len(rig.buffer.of_type("repaired_fill")) == 1
-
-
-async def test_unreadable_broker_state_repairs_nothing():
-    now = MONDAY_OPEN.timestamp()
-    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(92, MES, 500, now)])])
-    rig.gateway.fail_reads = True
-    assert await rig.monitor.repair(rig.book.strategies) == 0
-    assert rig.buffer.events == []
+    rig = Rig(start=MONDAY_OPEN - age, config=SafetyConfig(check_interval_s=10_000.0))
+    rig.place(50)
+    rig.monitor.drain(rig.now)
+    rig.now = MONDAY_OPEN
+    repaired = outage(rig, [], [order(50)] if found_in == "open_orders" else [])
+    rejected = [e for e in repaired if e["data"]["status"] == "REJECTED"]
+    assert len(rejected) == (1 if age >= 120 and found_in == "neither" else 0)
 
 
 @pytest.mark.parametrize("loop_state", ["healthy", "blocked"])
 def test_freeze_dump_only_when_check_ins_missed(loop_state):
-    from alchemist.safety.freeze import FreezeDetector
     dumps = []
     detector = FreezeDetector(SafetyConfig(freeze_threshold=10), dump=lambda: dumps.append(1))
     for _ in range(30):
@@ -236,57 +162,86 @@ def test_freeze_dump_only_when_check_ins_missed(loop_state):
 
 @pytest.mark.parametrize("poll,max_polls", [(None, 0), (60.0, 10)])
 async def test_positions_poll_respects_config(poll, max_polls):
-    rig = Rig(MONDAY_OPEN, config=SafetyConfig(positions_poll_s=poll))
-    rig.gateway.last_tick = lambda: rig.clock.timestamp()
-    rig.gateway.positions = [{"account_id": "ACC", "instrument": MES, "size": 1, "avg_cost": 1.0, "currency": "USD"}]
-    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(minutes=10), 5.0)
-    polls = rig.gateway.names().count("get_positions")
-    assert (polls == 0) if poll is None else (1 <= polls <= max_polls)
+    rig = Rig(config=SafetyConfig(positions_poll_s=poll))
+    rig.run(600, every=5.0, on_tick=heartbeat)
+    sent = len(rig.requests("poll_positions"))
+    assert sent <= max_polls and (sent > 0) is (poll is not None)
 
 
-async def test_strategy_committed_after_start_is_repaired():
-    now = MONDAY_OPEN.timestamp()
-    rig = Rig(MONDAY_OPEN)
-    await rig.monitor.repair(rig.book.strategies)
-    late = PendingStrategy("late", MES, [order(95, MES, 10, now)])
-    rig.book.strategies.append(late)
-    rig.gateway.executions = [execution(95, MES, 5000.0, now)]
-    await rig.monitor.repair(rig.book.strategies)
-    assert [f["order_id"] for f in rig.buffer.of_type("repaired_fill")] == [95]
+async def test_order_from_hot_added_strategy_is_repaired():
+    rig = Rig()
+    rig.run(120, every=5.0, on_tick=heartbeat)
+    rig.place(80, "late")
+    repaired = outage(rig, [execution(80, 5002.0)])
+    assert [(e["data"]["order_id"], e["data"]["strategy"]) for e in repaired] == [(80, "late")]
 
 
-async def test_stuck_check_runs_every_interval():
-    now = MONDAY_OPEN.timestamp()
-    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(96, MES, 5, now)])])
-    rig.gateway.last_tick = lambda: rig.clock.timestamp()
-    await rig.steps(MONDAY_OPEN, MONDAY_OPEN + timedelta(minutes=10), 5.0)
-    assert rig.gateway.names().count("get_executions") == 10
+def test_safety_holds_no_book_or_gateway_reference():
+    parameters = set(inspect.signature(SafetyMonitor).parameters)
+    assert parameters.isdisjoint({"gateway", "book", "strategies", "clock"})
+    rig = Rig()
+    assert not any(hasattr(rig.monitor, name) for name in ("gateway", "book", "clock"))
+
+
+@pytest.mark.parametrize("interval", [60.0])
+async def test_stuck_check_runs_every_interval(interval):
+    rig = Rig(config=SafetyConfig(check_interval_s=interval))
+    checks = []
+    original = rig.monitor.check_stuck_orders
+
+    def counting(now):
+        before = rig.monitor.last_stuck_check
+        original(now)
+        if rig.monitor.last_stuck_check != before:
+            checks.append(now)
+
+    rig.monitor.check_stuck_orders = counting
+    rig.run(600, on_tick=heartbeat)
+    assert len(checks) == 10
 
 
 async def test_stuck_check_does_not_block_bar_dispatch():
-    import asyncio
-    now = MONDAY_OPEN.timestamp()
-    rig = Rig(MONDAY_OPEN, strategies=[PendingStrategy("s", MES, [order(97, MES, 5, now)])])
-    rig.gateway.last_tick = lambda: rig.clock.timestamp()
-    original = rig.gateway.get_executions
-
-    async def slow(since=None):
-        await asyncio.sleep(0.05)
-        return await original(since)
-
-    rig.gateway.get_executions = slow
-    ticks = []
-    checking = asyncio.create_task(rig.monitor.stuck_check())
-    while not checking.done():
-        ticks.append(1)
-        await asyncio.sleep(0)
-    assert len(ticks) > 5
+    rig = Rig(config=SafetyConfig(check_interval_s=1.0))
+    rig.place(90)
+    started = time.perf_counter()
+    rig.run(5, on_tick=heartbeat)
+    assert rig.requests("get_executions") and time.perf_counter() - started < 0.5
+    assert rig.repairs() == []
 
 
-async def test_reconnect_repairs_every_strategy_in_every_phase():
-    now = MONDAY_OPEN.timestamp()
-    idle_with_resting = PendingStrategy("p", MES, [order(98, MES, 10, now, side="SELL")], processing=False)
-    rig = Rig(MONDAY_OPEN, strategies=[idle_with_resting])
-    rig.gateway.executions = [execution(98, MES, 4990.0, now, side="SELL")]
-    await rig.monitor.reconnect_forever()
-    assert [f["order_id"] for f in rig.buffer.of_type("repaired_fill")] == [98]
+@pytest.mark.parametrize("watcher", ["running", "blocked"])
+def test_tap_push_never_waits(watcher):
+    def push_time(buffer, count=20_000):
+        started = time.perf_counter()
+        for index in range(count):
+            buffer.push(make_event("tick_update", {"instrument": MES}, float(index)))
+        return time.perf_counter() - started
+
+    baseline = min(push_time(EventBuffer()) for _ in range(3))
+    tapped = EventBuffer()
+    monitor = SafetyMonitor(tapped, CommandBuffer(), EXCHANGES, SafetyConfig(watch_check_interval_s=0.01))
+    if watcher == "blocked":
+        monitor.check = lambda now: time.sleep(0.2)
+    asyncio.run(monitor.start())
+    try:
+        timed = min(push_time(tapped) for _ in range(3))
+    finally:
+        asyncio.run(monitor.stop())
+    assert timed <= baseline * 1.5 + 0.005
+
+
+async def test_watcher_runs_while_loop_blocked():
+    inbound, outbound = EventBuffer(), CommandBuffer()
+    monitor = SafetyMonitor(inbound, outbound, EXCHANGES, SafetyConfig(watch_check_interval_s=0.1))
+    checks = []
+    original = monitor.check
+
+    def counting(now):
+        checks.append(now)
+        original(now)
+
+    monitor.check = counting
+    await monitor.start()
+    time.sleep(1.0)
+    await monitor.stop()
+    assert len(checks) >= 9

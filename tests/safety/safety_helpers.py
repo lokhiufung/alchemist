@@ -1,164 +1,104 @@
-import asyncio
 from datetime import datetime, timezone
 
-from alchemist.clock import ReplayClock
 from alchemist.config import SafetyConfig
-from alchemist.event_loop.book import RuntimeBook
+from alchemist.event_loop.buffer import CommandBuffer, EventBuffer
 from alchemist.exchanges import EXCHANGES
-from alchemist.instruments import ES, FDAX, MES
+from alchemist.instruments import FDAX, MES
+from alchemist.messages import make_command, make_event, make_reply
 from alchemist.safety.monitor import SafetyMonitor
 
-
-def utc(day, hour, minute=0, second=0, month=4):
-    return datetime(2026, month, day, hour, minute, second, tzinfo=timezone.utc)
-
-
-class FakeGateway:
-    def __init__(self, clock) -> None:
-        self.clock = clock
-        self.heartbeat_ok = lambda now: True
-        self.last_tick = None
-        self.reconnect_failures = 0
-        self.calls: list[tuple] = []
-        self.on_resubscribe = None
-        self.resubscribe_request = False
-        self.executions: list[dict] = []
-        self.open_orders: list[dict] = []
-        self.positions: list[dict] = []
-        self.fail_reads = False
-        self.recovered = False
-
-    @property
-    def last_tick_ts(self):
-        return self.last_tick() if callable(self.last_tick) else self.last_tick
-
-    def mark(self, name, *details):
-        self.calls.append((name, self.clock.timestamp(), *details))
-
-    def names(self):
-        return [c[0] for c in self.calls]
-
-    def before_first_reconnect(self):
-        names = self.names()
-        return names[:names.index("reconnect")] if "reconnect" in names else names
-
-    async def heartbeat(self, timeout=3.0):
-        self.mark("heartbeat", timeout)
-        return self.heartbeat_ok(self.clock.timestamp())
-
-    async def reconnect(self):
-        self.mark("reconnect")
-        if self.reconnect_failures > 0:
-            self.reconnect_failures -= 1
-            raise ConnectionError("still down")
-        self.recovered = True
-
-    async def subscribe_tick(self, contract):
-        self.mark("subscribe_tick", contract["instrument"].symbol)
-        if self.on_resubscribe:
-            self.on_resubscribe()
-
-    async def subscribe_order_update(self):
-        self.mark("subscribe_order_update")
-
-    async def subscribe_account_update(self):
-        self.mark("subscribe_account_update")
-
-    def consume_resubscribe_request(self):
-        requested, self.resubscribe_request = self.resubscribe_request, False
-        return requested
-
-    async def get_executions(self, since=None):
-        self.mark("get_executions")
-        if self.fail_reads:
-            raise TimeoutError
-        return list(self.executions)
-
-    async def get_open_orders(self, timeout=5.0):
-        self.mark("get_open_orders")
-        if self.fail_reads:
-            raise TimeoutError
-        return list(self.open_orders)
-
-    async def get_positions(self, timeout=5.0):
-        self.mark("get_positions")
-        if self.fail_reads:
-            raise TimeoutError("no answer")
-        return list(self.positions)
+MONDAY_OPEN = datetime(2026, 4, 20, 14, 0, tzinfo=timezone.utc).timestamp()
+FRIDAY_CLOSED = datetime(2026, 4, 17, 21, 0, 30, tzinfo=timezone.utc).timestamp()
 
 
-class Buffer:
-    def __init__(self) -> None:
-        self.events: list[dict] = []
+def order(order_id, strategy="A", instrument=MES, qty=1):
+    return {"order_id": order_id, "account_id": "ACC", "instrument": instrument, "side": "BUY", "qty": qty,
+            "order_type": "MKT", "stop_price": None, "limit_price": None, "oca_group": None, "oca_type": None,
+            "tif": "DAY", "outside_rth": True, "slot": strategy}
 
-    def push(self, event, wake=True):
-        self.events.append(event)
 
-    def of_type(self, event_type):
-        return [e["data"] for e in self.events if e["event_type"] == event_type]
+def execution(order_id, price, qty=1, ts=MONDAY_OPEN, instrument=MES):
+    return {"order_id": order_id, "exec_id": f"e{order_id}", "ts": ts, "side": "BUY", "qty": qty, "price": price,
+            "instrument": instrument, "account_id": "ACC", "currency": "USD"}
 
 
 class Rig:
-    def __init__(self, start, instruments=(MES,), config=None, strategies=()) -> None:
-        self.clock = ReplayClock(start)
+    def __init__(self, start=MONDAY_OPEN, config=None) -> None:
+        self.now = start
         self.config = config or SafetyConfig()
-        self.gateway = FakeGateway(self.clock)
-        self.book = RuntimeBook()
-        for instrument in instruments:
-            self.book.reserve_instrument(instrument, {"instrument": instrument}, fed=True)
-        self.book.strategies.extend(strategies)
-        self.buffer = Buffer()
-        self.sleeps: list[float] = []
-        self.restarts: list[float] = []
-        self.monitor = SafetyMonitor(self.gateway, self.book, self.buffer, EXCHANGES, self.clock, self.config,
-                                     restart_gateway=self.restart, sleep=self.sleep)
+        self.inbound, self.outbound = EventBuffer(), CommandBuffer()
+        self.monitor = SafetyMonitor(self.inbound, self.outbound, EXCHANGES, self.config,
+                                     system_time=lambda: self.now)
+        self.mine: set[int] = set()
+        self.answered: set[int] = set()
+        self.seen_inbound = 0
+        self.broker_executions: list[dict] = []
+        self.broker_open_orders: list[dict] = []
+        self.auto_reply = False
 
-    async def sleep(self, delay):
-        self.sleeps.append(delay)
-        self.clock.advance(self.clock.now().fromtimestamp(self.clock.timestamp() + delay, timezone.utc))
+    def event(self, kind, data=None, event_time=None):
+        event = make_event(kind, data or {}, self.now if event_time is None else event_time)
+        event["pushed_at"] = self.now
+        self.inbound.push(event)
 
-    async def restart(self):
-        self.restarts.append(self.clock.timestamp())
+    def feed(self, instrument=MES, event_time=None):
+        self.event("bar_update", {"instrument": instrument, "start_ts": self.now}, event_time)
 
-    def advance_to(self, moment):
-        if moment > self.clock.now():
-            self.clock.advance(moment)
+    def command(self, kind, **data):
+        command = make_command(kind, data)
+        self.mine.add(command["correlation_id"])
+        self.outbound.push(command)
 
-    async def steps(self, begin, end, interval=None):
-        interval = interval or self.config.heartbeat_interval_s
-        moment = begin
-        from datetime import timedelta
-        while moment <= end:
-            self.advance_to(moment)
-            await self.monitor.step()
-            moment += timedelta(seconds=interval)
+    def subscribe(self, instrument):
+        self.command("subscribe", contract={"instrument": instrument})
 
+    def unsubscribe(self, instrument):
+        self.command("unsubscribe", contract={"instrument": instrument})
 
-class PendingStrategy:
-    def __init__(self, name, instrument, orders=(), processing=True) -> None:
-        self.name, self.signal_instrument, self.execution_instrument = name, instrument, instrument
-        self.session = "NY_RTH"
-        self.orders = list(orders)
-        self.processing = processing
+    def place(self, order_id, strategy="A", instrument=MES):
+        self.command("place_order", order=order(order_id, strategy, instrument))
 
-    def get_submitted_orders(self):
-        return [dict(o) for o in self.orders]
+    def requests(self, kind=None):
+        return [c for c in self.outbound.queue
+                if c["correlation_id"] not in self.mine and (kind is None or c["command_type"] == kind)]
 
-    def get_open_orders(self):
-        return []
+    def kinds(self):
+        return [c["command_type"] for c in self.requests() if c["command_type"] != "alert"]
 
-    def get_cancelling_orders(self):
-        return []
+    def alerts(self):
+        return self.requests("alert")
 
-    def is_processing_order(self):
-        return self.processing
+    def reply_all(self):
+        for command in self.requests():
+            if command["correlation_id"] in self.answered:
+                continue
+            result = {"get_executions": self.broker_executions, "get_open_orders": self.broker_open_orders}.get(
+                command["command_type"])
+            if result is None:
+                continue
+            self.answered.add(command["correlation_id"])
+            reply = make_reply(command, self.now, result=result)
+            reply["pushed_at"] = self.now
+            self.inbound.push(reply)
 
+    def step(self):
+        self.monitor.step(self.now)
+        if self.auto_reply:
+            self.reply_all()
+            self.monitor.step(self.now)
 
-def order(order_id, instrument, age, now, side="BUY", qty=1, account="ACC"):
-    return {"order_id": order_id, "instrument": instrument, "side": side, "qty": qty, "account_id": account,
-            "submitted_at": now - age}
+    def run(self, seconds, every=1.0, on_tick=None):
+        end = self.now + seconds
+        while self.now < end - 1e-9:
+            self.now += every
+            if on_tick is not None:
+                on_tick(self)
+            self.step()
 
-
-def execution(order_id, instrument, price, ts, side="BUY", qty=1, account="ACC"):
-    return {"order_id": order_id, "exec_id": f"x{order_id}", "ts": ts, "side": side, "qty": qty, "price": price,
-            "instrument": instrument, "account_id": account, "currency": instrument.currency}
+    def repairs(self):
+        self.inbound.begin_pass()
+        events = []
+        while (event := self.inbound.pop()) is not None:
+            if event["event_type"] in ("repaired_fill", "order_update") and "strategy" in event["data"]:
+                events.append(event)
+        return events

@@ -1,208 +1,298 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import datetime, time
-from typing import Awaitable, Callable
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from datetime import time as time_of_day
+from typing import Callable
 
-from alchemist.clock import Clock
 from alchemist.config import SafetyConfig
-from alchemist.messages import make_event
-from alchemist.safety.fsm_repair import repair_stuck_strategies
+from alchemist.constants.messages import REPLY_EVENT_TYPES
+from alchemist.constants.safety import FEED_EVENTS, ORDER_COMMANDS, TERMINAL_STATUSES
+from alchemist.instruments import Instrument
+from alchemist.messages import make_command
+from alchemist.safety.fsm_repair import repair_orders
 from alchemist.safety.freeze import FreezeDetector
 
 logger = logging.getLogger("safety")
 
-__all__ = ["SafetyConfig", "SafetyMonitor", "backoff_delay"]
+__all__ = ["SafetyConfig", "SafetyMonitor", "WatchState"]
+
+DRAIN_PAUSE_S = 0.02
 
 
-def backoff_delay(attempt: int, base_s: float, cap_s: float) -> float:
-    return min(cap_s, base_s * 2 ** (attempt - 1))
-
-
-def parse_clock_time(text: str) -> time:
+def parse_time_of_day(text: str) -> time_of_day:
     hour, minute = text.split(":")
-    return time(int(hour), int(minute))
+    return time_of_day(int(hour), int(minute))
 
 
-async def no_restart() -> None:
-    logger.critical("broker gateway restart requested, but no restart action is configured",
-                    extra={"event": "gateway_restart_unconfigured"})
+@dataclass
+class Ladder:
+    resubscribes: int = 0
+    reconnected: bool = False
+    restarted: bool = False
+    next_at: float = 0.0
+
+
+@dataclass
+class Repair:
+    picked: list[int]
+    executions_id: int
+    open_orders_id: int
+    replies: dict[int, dict] = field(default_factory=dict)
+
+
+class WatchState:
+    def __init__(self, started_at: float) -> None:
+        self.watched: set[Instrument] = set()
+        self.feed_arrival: dict[str, float] = {}
+        self.feed_event_time: dict[str, float] = {}
+        self.last_heartbeat = started_at
+        self.last_event_time: float | None = None
+        self.pending: dict[int, dict] = {}
+        self.replies: dict[int, dict] = {}
+        self.restored = 0
+        self.lost = 0
+
+    def observe_event(self, event: dict, arrived_at: float) -> None:
+        kind, data = event["event_type"], event["data"]
+        self.last_event_time = max(self.last_event_time or event["event_time"], event["event_time"])
+        if kind in FEED_EVENTS:
+            exchange = data["instrument"].exchange
+            self.feed_arrival[exchange] = arrived_at
+            self.feed_event_time[exchange] = event["event_time"]
+        elif kind == "heartbeat":
+            self.last_heartbeat = arrived_at
+        elif kind in ("order_update", "repaired_fill"):
+            entry = self.pending.get(data["order_id"])
+            if entry is not None:
+                entry["acked"] = True
+                if data["status"] in TERMINAL_STATUSES:
+                    del self.pending[data["order_id"]]
+        elif kind in REPLY_EVENT_TYPES:
+            self.replies[data["correlation_id"]] = data
+        elif kind == "connection_restored":
+            self.restored += 1
+        elif kind == "connection_lost":
+            self.lost += 1
+
+    def observe_command(self, command: dict, sent_at: float) -> None:
+        kind, data = command["command_type"], command["data"]
+        if kind == "subscribe":
+            self.watched.add(data["contract"]["instrument"])
+        elif kind == "unsubscribe":
+            self.watched.discard(data["contract"]["instrument"])
+        elif kind in ORDER_COMMANDS:
+            order = data["order"]
+            self.pending[order["order_id"]] = {"order": order, "strategy": order["slot"], "sent_at": sent_at,
+                                               "acked": False}
 
 
 class SafetyMonitor:
-    def __init__(self, gateway, book, event_buffer, exchange_profiles: dict, clock: Clock, config: SafetyConfig,
-                 restart_gateway: Callable[[], Awaitable[None]] = no_restart,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 freeze: FreezeDetector | None = None) -> None:
-        self.gateway = gateway
-        self.book = book
-        self.event_buffer = event_buffer
+    def __init__(self, inbound, outbound, exchange_profiles: dict, config: SafetyConfig,
+                 system_time: Callable[[], float] = time.time, freeze: FreezeDetector | None = None) -> None:
+        self.inbound = inbound
+        self.outbound = outbound
         self.exchange_profiles = exchange_profiles
-        self.clock = clock
         self.config = config
-        self.restart_gateway = restart_gateway
-        self.sleep = sleep
-        self.failures = 0
-        self.blind_resubscribes = 0
-        self.last_seen_tick: float | None = None
-        self.started_at = clock.timestamp()
-        self.task: asyncio.Task | None = None
+        self.system_time = system_time
         self.freeze = freeze or FreezeDetector(config)
+        self.inbound_tap: deque = deque()
+        self.outbound_tap: deque = deque()
+        inbound.add_tap(self.inbound_tap)
+        outbound.add_tap(self.outbound_tap)
+        self.started_at = system_time()
+        self.state = WatchState(self.started_at)
+        self.ladders: dict[str, Ladder] = {}
+        self.repairs: list[Repair] = []
+        self.blind_resubscribes = 0
+        self.seen_restored = 0
+        self.seen_lost = 0
+        self.last_reconnect_request: float | None = None
         self.last_check: float | None = None
-        self.last_poll: float | None = None
+        self.last_stuck_check = self.started_at
+        self.last_poll = self.started_at
+        self.stopped = threading.Event()
+        self.thread: threading.Thread | None = None
 
     async def start(self) -> None:
-        self.started_at = self.clock.timestamp()
+        self.started_at = self.last_stuck_check = self.last_poll = self.system_time()
+        self.state.last_heartbeat = self.started_at
         self.freeze.start()
-        self.task = asyncio.create_task(self.run())
+        self.stopped.clear()
+        self.thread = threading.Thread(target=self.run, daemon=True, name="safety-watcher")
+        self.thread.start()
 
     async def stop(self) -> None:
-        if self.task is not None:
-            self.task.cancel()
-            await asyncio.gather(self.task, return_exceptions=True)
-            self.task = None
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(timeout=self.config.watch_check_interval_s * 2)
+            self.thread = None
         self.freeze.stop()
 
     def check_in(self) -> None:
         self.freeze.check_in()
 
-    async def repair(self, strategies: list) -> int:
-        return await repair_stuck_strategies(strategies, self.gateway, self.event_buffer, self.clock.timestamp(),
-                                             self.config)
-
-    async def stuck_check(self) -> None:
-        picked = [s for s in list(self.book.strategies) if s.is_processing_order()]
-        if picked:
-            await self.repair(picked)
-
-    async def poll_positions(self) -> None:
-        try:
-            positions = await self.gateway.get_positions()
-        except Exception as exc:
-            logger.warning("positions poll failed", extra={"event": "positions_poll_failed", "reason": repr(exc)})
-            return
-        for row in positions:
-            self.event_buffer.push(make_event("position_update", dict(row), self.clock.timestamp()))
-
-
-    async def run(self) -> None:
-        while True:
+    def run(self) -> None:
+        while not self.stopped.is_set():
             try:
-                await self.step()
-            except asyncio.CancelledError:
-                raise
+                self.step(self.system_time())
             except Exception:
                 logger.exception("safety step failed", extra={"event": "safety_step_failed"})
-            await self.sleep(self.config.heartbeat_interval_s)
+            self.stopped.wait(DRAIN_PAUSE_S)
 
-    async def step(self) -> None:
-        alive = await self.gateway.heartbeat(self.config.heartbeat_timeout_s)
-        if not alive:
-            self.failures += 1
-            await self.reconnect_forever()
-            return
-        self.failures = 0
-        now = self.clock.timestamp()
-        self.note_ticks()
-        if self.gateway.consume_resubscribe_request():
-            await self.on_connectivity_restored()
-        elif self.feed_is_stale(now):
-            await self.climb_ladder()
-        if self.config.positions_poll_s:
-            if self.last_poll is None:
-                self.last_poll = now
-            elif now - self.last_poll >= self.config.positions_poll_s:
-                self.last_poll = now
-                await self.poll_positions()
-        if self.last_check is None:
+    def step(self, now: float) -> None:
+        self.drain(now)
+        if self.last_check is None or now - self.last_check >= self.config.watch_check_interval_s:
             self.last_check = now
-        elif now - self.last_check >= self.config.check_interval_s:
-            self.last_check = now
-            await self.stuck_check()
+            self.check(now)
 
-    def note_ticks(self) -> None:
-        tick = self.gateway.last_tick_ts
-        if tick is not None and tick != self.last_seen_tick:
-            self.last_seen_tick = tick
-            self.blind_resubscribes = 0
+    def drain(self, now: float) -> None:
+        while self.outbound_tap:
+            self.state.observe_command(self.outbound_tap.popleft(), now)
+        while self.inbound_tap:
+            event = self.inbound_tap.popleft()
+            self.state.observe_event(event, event.get("pushed_at", now))
+            if event["event_type"] in FEED_EVENTS:
+                self.ladders.pop(event["data"]["instrument"].exchange, None)
+                self.blind_resubscribes = 0
+        self.finish_repairs(now)
 
-    def fed_profiles(self) -> list:
-        return [self.exchange_profiles[i.exchange] for i in self.book.fed_instruments]
+    def request(self, command_type: str, **data) -> int:
+        command = make_command(command_type, data)
+        self.outbound.push(command)
+        return command["correlation_id"]
 
-    def open_data_profiles(self) -> list:
-        moment = self.clock.now()
-        return [p for p in self.fed_profiles() if p.is_open(p.data_session, moment)]
+    def alert(self, message: str, **fields) -> None:
+        self.request("alert", message=message, **fields)
 
-    def feed_expected(self, now: float) -> bool:
-        return bool(self.open_data_profiles())
+    def check(self, now: float) -> None:
+        self.on_connection_events(now)
+        self.check_heartbeat(now)
+        self.check_feeds(now)
+        self.check_positions_poll(now)
+        self.check_stuck_orders(now)
 
-    def stale_threshold(self) -> float:
-        thresholds = [self.config.stale_overrides.get(p.name, self.config.stale_tick_s)
-                      for p in self.open_data_profiles()]
-        return min(thresholds, default=self.config.stale_tick_s)
+    def on_connection_events(self, now: float) -> None:
+        while self.seen_lost < self.state.lost:
+            self.seen_lost += 1
+            self.alert("broker connection lost", reason="connection_lost")
+        while self.seen_restored < self.state.restored:
+            self.seen_restored += 1
+            self.on_restored(now)
 
-    def feed_is_stale(self, now: float) -> bool:
-        if not self.feed_expected(now):
-            return False
-        last = self.gateway.last_tick_ts
-        return now - (self.started_at if last is None else last) > self.stale_threshold()
-
-    async def on_connectivity_restored(self) -> None:
-        if self.blind_resubscribes >= self.config.resubscribe_without_tick_cap:
-            await self.reconnect_forever(restore_first=False)
-            return
+    def on_restored(self, now: float) -> None:
         self.blind_resubscribes += 1
-        await self.resubscribe_feeds()
+        if self.blind_resubscribes > self.config.resubscribe_without_feed_cap:
+            self.blind_resubscribes = 0
+            self.request_reconnect(now, "restored_without_feed")
+        elif self.state.watched:
+            self.request("resubscribe", instruments=sorted(self.state.watched, key=lambda i: i.symbol))
+        self.start_repair(list(self.state.pending))
 
-    async def resubscribe_feeds(self) -> None:
-        for instrument in list(self.book.fed_instruments):
-            await self.gateway.subscribe_tick(self.book.contracts[instrument])
+    def request_reconnect(self, now: float, reason: str) -> None:
+        self.last_reconnect_request = now
+        self.request("reconnect")
+        self.alert("reconnect requested", reason=reason)
 
-    async def climb_ladder(self) -> None:
-        attempts = min(self.config.resubscribe_max_attempts, self.config.resubscribe_without_tick_cap)
-        baseline = self.gateway.last_tick_ts
-        for attempt in range(attempts):
-            await self.resubscribe_feeds()
-            self.blind_resubscribes += 1
-            await self.sleep(self.config.resubscribe_backoff_base_s * 2 ** attempt)
-            if self.gateway.last_tick_ts != baseline:
-                return
-        await self.reconnect_forever()
+    def check_heartbeat(self, now: float) -> None:
+        reference = max(self.state.last_heartbeat, self.last_reconnect_request or self.started_at)
+        if now - reference > self.config.heartbeat_interval_s + self.config.heartbeat_timeout_s:
+            self.request_reconnect(now, "heartbeat_gap")
 
-    def in_maintenance_window(self) -> bool:
-        now = self.clock.now().time()
+    def watched_by_exchange(self) -> dict[str, list[Instrument]]:
+        grouped: dict[str, list[Instrument]] = {}
+        for instrument in sorted(self.state.watched, key=lambda i: i.symbol):
+            grouped.setdefault(instrument.exchange, []).append(instrument)
+        return grouped
+
+    def armed(self, exchange: str) -> bool:
+        event_time = self.state.feed_event_time.get(exchange)
+        if event_time is None:
+            return False
+        profile = self.exchange_profiles[exchange]
+        return profile.is_open(profile.data_session, datetime.fromtimestamp(event_time, timezone.utc))
+
+    def check_feeds(self, now: float) -> None:
+        for exchange, instruments in self.watched_by_exchange().items():
+            if not self.armed(exchange):
+                continue
+            threshold = self.config.stale_overrides.get(exchange, self.config.stale_feed_s)
+            if now - self.state.feed_arrival[exchange] > threshold:
+                self.climb_ladder(exchange, instruments, now)
+
+    def climb_ladder(self, exchange: str, instruments: list[Instrument], now: float) -> None:
+        ladder = self.ladders.setdefault(exchange, Ladder())
+        if now < ladder.next_at:
+            return
+        resubscribe_limit = min(self.config.resubscribe_max_attempts, self.config.resubscribe_without_feed_cap)
+        if ladder.resubscribes < resubscribe_limit:
+            self.request("resubscribe", instruments=instruments)
+            ladder.next_at = now + self.config.resubscribe_backoff_base_s * 2 ** ladder.resubscribes
+            ladder.resubscribes += 1
+        elif not ladder.reconnected:
+            ladder.reconnected = True
+            ladder.next_at = now + self.config.resubscribe_backoff_base_s * 2 ** ladder.resubscribes
+            self.request_reconnect(now, f"stale_feed_{exchange}")
+        elif not ladder.restarted and self.in_maintenance_window(now):
+            ladder.restarted = True
+            self.request("restart_broker_process")
+            self.alert("broker process restart requested", reason=f"stale_feed_{exchange}")
+
+    def in_maintenance_window(self, now: float) -> bool:
+        moment = datetime.fromtimestamp(now, timezone.utc).time()
         for start, end in self.config.maintenance_windows:
-            begin, finish = parse_clock_time(start), parse_clock_time(end)
-            inside = begin <= now < finish if begin <= finish else now >= begin or now < finish
+            begin, finish = parse_time_of_day(start), parse_time_of_day(end)
+            inside = begin <= moment < finish if begin <= finish else moment >= begin or moment < finish
             if inside:
                 return True
         return False
 
-    async def reconnect_forever(self, restore_first: bool = False) -> None:
-        attempt = 0
-        restarted = False
-        while True:
-            attempt += 1
-            try:
-                await self.gateway.reconnect()
-                self.blind_resubscribes = 0
-                break
-            except Exception as exc:
-                if attempt > 1:
-                    logger.critical("reconnect failed again", extra={
-                        "event": "reconnect_failed", "attempt": attempt, "reason": repr(exc)})
-                else:
-                    logger.error("reconnect failed", extra={
-                        "event": "reconnect_failed", "attempt": attempt, "reason": repr(exc)})
-                if not restarted and self.in_maintenance_window():
-                    restarted = True
-                    await self.restart_gateway()
-                await self.sleep(backoff_delay(attempt, self.config.reconnect_base_s, self.config.reconnect_cap_s))
-        await self.restore_subscriptions()
-        await self.repair(list(self.book.strategies))
+    def check_positions_poll(self, now: float) -> None:
+        if self.config.positions_poll_s and now - self.last_poll >= self.config.positions_poll_s:
+            self.last_poll = now
+            self.request("poll_positions")
 
-    async def restore_subscriptions(self) -> None:
-        await self.resubscribe_feeds()
-        await self.gateway.subscribe_order_update()
-        await self.gateway.subscribe_account_update()
+    def check_stuck_orders(self, now: float) -> None:
+        if now - self.last_stuck_check < self.config.check_interval_s:
+            return
+        self.last_stuck_check = now
+        picked = [order_id for order_id, entry in self.state.pending.items() if not entry["acked"]]
+        if picked:
+            self.start_repair(picked)
+
+    def start_repair(self, picked: list[int]) -> None:
+        if not picked:
+            return
+        self.repairs.append(Repair(picked, self.request("get_executions", since=None),
+                                   self.request("get_open_orders")))
+
+    def finish_repairs(self, now: float) -> None:
+        waiting = []
+        for repair in self.repairs:
+            executions = self.state.replies.get(repair.executions_id)
+            open_orders = self.state.replies.get(repair.open_orders_id)
+            if executions is None or open_orders is None:
+                waiting.append(repair)
+                continue
+            self.state.replies.pop(repair.executions_id, None)
+            self.state.replies.pop(repair.open_orders_id, None)
+            if executions["error"] or open_orders["error"]:
+                logger.warning("repair skipped, the broker state is unreadable", extra={
+                    "event": "repair_skipped", "reason": executions["error"] or open_orders["error"]})
+                continue
+            self.on_replies(executions["result"], open_orders["result"], repair.picked, now)
+        self.repairs = waiting
+
+    def on_replies(self, executions: list, open_orders: list, picked: list[int], now: float | None = None) -> None:
+        now = self.system_time() if now is None else now
+        pending = [self.state.pending[i] for i in picked if i in self.state.pending]
+        event_time = self.state.last_event_time or now
+        for event in repair_orders(pending, executions, open_orders, now, event_time,
+                                   self.config.reject_synthesis_min_age_s):
+            if event["data"]["status"] in TERMINAL_STATUSES:
+                self.state.pending.pop(event["data"]["order_id"], None)
+            self.inbound.push(event)
