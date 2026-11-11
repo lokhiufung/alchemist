@@ -8,11 +8,11 @@ from datetime import timedelta
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
 from alchemist.constants.event_loop import DAYS_PER_MONTH
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
+from alchemist.requests import TerminalRequestError
 
 logger = logging.getLogger("event_loop")
 
@@ -28,7 +28,7 @@ class SeedState(enum.Enum):
     QUARANTINED_TERMINAL = "quarantined_terminal"
 
 
-def no_recorded_bars(instrument: Instrument, session: str) -> list:
+def no_recorded_bars(instrument: Instrument, session: str, at_ts: float) -> list:
     return []
 
 
@@ -71,17 +71,17 @@ class SharedFetch:
 
 
 class Seeder:
-    def __init__(self, gateway, clock: Clock, config: EventLoopConfig,
-                 recorded_bars: Callable[[Instrument, str], list] = no_recorded_bars,
+    def __init__(self, requests, watch_time, config: EventLoopConfig,
+                 recorded_bars: Callable[[Instrument, str, float], list] = no_recorded_bars,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  rng: Callable[[], float] = random.random) -> None:
-        self.gateway = gateway
-        self.clock = clock
+        self.requests = requests
+        self.watch_time = watch_time
         self.config = config
         self.recorded_bars = recorded_bars
         self.sleep = sleep
         self.rng = rng
-        self.shared = SharedFetch(config.seed_fetch_ttl_s, clock.timestamp)
+        self.shared = SharedFetch(config.seed_fetch_ttl_s, watch_time.now)
         self.states: dict[str, SeedState] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.retry_tasks: dict[str, asyncio.Task] = {}
@@ -96,7 +96,7 @@ class Seeder:
 
     def history_window(self, strategy, months: int):
         profile = exchange_profile(strategy.signal_instrument)
-        end = self.clock.now().astimezone(ZoneInfo(profile.tz)).date()
+        end = self.watch_time.moment().astimezone(ZoneInfo(profile.tz)).date()
         days = min(self.config.warmup_max_calendar_days,
                    max(months * DAYS_PER_MONTH, self.config.warmup_min_trading_days * 2))
         return end - timedelta(days=days), end
@@ -125,24 +125,26 @@ class Seeder:
         daily: list = []
         if needs.daily_months > 0 or needs.daily:
             start, end = self.history_window(strategy, needs.daily_months)
-            daily = await self.shared.get(("daily", instrument, session, start, end),
-                                          lambda: self.gateway.get_daily_history(instrument, start, end, session))
+            try:
+                daily = await self.shared.get(("daily", instrument, session, start, end),
+                                              lambda: self.requests.request("get_daily_history",
+                                                                            instrument=instrument, start=start,
+                                                                            end=end, session=session))
+            except TerminalRequestError as exc:
+                raise TerminalSeedError(f"daily history for {instrument.symbol} failed: {exc!r}") from exc
             if not daily:
                 raise RuntimeError(f"no daily history for {instrument.symbol}")
         try:
             seed_bars = await self.shared.get(("seed", instrument, session),
-                                              lambda: self.gateway.get_intraday_seed_bars(instrument, session))
-        except TerminalSeedError:
-            raise
-        except Exception as exc:
-            if self.gateway.intraday_seed_failure_is_fatal():
-                raise TerminalSeedError(f"intraday seed for {instrument.symbol} failed: {exc!r}") from exc
-            raise
+                                              lambda: self.requests.request("get_intraday_seed_bars",
+                                                                            instrument=instrument, session=session))
+        except TerminalRequestError as exc:
+            raise TerminalSeedError(f"intraday seed for {instrument.symbol} failed: {exc!r}") from exc
         if needs.intraday and not seed_bars:
             raise RuntimeError(f"no prior-session bars for {instrument.symbol}")
         strategy.warmup({"daily": daily, "intraday": seed_bars})
         await strategy.rebuild_intraday_state(seed_bars)
-        today = self.recorded_bars(instrument, session)
+        today = self.recorded_bars(instrument, session, self.watch_time.now())
         if today:
             await strategy.rebuild_intraday_state(today)
         if self.state_of(name) is SeedState.QUARANTINED_TERMINAL:

@@ -24,14 +24,11 @@ def bar_path(root: Path, instrument: Instrument, day: str) -> Path:
 
 
 class BarRecorder:
-    def __init__(self, root: Path, book) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.book = book
         self.handles: dict[Path, object] = {}
 
-    def record(self, instrument: Instrument, bar: dict) -> None:
-        profile = exchange_profile(instrument)
-        session = self.book.sessions_by_instrument.get(instrument, profile.data_session)
+    def record(self, instrument: Instrument, bar: dict, session: str) -> None:
         path = bar_path(self.root, instrument, session_day(instrument, session, bar["start_ts"]))
         handle = self.handles.get(path)
         if handle is None:
@@ -47,8 +44,8 @@ class BarRecorder:
         self.handles.clear()
 
 
-def load_recorded_bars(root: Path, instrument: Instrument, session: str, clock) -> list[dict]:
-    day = session_day(instrument, session, clock.timestamp())
+def load_recorded_bars(root: Path, instrument: Instrument, session: str, at_ts: float) -> list[dict]:
+    day = session_day(instrument, session, at_ts)
     path = bar_path(root, instrument, day)
     if not path.exists():
         return []
@@ -61,22 +58,13 @@ def load_recorded_bars(root: Path, instrument: Instrument, session: str, clock) 
 
 
 class TradeRecorder:
-    def __init__(self, root: Path, gateway, book) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.gateway = gateway
-        self.book = book
         self.seen: dict[int, tuple[int, float]] = {}
         self.open_trades: dict[str, dict] = {}
         self.pending: list[dict] = []
 
-    def owner(self, order_id: int):
-        for strategy in self.book.strategies:
-            order = strategy.om.get_order(order_id)
-            if order is not None:
-                return strategy, order
-        return None
-
-    def record_update(self, update: dict) -> None:
+    def record_update(self, update: dict, strategy_key: str, order: dict) -> None:
         if update["status"] not in ("FILLED", "PARTIALLY_FILLED"):
             return
         order_id = update["order_id"]
@@ -84,14 +72,10 @@ class TradeRecorder:
         delta = update["filled"] - seen_qty
         if delta <= 0:
             return
-        found = self.owner(order_id)
-        if found is None:
-            return
-        strategy, order = found
         cost = update["avg_fill_price"] * update["filled"]
         price = (cost - seen_cost) / delta
         self.seen[order_id] = (update["filled"], cost)
-        self.apply_fill(strategy.name, order, delta, price, update["ts"])
+        self.apply_fill(strategy_key, order, delta, price, update["ts"])
 
     def apply_fill(self, name: str, order: dict, qty: int, price: float, ts: float) -> None:
         trade = self.open_trades.get(name)
@@ -131,17 +115,3 @@ class TradeRecorder:
 
     def finalize(self) -> None:
         self.write_pending()
-
-
-class NullRecorder:
-    def record(self, instrument: Instrument, bar: dict) -> None:
-        return None
-
-    def record_update(self, update: dict) -> None:
-        return None
-
-    async def flush(self) -> None:
-        return None
-
-    def finalize(self) -> None:
-        return None

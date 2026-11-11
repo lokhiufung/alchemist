@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from alchemist.event_loop.book import BookClosed, BookError, RuntimeBook
+from alchemist.event_loop.book import BookError, RuntimeBook
 from alchemist.event_loop.resampler import Resampler
 from alchemist.instruments import ES, MES, NQ
 
@@ -45,45 +45,6 @@ def test_commit_records_session_maps():
     assert book.strategies_for(MES) == book.strategies and book.strategies_for(ES) == []
 
 
-async def test_book_op_runs_between_events_and_resolves_its_future():
-    first, second = RecordingStrategy("a"), RecordingStrategy("b")
-    harness = Harness([first])
-    trace = []
-    original = first.on_bar
-    first.on_bar = lambda bars, bar: (trace.append(("bar", bar["start_ts"])), original(bars, bar))[1]
-    harness.push(bar_update(OPEN), bar_update(OPEN + 1))
-    runner = asyncio.create_task(harness.loop.run())
-    await asyncio.sleep(0)
-    result = await harness.loop.enqueue_book_op(lambda book: (trace.append("op"), "done")[1])
-    harness.push(end_of_data())
-    await runner
-    assert result == "done" and trace.count("op") == 1
-    assert first.bars == [OPEN, OPEN + 1]
-
-
-async def test_book_changes_only_between_events():
-    first = RecordingStrategy("a")
-    harness = Harness([first])
-    seen_lists = []
-    original_fan_out = harness.loop.fan_out
-
-    async def fan_out(strategies, method, *args):
-        if method == "on_bar":
-            task = asyncio.create_task(harness.loop.enqueue_book_op(lambda book: book.strategies.append(RecordingStrategy("late"))))
-            await asyncio.sleep(0)
-            seen_lists.append([s.name for s in strategies])
-            await original_fan_out(strategies, method, *args)
-            assert [s.name for s in harness.book.strategies] == ["a"]
-            return
-        await original_fan_out(strategies, method, *args)
-
-    harness.loop.fan_out = fan_out
-    harness.push(bar_update(OPEN), end_of_data())
-    await harness.run()
-    await asyncio.sleep(0)
-    assert seen_lists == [["a"]]
-
-
 async def test_dispatch_sees_one_strategy_list():
     first = RecordingStrategy("a")
     harness = Harness([first])
@@ -101,31 +62,11 @@ async def test_dispatch_sees_one_strategy_list():
     assert late.bars == []
 
 
-async def test_operation_after_shutdown_is_refused_and_queued_one_fails():
-    harness = Harness([RecordingStrategy("a")])
-    harness.push(bar_update(OPEN), end_of_data())
-    await harness.run()
-    with pytest.raises(BookClosed, match="book closed"):
-        await harness.loop.enqueue_book_op(lambda book: None)
-
-
-async def test_queued_operation_at_stop_fails_with_book_closed():
-    harness = Harness([RecordingStrategy("a")])
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    from alchemist.messages import make_event
-    harness.push(end_of_data(), make_event("book_op", {"fn": lambda book: 1, "future": future}, 0.0))
-    harness.loop.book_closed = True
-    await harness.loop.drain_remaining()
-    with pytest.raises(BookClosed):
-        future.result()
-
-
 def build_book(message_type="bar_update", resolution=1.0, slot_resolution=1.0):
     gateway = SeedGateway(message_type=message_type, resolution=resolution)
     seeder, _ = make_seeder(gateway)
     book = RuntimeBook()
-    book.attach(gateway, seeder)
+    book.attach(seeder.requests, seeder)
     strategy = SeedStrategy("slot")
     strategy.resolution_s = slot_resolution
     return book, gateway, seeder, strategy
@@ -151,7 +92,7 @@ async def test_admit_on_tick_feed_creates_a_resampler_and_subscribes_once():
     await book.admit(second)
     assert isinstance(book.resamplers[MES], Resampler)
     assert gateway.subscribed == [MES] and len(book.strategies) == 2
-    assert gateway.sessions and MES in gateway.sessions[-1]
+    assert MES in book.sessions_by_instrument
 
 
 async def test_admit_subscribes_only_new_signal_instruments_and_reserves_execution_instrument():
@@ -182,3 +123,47 @@ async def test_admit_with_a_fetch_miss_still_commits_and_retries():
     await book.admit(strategy)
     assert book.strategies == [strategy] and "slot" in book.retry_tasks and book.retry_tasks["slot"]
     seeder.cancel_retries()
+
+
+def test_commit_sends_a_member_event_to_each_listener():
+    joined = []
+    listener = type("Listener", (), {"member_joined": lambda self, strategy: joined.append(strategy.name)})()
+    book = RuntimeBook()
+    book.member_listeners.append(listener)
+    book.commit(SeedStrategy("a"), [])
+    with pytest.raises(BookError):
+        book.commit(SeedStrategy("a"), [])
+    assert joined == ["a"]
+
+
+async def test_book_op_runs_between_events_and_resolves_its_future():
+    from alchemist.messages import make_event, make_reply
+    first = RecordingStrategy("a")
+    harness = Harness([first])
+    trace = []
+    original = first.on_bar
+    first.on_bar = lambda bars, bar: (trace.append(("bar", bar["start_ts"])), original(bars, bar))[1]
+
+    async def deploy_step(request):
+        contract = await harness.requests.request("resolve_contract", instrument=first.signal_instrument)
+        trace.append("op")
+        harness.book.reserve_instrument(first.signal_instrument, contract, fed=False)
+        return contract
+
+    step = None
+
+    def handle(request):
+        nonlocal step
+        step = asyncio.ensure_future(deploy_step(request))
+
+    harness.deploy.handle = handle
+    harness.push(make_event("deploy_request", {"request_id": 1, "key": "b", "config_sha256": "x"}, 0.0))
+    runner = asyncio.create_task(harness.loop.run())
+    command = await harness.outbound.get()
+    harness.push(bar_update(OPEN), make_reply(command, 0.0, result={"instrument": first.signal_instrument}),
+                 bar_update(OPEN + 1))
+    contract = await step
+    harness.push(end_of_data())
+    await runner
+    assert contract == {"instrument": first.signal_instrument} and trace.count("op") == 1
+    assert first.bars == [OPEN, OPEN + 1] and trace.index("op") > trace.index(("bar", OPEN))

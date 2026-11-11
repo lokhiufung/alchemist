@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
 
-from alchemist.clock import ReplayClock
 from alchemist.config import EventLoopConfig
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
@@ -11,7 +10,9 @@ from alchemist.exchanges import exchange_profile
 from alchemist.instruments import ES, FDAX, MES, NQ
 from alchemist.messages import make_event
 
-from el_helpers import RecordingStrategy, StubAux, StubRecorder, StubSafety
+from el_helpers import RecordingStrategy, StubAux, StubDeploy, StubRecorder, StubSafety
+from request_helpers import DirectRequests
+from time_helpers import ManualWatchTime
 
 
 def at(instrument, session, hour, minute, second=0, day=15, month=4):
@@ -56,12 +57,6 @@ class ShutdownGateway:
         self.next_id += 1
         return self.next_id
 
-    def market_data_type(self, instrument):
-        return ("bar_update", 1.0)
-
-    def on_bar(self, instrument, bar):
-        return None
-
     async def start_feed(self):
         return None
 
@@ -88,16 +83,19 @@ class ShutdownGateway:
 class Rig:
     def __init__(self, strategies, start, gateway=None, config=None) -> None:
         self.config = config or EventLoopConfig()
-        self.clock = ReplayClock(start)
+        self.watch_time = ManualWatchTime(start)
         self.buffer = EventBuffer(self.config)
+        self.feed: list[dict] = []
+        self.push_now = self.buffer.push
+        self.buffer.push = lambda event, wake=True: self.feed.append(event)
         self.book = RuntimeBook()
         self.gateway = gateway or ShutdownGateway()
+        self.requests = DirectRequests(self.gateway)
         self.bar_recorder, self.trade_recorder = StubRecorder(), StubRecorder()
-        self.shutdown = ShutdownCoordinator(self.book, self.gateway, self.clock, self.config)
-        self.loop = EventLoop(self.buffer, self.book, self.gateway, StubAux(), StubSafety(), self.bar_recorder,
-                              self.trade_recorder, self.shutdown, self.clock, self.config,
-                              clock_advance=self.clock.advance)
-        self.shutdown.attach(self.loop) if hasattr(self.shutdown, "attach") else None
+        self.shutdown = ShutdownCoordinator(self.book, self.requests, self.watch_time, self.config)
+        self.loop = EventLoop(self.buffer, self.requests, self.book, StubAux(), self.bar_recorder,
+                              self.trade_recorder, self.shutdown, self.watch_time, StubDeploy(),
+                              StubSafety().check_in, self.config)
         for strategy in strategies:
             self.book.strategies.append(strategy)
             self.book.sessions_by_strategy[strategy.name] = strategy.session
@@ -108,5 +106,14 @@ class Rig:
         for index in range(count):
             self.buffer.push(bar_update(begin.timestamp() + index, close, instrument))
 
+    async def replay_feed(self):
+        self.buffer.push = self.push_now
+        for event in self.feed:
+            await self.buffer.wait_idle()
+            self.push_now(event)
+        self.feed = []
+
     async def run(self, timeout=10.0):
+        producer = asyncio.create_task(self.replay_feed())
         await asyncio.wait_for(self.loop.run(), timeout)
+        producer.cancel()

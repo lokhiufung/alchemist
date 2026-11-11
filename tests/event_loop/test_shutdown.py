@@ -191,7 +191,7 @@ async def test_event_loop_never_calls_safety_repair():
     assert offenders == []
 
 
-async def test_replay_clock_drives_flatten_and_flush():
+async def test_watch_time_drives_flatten_and_flush():
     import time
     from datetime import datetime as dt
     from el_helpers import Harness, RecordingStrategy, tick
@@ -204,14 +204,28 @@ async def test_replay_clock_drives_flatten_and_flush():
     await rig.run()
     cutoff = at(MES, "NY_RTH", 15, 59, 0).timestamp()
     assert strategy.request_times[0] == cutoff and abs(strategy.request_times[0] - started) > 86_400
+    from alchemist.messages import make_event
     flush_strategy = RecordingStrategy()
-    from alchemist.clock import ReplayClock
-    harness = Harness([flush_strategy], message_type="tick_update",
-                      clock=ReplayClock(dt.fromtimestamp(1_776_259_800.0 + 5, __import__("datetime").timezone.utc)))
-    harness.push(tick(1_776_259_800.2, 1.0, 1))
-    harness.push(end_of_data())
+    harness = Harness([flush_strategy], message_type="tick_update")
+    emitted = []
+    original = harness.loop.emit_bar
+
+    async def spy(instrument, bar, source, origin=None):
+        emitted.append(source)
+        await original(instrument, bar, source, origin)
+
+    harness.loop.emit_bar = spy
+    harness.push(tick(1_776_259_800.2, 1.0, 1), make_event("heartbeat", {}, 1_776_259_805.0))
+
+    async def end_after_flush():
+        while not flush_strategy.bars:
+            await asyncio.sleep(0)
+        harness.push(end_of_data())
+
+    ender = asyncio.create_task(end_after_flush())
     await harness.run()
-    assert flush_strategy.bars == [1_776_259_800.0]
+    await ender
+    assert flush_strategy.bars == [1_776_259_800.0] and emitted == ["flush"]
 
 
 async def test_process_due_does_not_recompute_session_windows_on_every_call(monkeypatch):
@@ -228,7 +242,7 @@ async def test_process_due_does_not_recompute_session_windows_on_every_call(monk
     start = at(MES, "NY_RTH", 11, 0, 0)
     rig = Rig(strategies, start)
     for second in range(500):
-        rig.clock.advance(start + timedelta(seconds=second))
+        rig.watch_time.advance(start + timedelta(seconds=second))
         await rig.shutdown.process_due()
     assert len(calls) <= 15 * 3
 
@@ -249,4 +263,4 @@ async def test_loop_exits_by_itself_at_run_end():
     rig.push_second_bars(MES, start, 30)
     await rig.run()
     assert rig.shutdown.shutdown_requested
-    assert rig.clock.now() >= rig.shutdown.run_exit
+    assert rig.watch_time.now() >= rig.shutdown.run_exit.timestamp()

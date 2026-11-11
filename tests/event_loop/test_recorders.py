@@ -4,12 +4,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from alchemist.clock import ReplayClock
-from alchemist.event_loop.book import RuntimeBook
-from alchemist.event_loop.recorders import BarRecorder, NullRecorder, TradeRecorder, load_recorded_bars
+from alchemist.event_loop.recorders import BarRecorder, TradeRecorder, load_recorded_bars
 from alchemist.instruments import MES
 
-from el_helpers import RecordingStrategy
 from sd_helpers import at
 
 
@@ -23,10 +20,13 @@ class OwnedOrders:
         return {"order_id": order_id, "side": self.sides[order_id], "instrument": MES}
 
 
-def book_with(session):
-    book = RuntimeBook()
-    book.sessions_by_instrument[MES] = session
-    return book
+class SessionBarRecorder(BarRecorder):
+    def __init__(self, root, session):
+        super().__init__(root)
+        self.session = session
+
+    def record(self, instrument, bar, session=None):
+        super().record(instrument, bar, session or self.session)
 
 
 def bar(ts, close=100.0):
@@ -40,7 +40,7 @@ def files(root):
 
 @pytest.mark.parametrize("session,start", [("NY_RTH", at(MES, "NY_RTH", 15, 0)), ("NY_GLOBEX", at(MES, "NY_GLOBEX", 23, 59, 0, day=14))])
 def test_scenario_recording_bars(session, start, tmp_path):
-    recorder = BarRecorder(tmp_path, book_with(session))
+    recorder = SessionBarRecorder(tmp_path, session)
     for index in range(180):
         recorder.record(MES, bar(start.timestamp() + index))
     recorder.finalize()
@@ -50,7 +50,7 @@ def test_scenario_recording_bars(session, start, tmp_path):
 
 
 def test_overnight_session_bars_not_split_at_midnight(tmp_path):
-    recorder = BarRecorder(tmp_path, book_with("NY_GLOBEX"))
+    recorder = SessionBarRecorder(tmp_path, "NY_GLOBEX")
     before = at(MES, "NY_GLOBEX", 23, 59, 30, day=14).timestamp()
     for index in range(120):
         recorder.record(MES, bar(before + index))
@@ -59,7 +59,7 @@ def test_overnight_session_bars_not_split_at_midnight(tmp_path):
 
 
 def test_next_overnight_session_gets_its_own_file(tmp_path):
-    recorder = BarRecorder(tmp_path, book_with("NY_GLOBEX"))
+    recorder = SessionBarRecorder(tmp_path, "NY_GLOBEX")
     recorder.record(MES, bar(at(MES, "NY_GLOBEX", 20, 0, 0, day=14).timestamp()))
     recorder.record(MES, bar(at(MES, "NY_GLOBEX", 20, 0, 0, day=15).timestamp()))
     recorder.finalize()
@@ -67,7 +67,7 @@ def test_next_overnight_session_gets_its_own_file(tmp_path):
 
 
 def test_recorded_bar_durable_before_finalize(tmp_path):
-    recorder = BarRecorder(tmp_path, book_with("NY_RTH"))
+    recorder = SessionBarRecorder(tmp_path, "NY_RTH")
     start = at(MES, "NY_RTH", 10, 0).timestamp()
     for index in range(10):
         recorder.record(MES, bar(start + index))
@@ -76,15 +76,14 @@ def test_recorded_bar_durable_before_finalize(tmp_path):
 
 
 def test_recorded_bars_load_back_for_a_mid_session_start(tmp_path):
-    recorder = BarRecorder(tmp_path, book_with("NY_RTH"))
+    recorder = SessionBarRecorder(tmp_path, "NY_RTH")
     start = at(MES, "NY_RTH", 10, 0).timestamp()
     for index in range(5):
         recorder.record(MES, bar(start + index, 100.0 + index))
     recorder.finalize()
-    clock = ReplayClock(datetime.fromtimestamp(start + 10, timezone.utc))
-    loaded = load_recorded_bars(tmp_path, MES, "NY_RTH", clock)
+    loaded = load_recorded_bars(tmp_path, MES, "NY_RTH", start + 10)
     assert [b["close"] for b in loaded] == [100.0 + i for i in range(5)] and loaded[0]["instrument"] == MES
-    assert load_recorded_bars(tmp_path / "missing", MES, "NY_RTH", clock) == []
+    assert load_recorded_bars(tmp_path / "missing", MES, "NY_RTH", start + 10) == []
 
 
 def fill(order_id, filled, avg, ts, side="BUY"):
@@ -92,13 +91,19 @@ def fill(order_id, filled, avg, ts, side="BUY"):
             "last_fill_price": avg, "ts": ts, "account_id": "ACC", "instrument": MES, "reason": None}
 
 
+class OwnerTradeRecorder(TradeRecorder):
+    def __init__(self, root, owned):
+        super().__init__(root)
+        self.owned = OwnedOrders(owned)
+
+    def record_update(self, update):
+        order = self.owned.get_order(update["order_id"])
+        if order is not None:
+            super().record_update(update, "slot", order)
+
+
 def recorder_for(tmp_path, owned):
-    book = RuntimeBook()
-    strategy = RecordingStrategy("slot")
-    strategy.om = OwnedOrders(owned)
-    strategy.execution_instrument = MES
-    book.strategies.append(strategy)
-    return TradeRecorder(tmp_path, None, book)
+    return OwnerTradeRecorder(tmp_path, owned)
 
 
 def rows(root):
@@ -139,18 +144,10 @@ def test_unowned_updates_are_ignored(tmp_path):
     assert recorder.pending == []
 
 
-async def test_null_recorder_does_nothing():
-    recorder = NullRecorder()
-    recorder.record(MES, {})
-    recorder.record_update({})
-    await recorder.flush()
-    recorder.finalize()
-
-
 @pytest.mark.parametrize("session,start", [("NY_RTH", at(MES, "NY_RTH", 15, 58)),
                                            ("NY_GLOBEX", at(MES, "NY_GLOBEX", 23, 59, 0, day=14))])
 async def test_scenario_recording(session, start, tmp_path):
-    bars = BarRecorder(tmp_path, book_with(session))
+    bars = SessionBarRecorder(tmp_path, session)
     for index in range(120):
         bars.record(MES, bar(start.timestamp() + index))
     bars.finalize()

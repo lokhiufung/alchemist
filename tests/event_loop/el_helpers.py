@@ -2,34 +2,38 @@ import asyncio
 from collections import deque
 from datetime import datetime, timezone
 
-from alchemist.clock import Clock, ReplayClock
 from alchemist.config import EventLoopConfig
 from alchemist.event_loop.book import RuntimeBook
-from alchemist.event_loop.buffer import EventBuffer
+from alchemist.event_loop.buffer import CommandBuffer, EventBuffer
 from alchemist.event_loop.loop import EventLoop
 from alchemist.event_loop.resampler import Resampler
+from alchemist.event_loop.watch_time import WatchTime
 from alchemist.instruments import ES, MES
 from alchemist.messages import make_event
+from alchemist.requests import Requests
 
 OPEN = datetime(2026, 4, 15, 13, 30, tzinfo=timezone.utc).timestamp()
 
 
-class FakeWallClock(Clock):
-    def __init__(self, start: float = OPEN) -> None:
+class FakeSystemTime:
+    def __init__(self, start: float = 0.0) -> None:
         self.current = start
         self.waits = 0
 
-    def now(self):
-        return datetime.fromtimestamp(self.current, timezone.utc)
+    def __call__(self) -> float:
+        return self.current
 
-    async def wait(self, timeout):
-        self.waits += 1
-        self.current += timeout
-        await asyncio.sleep(0)
+
+class StubOrderBook:
+    def __init__(self) -> None:
+        self.orders: dict[int, dict] = {}
+
+    def get_order(self, order_id):
+        return self.orders.get(order_id)
 
 
 class RecordingStrategy:
-    def __init__(self, name="s", instrument=MES, raises_on_bar=False, log=None, clock=None) -> None:
+    def __init__(self, name="s", instrument=MES, raises_on_bar=False, log=None, watch_time=None) -> None:
         self.name, self.signal_instrument = name, instrument
         self.bars: list[float] = []
         self.events: list[tuple] = []
@@ -37,15 +41,16 @@ class RecordingStrategy:
         self.quarantined = False
         self.closed_trades = 0
         self.log = log if log is not None else []
-        self.clock = clock
-        self.clock_at_bar: list[float] = []
+        self.watch_time = watch_time
+        self.watch_at_bar: list[float] = []
         self.flatten_requests: list[tuple[str, float]] = []
         self.flat_idle = True
+        self.om = StubOrderBook()
 
     def on_bar(self, bars, bar):
         self.log.append(("strategy", self.name, bar["start_ts"]))
-        if self.clock is not None:
-            self.clock_at_bar.append(self.clock.timestamp())
+        if self.watch_time is not None:
+            self.watch_at_bar.append(self.watch_time.now())
         if self.raises_on_bar:
             raise RuntimeError(f"{self.name} broke")
         self.bars.append(bar["start_ts"])
@@ -83,15 +88,6 @@ class RecordingStrategy:
         return None
 
 
-class StubGateway:
-    def __init__(self, message_type="bar_update", log=None) -> None:
-        self.message_type = message_type
-        self.log = log if log is not None else []
-
-    def market_data_type(self, instrument):
-        return (self.message_type, 1.0 if self.message_type == "bar_update" else None)
-
-
 class StubAux:
     def __init__(self, log=None) -> None:
         self.log = log if log is not None else []
@@ -107,10 +103,10 @@ class StubRecorder:
         self.flushes = 0
         self.finalized = False
 
-    def record(self, instrument, bar):
+    def record(self, instrument, bar, session):
         self.bars.append(bar["start_ts"])
 
-    def record_update(self, update):
+    def record_update(self, update, strategy_key, order):
         self.updates.append(update["order_id"])
 
     async def flush(self):
@@ -136,8 +132,11 @@ class StubShutdown:
     def ready_to_exit(self):
         return True
 
-    async def finalize(self, drain_remaining):
-        await drain_remaining()
+    async def finalize(self, settle):
+        await settle()
+
+    def request_shutdown(self, reason):
+        self.shutdown_requested = True
 
 
 class StubSafety:
@@ -148,15 +147,23 @@ class StubSafety:
         self.check_ins += 1
 
 
+class StubDeploy:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def handle(self, request):
+        self.requests.append(request)
+
+
 def bar_update(ts, close=100.0, instrument=MES, **fields):
     bar = {"instrument": instrument, "start_ts": ts, "end_ts": ts + 1.0, "open": close, "high": close, "low": close,
            "close": close, "volume": 1.0, "resolution_s": 1.0, "broker_ts": ts + 1.0, **fields}
-    return make_event("bar_update", bar, 0.0)
+    return make_event("bar_update", bar, ts + 1.0)
 
 
 def tick(ts, price, size, instrument=MES, recv_ts=0.0):
     return make_event("tick_update", {"instrument": instrument, "broker_ts": ts, "recv_ts": recv_ts,
-                                      "price": price, "size": size}, 0.0)
+                                      "price": price, "size": size}, ts)
 
 
 def order_update(order_id=1, status="FILLED"):
@@ -174,20 +181,25 @@ def end_of_data():
 
 
 class Harness:
-    def __init__(self, strategies=None, message_type="bar_update", clock=None, resample=None, config=None,
-                 log=None) -> None:
+    def __init__(self, strategies=None, message_type="bar_update", system=None, resample=None, config=None,
+                 log=None, shutdown=None) -> None:
         self.log = log if log is not None else []
-        self.clock = clock or ReplayClock(datetime.fromtimestamp(OPEN, timezone.utc))
+        self.system = system or FakeSystemTime()
+        self.watch_time = WatchTime(system_time=self.system)
         self.config = config or EventLoopConfig()
         self.buffer = EventBuffer(self.config)
+        self.buffer.wait = self.wait
+        self.outbound = CommandBuffer()
+        self.requests = Requests(self.outbound)
         self.book = RuntimeBook()
-        self.gateway = StubGateway(message_type, self.log)
         self.aux = StubAux(self.log)
         self.bar_recorder, self.trade_recorder = StubRecorder(), StubRecorder()
         self.safety = StubSafety()
-        advance = self.clock.advance if isinstance(self.clock, ReplayClock) else (lambda moment: None)
-        self.loop = EventLoop(self.buffer, self.book, self.gateway, self.aux, self.safety, self.bar_recorder,
-                              self.trade_recorder, StubShutdown(), self.clock, self.config, clock_advance=advance)
+        self.deploy = StubDeploy()
+        self.shutdown = shutdown or StubShutdown()
+        self.loop = EventLoop(self.buffer, self.requests, self.book, self.aux, self.bar_recorder,
+                              self.trade_recorder, self.shutdown, self.watch_time, self.deploy, self.safety.check_in,
+                              self.config)
         for strategy in strategies or []:
             self.add(strategy)
         if message_type == "tick_update":
@@ -202,6 +214,11 @@ class Harness:
     def push(self, *events):
         for event in events:
             self.buffer.push(event)
+
+    async def wait(self):
+        self.system.waits += 1
+        self.system.current += self.config.drain_timeout_s
+        await asyncio.sleep(0)
 
     async def run(self, timeout=5.0):
         await asyncio.wait_for(self.loop.run(), timeout)

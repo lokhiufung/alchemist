@@ -6,15 +6,15 @@ import logging
 import sys
 import time
 from collections import deque
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
 from alchemist.constants.event_loop import BAR_HISTORY
-from alchemist.event_loop.book import BookClosed, RuntimeBook
+from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
 from alchemist.event_loop.metrics import LatencyMetrics
+from alchemist.event_loop.watch_time import WatchTime
+from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
 
@@ -34,22 +34,21 @@ def handles(*event_types: str) -> Callable[[Handler], Handler]:
 
 
 class EventLoop:
-    def __init__(self, event_buffer: EventBuffer, book: RuntimeBook, gateway: Any, aux: Any, safety: Any,
-                 bar_recorder: Any, trade_recorder: Any, shutdown: Any, clock: Clock,
-                 config: EventLoopConfig | None = None,
-                 clock_advance: Callable[[datetime], None] | None = None,
+    def __init__(self, event_buffer: EventBuffer, requests: Any, book: RuntimeBook, aux: Any,
+                 bar_recorder: Any, trade_recorder: Any, shutdown: Any, watch_time: WatchTime, deploy: Any,
+                 check_in: Callable[[], None], config: EventLoopConfig | None = None,
                  metrics: LatencyMetrics | None = None, wall: Callable[[], float] = time.time) -> None:
         self.event_buffer = event_buffer
+        self.requests = requests
         self.book = book
-        self.gateway = gateway
         self.aux = aux
-        self.safety = safety
         self.bar_recorder = bar_recorder
         self.trade_recorder = trade_recorder
         self.shutdown = shutdown
-        self.clock = clock
+        self.watch_time = watch_time
+        self.deploy = deploy
+        self.check_in = check_in
         self.config = config or EventLoopConfig()
-        self.clock_advance = clock_advance or (lambda moment: None)
         self.metrics = metrics or LatencyMetrics(wall)
         self.wall = wall
         self.slot_cost = 0.0
@@ -60,7 +59,6 @@ class EventLoop:
         self.stopping = False
         self.backlog_alerted = False
         self.book_closed = False
-        self.feed_types: dict[Instrument, str] = {}
 
     def finished(self) -> bool:
         return self.should_stop() or (self.end_of_data_seen and not len(self.event_buffer))
@@ -72,7 +70,7 @@ class EventLoop:
         sys.setswitchinterval(self.config.gil_switch_interval_s)
         self.event_buffer.bind_loop(asyncio.get_running_loop())
         while not self.finished():
-            self.safety.check_in()
+            self.check_in()
             self.metrics.maybe_flush(self.wall())
             await self.drain_pass()
             await self.fire_due_bars()
@@ -82,11 +80,26 @@ class EventLoop:
             if len(self.event_buffer):
                 await asyncio.sleep(0)
             else:
-                await self.event_buffer.wait(self.clock)
+                await self.event_buffer.wait()
         self.book_closed = True
-        await self.shutdown.finalize(self.drain_remaining)
+        drainer = asyncio.get_running_loop().create_task(self.drain_forever())
+        try:
+            await self.shutdown.finalize(self.settle)
+        finally:
+            drainer.cancel()
+            await asyncio.gather(drainer, return_exceptions=True)
         self.bar_recorder.finalize()
         self.trade_recorder.finalize()
+
+    async def drain_forever(self) -> None:
+        while True:
+            self.check_in()
+            await self.drain_remaining()
+            await self.event_buffer.wait()
+
+    async def settle(self) -> None:
+        await asyncio.sleep(0)
+        await self.event_buffer.wait_idle()
 
     async def drain_pass(self) -> None:
         self.event_buffer.begin_pass()
@@ -113,6 +126,7 @@ class EventLoop:
     async def safe_dispatch(self, event: dict) -> None:
         started = self.wall()
         self.current_arrival = event.get("pushed_at", started)
+        self.watch_time.observe(event["event_time"], self.watch_time.system_time())
         self.slot_cost = 0.0
         try:
             await self.dispatch(event)
@@ -144,27 +158,18 @@ class EventLoop:
             return
         await handler(self, event["data"])
 
-    async def enqueue_book_op(self, fn: Callable[[RuntimeBook], Any]) -> Any:
-        if self.book_closed:
-            raise BookClosed("book closed")
-        future = asyncio.get_running_loop().create_future()
-        self.event_buffer.push(make_event("book_op", {"fn": fn, "future": future}, self.clock.timestamp()))
-        return await future
-
     async def emit_bar(self, instrument: Instrument, bar: dict, source: str, origin: dict | None = None) -> None:
         bar["instrument"] = instrument
         self.event_buffer.push(make_event("bar", {"instrument": instrument, "bar": bar, "source": source,
-                                                  "origin": origin}, self.clock.timestamp()), wake=False)
+                                                  "origin": origin}, bar["end_ts"]), wake=False)
 
     async def dispatch_bar(self, instrument: Instrument, bar: dict) -> None:
-        bar_end = datetime.fromtimestamp(bar["end_ts"], timezone.utc)
-        if bar_end > self.clock.now():
-            self.clock_advance(bar_end)
         await self.shutdown.process_due()
         self.aux.annotate(instrument, bar)
         history = self.book.bars.setdefault(instrument, deque(maxlen=BAR_HISTORY))
         history.append(bar)
-        self.bar_recorder.record(instrument, bar)
+        self.bar_recorder.record(instrument, bar, self.book.sessions_by_instrument.get(
+            instrument, exchange_profile(instrument).data_session))
         flattening = self.shutdown.flattening_names()
         members = [s for s in self.book.strategies_for(instrument) if s.name not in flattening]
         await self.fan_out(members, "on_bar", history, bar)
@@ -199,16 +204,19 @@ class EventLoop:
             strategy.quarantine(f"{count} consecutive on_bar errors")
 
     def ticked_resamplers(self) -> list[tuple[Instrument, Any]]:
-        ticked = []
-        for instrument, resampler in list(self.book.resamplers.items()):
-            if instrument not in self.feed_types:
-                self.feed_types[instrument] = self.gateway.market_data_type(instrument)[0]
-            if self.feed_types[instrument] == "tick_update":
-                ticked.append((instrument, resampler))
-        return ticked
+        return list(self.book.resamplers.items())
+
+    def order_owner(self, order_id: int) -> tuple[Any, dict] | None:
+        for strategy in self.book.strategies:
+            order = strategy.om.get_order(order_id)
+            if order is not None:
+                return strategy, order
+        return None
 
     async def fire_due_bars(self) -> None:
-        now = self.clock.timestamp()
+        now = self.watch_time.now()
+        if now is None:
+            return
         for instrument, resampler in self.ticked_resamplers():
             bar = resampler.flush_due(now, self.config.bar_flush_grace_s)
             if bar is not None:
@@ -252,8 +260,12 @@ async def on_bar_event(loop: EventLoop, data: dict) -> None:
 @handles("order_update", "repaired_fill")
 async def on_order_update(loop: EventLoop, data: dict) -> None:
     strategies = loop.book.strategies
-    await loop.fan_out(strategies, "on_order_update", data)
-    loop.trade_recorder.record_update(data)
+    key = data.get("strategy")
+    targets = strategies if key is None else [s for s in strategies if s.name == key]
+    await loop.fan_out(targets, "on_order_update", data)
+    owner = loop.order_owner(data["order_id"])
+    if owner is not None:
+        loop.trade_recorder.record_update(data, owner[0].name, owner[1])
     for strategy in list(strategies):
         if strategy.consume_trade_closed():
             await loop.trade_recorder.flush()
@@ -269,19 +281,37 @@ async def on_position_update(loop: EventLoop, data: dict) -> None:
     await loop.fan_out(loop.book.strategies, "on_position_update", data)
 
 
-@handles("book_op")
-async def on_book_op(loop: EventLoop, data: dict) -> None:
-    future = data["future"]
-    if loop.book_closed:
-        future.set_exception(BookClosed("book closed"))
-        return
-    try:
-        result = data["fn"](loop.book)
-        if inspect.isawaitable(result):
-            result = await result
-        future.set_result(result)
-    except Exception as exc:
-        future.set_exception(exc)
+@handles("reply", "executions", "open_orders", "positions")
+async def on_reply(loop: EventLoop, data: dict) -> None:
+    loop.requests.resolve(data)
+    if data["request"] == "poll_positions":
+        logger.info("broker positions", extra={"event": "broker_positions", "positions": data["result"],
+                                               "error": data["error"]})
+
+
+@handles("heartbeat")
+async def on_heartbeat(loop: EventLoop, data: dict) -> None:
+    return None
+
+
+@handles("connection_lost")
+async def on_connection_lost(loop: EventLoop, data: dict) -> None:
+    logger.warning("broker connection lost", extra={"event": "connection_lost"})
+
+
+@handles("connection_restored")
+async def on_connection_restored(loop: EventLoop, data: dict) -> None:
+    loop.requests.raise_order_id_floor(data["next_order_id"])
+
+
+@handles("deploy_request")
+async def on_deploy_request(loop: EventLoop, data: dict) -> None:
+    loop.deploy.handle(data)
+
+
+@handles("os_signal")
+async def on_os_signal(loop: EventLoop, data: dict) -> None:
+    loop.shutdown.request_shutdown("signal")
 
 
 @handles("end_of_data")

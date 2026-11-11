@@ -10,7 +10,7 @@ from alchemist.logger import fields_of
 def latency_rows(caplog):
     return [fields_of(r) for r in caplog.records if getattr(r, "event", None) == "latency"]
 
-from el_helpers import (OPEN, FakeWallClock, Harness, RecordingStrategy, bar_update, end_of_data, order_update,
+from el_helpers import (OPEN, Harness, RecordingStrategy, bar_update, end_of_data, order_update,
                         tick)
 
 
@@ -21,9 +21,7 @@ def keys_of(record):
 @pytest.mark.parametrize("kind", ["tick_closing_bar", "bar_update", "flushed_bar", "order_update"])
 async def test_processing_and_feed_latency_logged_per_message(kind):
     strategy = RecordingStrategy()
-    clock = FakeWallClock(OPEN + 10)
-    harness = Harness([strategy], message_type="bar_update" if kind in ("bar_update", "order_update") else "tick_update",
-                      clock=clock)
+    harness = Harness([strategy], message_type="bar_update" if kind in ("bar_update", "order_update") else "tick_update")
     if kind == "tick_closing_bar":
         harness.push(tick(OPEN + 0.5, 1.0, 1, recv_ts=OPEN + 0.51), tick(OPEN + 1.5, 1.0, 1, recv_ts=OPEN + 1.52),
                      end_of_data())

@@ -5,11 +5,10 @@ import time
 
 import pytest
 
-from alchemist.clock import ReplayClock
 from alchemist.config import EventLoopConfig
 from alchemist.event_loop.buffer import EventBuffer
 
-from el_helpers import FakeWallClock, Harness, RecordingStrategy, bar_update, order_update, tick
+from el_helpers import Harness, RecordingStrategy, bar_update, order_update, tick
 
 
 def drain_all(buffer):
@@ -76,38 +75,31 @@ def test_burst_sends_one_wakeup_while_loop_awake(burst):
 async def test_push_racing_end_of_drain_is_not_left_for_timeout():
     config = EventLoopConfig(drain_timeout_s=0.5)
     buffer = EventBuffer(config)
-    clock = type("C", (), {})()
-    from alchemist.clock import WallClock
-    wall = WallClock(buffer.drain_wakeup)
     buffer.begin_pass()
     assert buffer.pop() is None
     buffer.push(order_update(1))
     started = time.perf_counter()
-    await buffer.wait(wall)
+    await buffer.wait()
     assert time.perf_counter() - started < config.drain_timeout_s / 5
     assert buffer.pop()["event_type"] == "order_update"
 
 
 async def test_drain_starts_on_wake_without_timer():
-    from alchemist.clock import WallClock
     config = EventLoopConfig(drain_timeout_s=0.5)
     buffer = EventBuffer(config)
     buffer.bind_loop(asyncio.get_running_loop())
-    wall = WallClock(buffer.drain_wakeup)
     asyncio.get_running_loop().call_later(0.01, lambda: buffer.push(order_update(1)))
     started = time.perf_counter()
-    await buffer.wait(wall)
+    await buffer.wait()
     assert time.perf_counter() - started < 0.2
 
 
 async def test_reader_thread_wakes_loop_through_thread_safe_call():
-    from alchemist.clock import WallClock
     buffer = EventBuffer(EventLoopConfig(drain_timeout_s=2.0))
     buffer.bind_loop(asyncio.get_running_loop())
-    wall = WallClock(buffer.drain_wakeup)
     threading.Thread(target=lambda: [buffer.push(tick(100.0 + i, 1.0, 1)) for i in range(500)]).start()
     started = time.perf_counter()
-    await buffer.wait(wall)
+    await buffer.wait()
     assert time.perf_counter() - started < 1.0
     assert buffer.wakeups == 1 and buffer.threadsafe_wakeups == 1
 
@@ -177,3 +169,37 @@ def test_fill_behind_a_held_end_of_data_still_jumps_the_data_lane():
     events = drain_all(buffer)
     assert [e["event_type"] for e in events][0] == "order_update"
     assert [e["event_type"] for e in events][-1] == "end_of_data"
+
+
+def push_mixed(buffer, count):
+    for index in range(count):
+        buffer.push(tick(100.0 + index, 1.0, 1))
+        buffer.push(order_update(index))
+
+
+@pytest.mark.parametrize("taps", [0, 2])
+def test_tap_never_changes_consumer_order(taps):
+    from collections import deque
+    plain, tapped = EventBuffer(EventLoopConfig()), EventBuffer(EventLoopConfig())
+    tap_queues = [deque() for _ in range(taps)]
+    for tap in tap_queues:
+        tapped.add_tap(tap)
+    push_mixed(plain, 20)
+    push_mixed(tapped, 20)
+    strip = lambda events: [(e["event_type"], e["data"]) for e in events]
+    assert strip(drain_all(tapped)) == strip(drain_all(plain))
+
+
+def test_every_tap_sees_every_pushed_event_in_push_order():
+    from collections import deque
+    buffer = EventBuffer(EventLoopConfig())
+    first, second = deque(), deque()
+    buffer.add_tap(first)
+    buffer.add_tap(second)
+    pushed = [tick(100.0, 1.0, 1), order_update(1), tick(101.0, 1.0, 1)]
+    for event in pushed:
+        buffer.push(event)
+    front = order_update(2)
+    buffer.push_front(front)
+    assert list(first) == pushed + [front]
+    assert list(second) == pushed + [front]

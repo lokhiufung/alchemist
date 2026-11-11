@@ -1,12 +1,13 @@
 import asyncio
 from datetime import date, datetime, timezone
 
-from alchemist.clock import ReplayClock
 from alchemist.config import EventLoopConfig
 from alchemist.event_loop.seeder import Seeder
 from alchemist.instruments import ES, MES
 
 from el_helpers import OPEN
+from request_helpers import DirectRequests
+from time_helpers import ManualWatchTime
 
 
 class SeedGateway:
@@ -24,7 +25,7 @@ class SeedGateway:
         self.positions, self.open_orders = [], []
         self.exposure_unreadable = False
 
-    def market_data_type(self, instrument):
+    async def market_data_type(self, instrument):
         return (self.message_type, self.resolution if self.message_type == "bar_update" else None)
 
     def intraday_seed_failure_is_fatal(self):
@@ -102,7 +103,7 @@ class SeedStrategy:
 
 
 def make_seeder(gateway, config=None, delays=None, rng=None, recorded=None):
-    clock = ReplayClock(datetime.fromtimestamp(OPEN, timezone.utc))
+    watch_time = ManualWatchTime(OPEN)
     slept = delays if delays is not None else []
 
     async def sleep(delay):
@@ -113,4 +114,4 @@ def make_seeder(gateway, config=None, delays=None, rng=None, recorded=None):
         kwargs["rng"] = rng
     if recorded is not None:
         kwargs["recorded_bars"] = recorded
-    return Seeder(gateway, clock, config or EventLoopConfig(), **kwargs), slept
+    return Seeder(DirectRequests(gateway), watch_time, config or EventLoopConfig(), **kwargs), slept

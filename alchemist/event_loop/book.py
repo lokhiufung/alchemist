@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from alchemist.event_loop.resampler import Resampler
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 from alchemist.constants.event_loop import BAR_HISTORY
-
-
-class BookClosed(RuntimeError): ...
 
 
 class BookError(RuntimeError): ...
@@ -40,17 +37,13 @@ class RuntimeBook:
         self.sessions_by_execution_instrument = {}
         self.retry_tasks = {}
         self.subscribed: set[Instrument] = set()
-        self.gateway = None
+        self.requests = None
         self.seeder = None
-        self.run_op = self.run_directly
+        self.member_listeners: list = []
 
-    def attach(self, gateway, seeder, run_op: Callable[[Callable[["RuntimeBook"], Any]], Awaitable[Any]] | None = None) -> None:
-        self.gateway = gateway
+    def attach(self, requests, seeder) -> None:
+        self.requests = requests
         self.seeder = seeder
-        self.run_op = run_op or self.run_directly
-
-    async def run_directly(self, fn: Callable[["RuntimeBook"], Any]) -> Any:
-        return fn(self)
 
     def reserve_instrument(self, instrument: Instrument, contract: Any, fed: bool) -> bool:
         created = instrument not in self.contracts
@@ -77,26 +70,25 @@ class RuntimeBook:
         self.sessions_by_instrument[strategy.signal_instrument] = (
             exchange_profile(strategy.signal_instrument).data_session)
         self.retry_tasks[strategy.name] = list(retry_tasks)
+        for listener in self.member_listeners:
+            listener.member_joined(strategy)
 
     async def admit(self, strategy, guard: Callable[["RuntimeBook"], None] | None = None) -> None:
         created: list[Instrument] = []
         try:
             await self.stage(strategy, created)
             await self.prepare(strategy)
-
-            def commit(book: "RuntimeBook") -> None:
-                if guard is not None:
-                    guard(book)
-                book.commit(strategy, self.pending_retries(strategy))
-
-            await self.run_op(commit)
+            if guard is not None:
+                guard(self)
+            self.commit(strategy, self.pending_retries(strategy))
         except BaseException:
             for instrument in created:
                 if instrument in self.subscribed:
-                    await self.gateway.unsubscribe_tick(self.contracts[instrument])
+                    self.requests.command("unsubscribe", contract=self.contracts[instrument])
                     self.subscribed.discard(instrument)
                     self.resamplers.pop(instrument, None)
-            await self.run_op(lambda book: [book.release_instrument(i) for i in created])
+            for instrument in created:
+                self.release_instrument(instrument)
             raise
 
     def pending_retries(self, strategy) -> list[asyncio.Task]:
@@ -105,31 +97,25 @@ class RuntimeBook:
 
     async def stage(self, strategy, created: list[Instrument]) -> None:
         signal_instrument = strategy.signal_instrument
-        message_type, resolution = self.gateway.market_data_type(signal_instrument)
+        message_type, resolution = await self.requests.request("market_data_type", instrument=signal_instrument)
         if message_type == "bar_update" and strategy.resolution_s < resolution:
             raise BookError(f"slot {strategy.name}: needs {strategy.resolution_s}s bars but the feed of "
                             f"{signal_instrument.symbol} gives {resolution}s")
         for instrument in dict.fromkeys((signal_instrument, strategy.execution_instrument)):
             fed = instrument == signal_instrument
-            contract = await self.gateway.resolve_contract(instrument)
-            newly_reserved = await self.run_op(lambda book: book.reserve_instrument(instrument, contract, fed))
-            if newly_reserved:
+            contract = await self.requests.request("resolve_contract", instrument=instrument)
+            if self.reserve_instrument(instrument, contract, fed):
                 created.append(instrument)
             if fed and instrument not in self.subscribed:
-                await self.gateway.subscribe_tick(contract)
+                await self.requests.request("subscribe", contract=contract)
                 self.subscribed.add(instrument)
                 if message_type == "tick_update":
                     self.resamplers.setdefault(instrument, Resampler())
                 self.sessions_by_instrument[instrument] = exchange_profile(instrument).data_session
-                self.gateway.set_instrument_sessions(dict(self.sessions_by_instrument))
+                self.requests.command("set_instrument_sessions", sessions=dict(self.sessions_by_instrument))
 
     async def prepare(self, strategy) -> None:
         await self.seeder.attempt(strategy)
 
     def strategies_for(self, instrument: Instrument) -> list:
         return [s for s in self.strategies if s.signal_instrument == instrument]
-
-
-async def enqueue_book_op(event_buffer: deque, drain_wakeup: Callable[[], None],
-                          fn: Callable[[RuntimeBook], Any]) -> Any:
-    """Behaviour 15: run fn(book) on the drain loop between events; await its result."""

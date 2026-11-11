@@ -47,13 +47,13 @@ async def test_final_drain_uses_same_handlers():
     await harness.loop.drain_remaining()
     assert dispatched[-1] == "order_update" and strategy.events[-1] == ("order", 2, "FILLED")
     assert set(HANDLERS) >= {"tick_update", "bar_update", "bar", "order_update", "balance_update",
-                             "position_update", "repaired_fill", "book_op", "end_of_data"}
+                             "position_update", "repaired_fill", "reply", "executions", "open_orders", "positions", "heartbeat", "connection_lost",
+                             "connection_restored", "deploy_request", "os_signal", "end_of_data"}
 
 
 @pytest.mark.parametrize("cause", ["rollover", "flush", "end_of_data", "bar_update"])
 async def test_every_bar_close_passes_one_function(cause):
     strategy = RecordingStrategy()
-    clock = None
     harness = Harness([strategy], message_type="bar_update" if cause == "bar_update" else "tick_update")
     emitted = []
     original = harness.loop.emit_bar
@@ -73,8 +73,7 @@ async def test_every_bar_close_passes_one_function(cause):
         harness.push(tick(OPEN + 0.1, 1.0, 1), tick(OPEN + 1.1, 1.0, 1), end_of_data())
     elif cause == "flush":
         harness.push(tick(OPEN + 0.1, 1.0, 1))
-        harness.clock.__class__  # replay clock: flush due immediately once time passes
-        harness.clock.advance(__import__("datetime").datetime.fromtimestamp(OPEN + 5, __import__("datetime").timezone.utc))
+        harness.system.current += 5.0
         harness.push(end_of_data())
     else:
         harness.push(tick(OPEN + 0.1, 1.0, 1), end_of_data())
@@ -85,13 +84,9 @@ async def test_every_bar_close_passes_one_function(cause):
 async def test_bar_update_feed_bypasses_resampler():
     strategy = RecordingStrategy()
     harness = Harness([strategy])
-    calls = []
-    harness.book.resamplers = {strategy.signal_instrument: type("R", (), {
-        "update_from_tick": lambda *a: calls.append(1), "flush_due": lambda *a, **k: calls.append(1),
-        "flush": lambda *a: calls.append(1)})()}
     harness.push(bar_update(OPEN), end_of_data())
     await harness.run()
-    assert calls == [] and strategy.bars == [OPEN]
+    assert harness.book.resamplers == {} and strategy.bars == [OPEN]
 
 
 @pytest.mark.parametrize("state", ["in_session", "flattening", "session_ended"])
@@ -120,6 +115,7 @@ async def test_round_trip_close_flushes_trade_recorder():
     strategy = RecordingStrategy()
     harness = Harness([strategy])
     strategy.closed_trades = 1
+    strategy.om.orders = {1: {"order_id": 1}, 2: {"order_id": 2}}
     harness.push(order_update(1), order_update(2), end_of_data())
     await harness.run()
     assert harness.trade_recorder.flushes == 1 and harness.trade_recorder.updates == [1, 2]
@@ -187,7 +183,7 @@ def test_no_run_mode_read_in_event_loop():
 
 async def test_unknown_event_type_is_logged_and_skipped(caplog):
     harness = Harness([RecordingStrategy()])
-    harness.push({"event_type": "mystery", "data": {}, "enqueued_at": 0.0}, bar_update(OPEN), end_of_data())
+    harness.push({"event_type": "mystery", "data": {}, "event_time": 0.0}, bar_update(OPEN), end_of_data())
     with caplog.at_level(logging.ERROR):
         await harness.run()
     assert any(getattr(r, "event_type", None) == "mystery" for r in caplog.records)

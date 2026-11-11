@@ -116,7 +116,7 @@ async def test_history_handed_over_in_fixed_order_then_recorded_bars_replayed():
 
     strategy.rebuild_intraday_state = replay
     strategy.on_seed_state = lambda ready: order.append("ready")
-    seeder, _ = make_seeder(gateway, recorded=lambda instrument, session: [{"start_ts": 5.0}])
+    seeder, _ = make_seeder(gateway, recorded=lambda instrument, session, at_ts: [{"start_ts": 5.0}])
     await seeder.attempt(strategy)
     assert order == ["warmup", "replay3", "replay1", "ready"]
     assert strategy.histories[0]["daily"] and len(strategy.histories[0]["intraday"]) == 3

@@ -9,17 +9,20 @@ from pathlib import Path
 
 import pytest
 
-from alchemist.clock import ReplayClock
 from alchemist.config import EventLoopConfig, load_config
 from alchemist.deploy_socket import DeploySocketServer
 from alchemist.event_loop.book import RuntimeBook
+from alchemist.event_loop.buffer import EventBuffer
 from alchemist.event_loop.deploy import DeployService, send_deploy_request
 from alchemist.event_loop.seeder import Seeder
 from alchemist.instruments import ES, MES
 from alchemist.loader import StrategyLoadError
+from alchemist.messages import make_command
 from alchemist.strategy_builder.signal_dag import SignalBuildError
 
+from request_helpers import DirectRequests
 from seed_helpers import SeedGateway, SeedStrategy
+from time_helpers import ManualWatchTime
 
 CLOSED = datetime(2026, 4, 15, 22, 0, tzinfo=timezone.utc)
 OPEN_SESSION = datetime(2026, 4, 15, 15, 0, tzinfo=timezone.utc)
@@ -52,23 +55,20 @@ class Rig:
         self.path = tmp_path / "config.yaml"
         self.text = CONFIG.format(log=tmp_path, b_account=b_account, gateway_extra=gateway_extra)
         self.path.write_text(self.text)
-        self.clock = ReplayClock(now)
+        self.watch_time = ManualWatchTime(now)
         self.gateway = SeedGateway()
-        self.seeder = Seeder(self.gateway, self.clock, EventLoopConfig())
+        self.requests = DirectRequests(self.gateway)
+        self.seeder = Seeder(self.requests, self.watch_time, EventLoopConfig())
         self.book = RuntimeBook()
-        self.book.attach(self.gateway, self.seeder)
+        self.book.attach(self.requests, self.seeder)
         self.running_config = load_config(self.path)
         self.started_with = self.running_config.sha256
         self.factory_error = None
         self.exit_at = None
         self.built = []
         self.closed = False
-        self.service = DeployService(self.path, self.running_config, self.book, self.gateway, self.clock,
+        self.service = DeployService(self.path, self.running_config, self.book, self.requests, self.watch_time,
                                      self.build, lambda: self.exit_at, lambda: self.closed)
-        self.book.run_op = self.run_op
-
-    async def run_op(self, fn):
-        return fn(self.book)
 
     def build(self, strategy_config):
         if self.factory_error is not None:
@@ -85,6 +85,7 @@ class Rig:
         lines = []
         async for line in self.service.deploy(key, sha or self.service.file_sha()):
             lines.append(line)
+        await asyncio.sleep(0)
         return lines
 
     def snapshot(self):
@@ -246,9 +247,33 @@ def short_dir():
     return Path(tempfile.mkdtemp(prefix="dp", dir="/tmp"))
 
 
+async def answer_deploy_requests(server, inbound, lines_for):
+    while True:
+        inbound.begin_pass()
+        while (event := inbound.pop()) is not None:
+            request = event["data"]
+            lines = lines_for(request["key"], request["config_sha256"])
+            for index, line in enumerate(lines):
+                await server.write_result(make_command("deploy_result", {
+                    "request_id": request["request_id"], "line": line, "final": index == len(lines) - 1}))
+        await asyncio.sleep(0.001)
+
+
+async def serve_deploy(folder, lines_for, client):
+    inbound = EventBuffer()
+    server = DeploySocketServer(folder / "deploy.sock", inbound)
+    await server.start()
+    answering = asyncio.create_task(answer_deploy_requests(server, inbound, lines_for))
+    try:
+        return await client()
+    finally:
+        answering.cancel()
+        await server.stop()
+
+
 async def test_socket_permissions():
     folder = short_dir() / "sock"
-    server = DeploySocketServer(folder / "deploy.sock", None)
+    server = DeploySocketServer(folder / "deploy.sock", EventBuffer())
     await server.start()
     try:
         assert stat.S_IMODE(os.stat(folder).st_mode) == 0o700
@@ -259,35 +284,24 @@ async def test_socket_permissions():
 
 
 async def test_socket_round_trip_streams_status_lines(tmp_path, capsys):
-    class FakeService:
-        async def deploy(self, key, sha):
-            yield {"status": "preparing", "reason": None, "revision": sha}
-            yield {"status": "registered", "reason": None, "revision": sha}
+    def lines_for(key, sha):
+        return [{"status": "preparing", "reason": None, "revision": sha},
+                {"status": "registered", "reason": None, "revision": sha}]
 
     folder = short_dir()
-    server = DeploySocketServer(folder / "deploy.sock", FakeService())
-    await server.start()
-    try:
-        code = await send_deploy_request(folder / "deploy.sock", "b", "abc")
-    finally:
-        await server.stop()
+    code = await serve_deploy(folder, lines_for, lambda: send_deploy_request(folder / "deploy.sock", "b", "abc"))
     out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert code == 0 and [o["status"] for o in out] == ["preparing", "registered"]
 
 
 @pytest.mark.parametrize("terminal,code", [("noop", 0), ("rejected", 1), ("failed", 1), ("busy", 1)])
 async def test_client_exit_code_follows_the_terminal_status(terminal, code):
-    class FakeService:
-        async def deploy(self, key, sha):
-            yield {"status": terminal, "reason": "x" if terminal != "noop" else None, "revision": sha}
+    def lines_for(key, sha):
+        return [{"status": terminal, "reason": "x" if terminal != "noop" else None, "revision": sha}]
 
     folder = short_dir()
-    server = DeploySocketServer(folder / "deploy.sock", FakeService())
-    await server.start()
-    try:
-        assert await send_deploy_request(folder / "deploy.sock", "b", "abc") == code
-    finally:
-        await server.stop()
+    assert await serve_deploy(folder, lines_for,
+                              lambda: send_deploy_request(folder / "deploy.sock", "b", "abc")) == code
 
 
 async def test_client_without_a_server_exits_with_failure(tmp_path):

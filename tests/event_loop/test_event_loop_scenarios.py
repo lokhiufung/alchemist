@@ -5,12 +5,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from alchemist.clock import ReplayClock
 from alchemist.config import EventLoopConfig
 from alchemist.event_loop.loop import HANDLERS
 from alchemist.instruments import MES
 
-from el_helpers import (OPEN, FakeWallClock, Harness, RecordingStrategy, balance_update, bar_update, end_of_data,
+from el_helpers import (OPEN, FakeSystemTime, Harness, RecordingStrategy, balance_update, bar_update, end_of_data,
                         order_update, tick)
 
 
@@ -26,9 +25,8 @@ async def test_scenario_ticks_to_bars():
 
 async def test_scenario_quiet_market_flush():
     strategy = RecordingStrategy()
-    clock = FakeWallClock(OPEN)
-    strategy.clock = clock
-    harness = Harness([strategy], message_type="tick_update", clock=clock)
+    harness = Harness([strategy], message_type="tick_update")
+    strategy.watch_time = harness.watch_time
     harness.push(tick(OPEN + 0.2, 5000.0, 1))
 
     async def stop_later():
@@ -40,23 +38,31 @@ async def test_scenario_quiet_market_flush():
     await harness.run()
     await task
     assert strategy.events == [("bar", OPEN, 5000.0, 5000.0, 5000.0, 5000.0, 1)]
-    arrived = strategy.clock_at_bar[0]
+    arrived = strategy.watch_at_bar[0]
     assert OPEN + 2.0 <= arrived <= OPEN + 2.0 + harness.config.drain_timeout_s + 1e-9
 
 
 async def test_scenario_bar_updates():
-    strategy = RecordingStrategy(clock=None)
+    strategy = RecordingStrategy()
     harness = Harness([strategy])
-    strategy.clock = harness.clock
-    harness.push(*[bar_update(OPEN + i) for i in range(10)], bar_update(OPEN + 5), bar_update(OPEN + 3), end_of_data())
+    strategy.watch_time = harness.watch_time
+    feed = [*[bar_update(OPEN + i) for i in range(10)], bar_update(OPEN + 5), bar_update(OPEN + 3), end_of_data()]
+
+    async def replay_one_at_a_time():
+        for event in feed:
+            await harness.buffer.wait_idle()
+            harness.push(event)
+
+    producer = asyncio.create_task(replay_one_at_a_time())
     await harness.run()
+    await producer
     assert strategy.bars == [OPEN + i for i in range(10)]
-    assert strategy.clock_at_bar == [OPEN + i + 1 for i in range(10)]
+    assert strategy.watch_at_bar == [OPEN + i + 1 for i in range(10)]
 
 
 async def test_scenario_fill_jumps_tick_burst():
     strategy = RecordingStrategy()
-    harness = Harness([strategy], message_type="tick_update", clock=FakeWallClock(OPEN))
+    harness = Harness([strategy], message_type="tick_update")
     harness.buffer.bind_loop(asyncio.get_running_loop())
     order = []
     strategy.on_order_update = lambda update: order.append(("order", len(strategy.events)))
@@ -104,13 +110,13 @@ async def test_scenario_broken_strategy_quarantined(caplog):
 async def test_scenario_replay_equals_live():
     ticks = [tick(OPEN + index * 0.05, 5000.0 + (index % 7), 1 + index % 3) for index in range(60)]
 
-    async def run(clock):
+    async def run(system):
         strategy = RecordingStrategy()
-        harness = Harness([strategy], message_type="tick_update", clock=clock)
+        harness = Harness([strategy], message_type="tick_update", system=system)
         harness.push(*ticks[:30], order_update(1), *ticks[30:], order_update(2), end_of_data())
         await harness.run()
         return strategy.events
 
-    replay = await run(ReplayClock(datetime.fromtimestamp(OPEN, timezone.utc)))
-    live = await run(FakeWallClock(OPEN))
+    replay = await run(FakeSystemTime(0.0))
+    live = await run(FakeSystemTime(OPEN + 0.003))
     assert replay == live and any(e[0] == "order" for e in replay)

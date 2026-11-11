@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 import time
 from datetime import date, datetime, timedelta
-from datetime import time as clock_time
-from functools import partial
+from datetime import time as time_of_day
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
 from alchemist.constants.event_loop import POLL_S
 from alchemist.exchanges import exchange_profile
@@ -21,15 +18,15 @@ logger = logging.getLogger("shutdown")
 def run_exit_after(at: datetime, config: EventLoopConfig) -> datetime:
     zone = ZoneInfo(config.run_tz)
     local = at.astimezone(zone)
-    exit_at = datetime.combine(local.date(), clock_time.fromisoformat(config.run_end), zone)
+    exit_at = datetime.combine(local.date(), time_of_day.fromisoformat(config.run_end), zone)
     return exit_at if exit_at > local else exit_at + timedelta(days=1)
 
 
 class ShutdownCoordinator:
-    def __init__(self, book, gateway, clock: Clock, config: EventLoopConfig | None = None) -> None:
+    def __init__(self, book, requests, watch_time, config: EventLoopConfig | None = None) -> None:
         self.book = book
-        self.gateway = gateway
-        self.clock = clock
+        self.requests = requests
+        self.watch_time = watch_time
         self.config = config or EventLoopConfig()
         self.shutdown_requested = False
         self.not_flat_at_shutdown = False
@@ -37,17 +34,22 @@ class ShutdownCoordinator:
         self.last_request: dict[str, float] = {}
         self.window_end: dict[str, float] = {}
         self.settled_until: dict[str, float] = {}
-        self.run_exit = run_exit_after(clock.now(), self.config)
-        self.run_date: date = self.run_exit.astimezone(ZoneInfo(self.config.run_tz)).date()
+        self.exit_at: datetime | None = None
         self.cutoffs: dict[str, tuple[float, float]] = {}
+
+    @property
+    def run_exit(self) -> datetime | None:
+        if self.exit_at is None and self.watch_time.now() is not None:
+            self.exit_at = run_exit_after(self.watch_time.moment(), self.config)
+        return self.exit_at
+
+    @property
+    def run_date(self) -> date:
+        return self.run_exit.astimezone(ZoneInfo(self.config.run_tz)).date()
 
     def request_shutdown(self, reason: str) -> None:
         logger.warning("shutdown requested", extra={"event": "shutdown_requested", "reason": reason})
         self.shutdown_requested = True
-
-    def install_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, partial(self.request_shutdown, "signal"))
 
     def active_strategies(self) -> list:
         return list(self.book.strategies)
@@ -72,7 +74,9 @@ class ShutdownCoordinator:
         return end.timestamp() - self.config.cutoff_offset_s, end.timestamp()
 
     async def process_due(self) -> None:
-        now = self.clock.timestamp()
+        now = self.watch_time.now()
+        if now is None:
+            return
         if not self.shutdown_requested and now >= self.run_exit.timestamp():
             self.request_shutdown("run_end")
         for strategy in self.active_strategies():
@@ -98,7 +102,7 @@ class ShutdownCoordinator:
             logger.exception("flatten request failed", extra={"event": "flatten_failed", "strategy": strategy.name})
 
     async def flatten_on_bar(self, instrument: Instrument, bar: dict) -> None:
-        now = self.clock.timestamp()
+        now = self.watch_time.now()
         for strategy in self.active_strategies():
             name = strategy.name
             if name not in self.first_request or strategy.signal_instrument != instrument:
@@ -115,7 +119,7 @@ class ShutdownCoordinator:
 
     async def is_flat(self) -> bool:
         try:
-            positions = await self.gateway.get_positions()
+            positions = await self.requests.request("get_positions")
         except Exception:
             return False
         configured = self.configured_instruments()
@@ -134,13 +138,13 @@ class ShutdownCoordinator:
             if not busy:
                 return
             for strategy in busy:
-                await self.request_flatten(strategy, self.clock.timestamp(), "shutdown")
+                await self.request_flatten(strategy, self.watch_time.now(), "shutdown")
             await asyncio.sleep(POLL_S)
             await drain_remaining()
 
     async def read_open_orders(self) -> list[dict] | None:
         try:
-            return list(await self.gateway.get_open_orders())
+            return list(await self.requests.request("get_open_orders"))
         except Exception as exc:
             logger.critical("open orders unreadable at shutdown; every configured instrument is blocked",
                             extra={"event": "open_orders_unreadable", "reason": repr(exc)})
@@ -154,7 +158,8 @@ class ShutdownCoordinator:
             orders = await self.cancel_working(configured, orders, drain_remaining)
         working = set() if blocked_all else {o["instrument"] for o in orders if o["instrument"] in configured}
         try:
-            positions = [p for p in await self.gateway.get_positions() if p["instrument"] in configured and p["size"]]
+            positions = [p for p in await self.requests.request("get_positions")
+                         if p["instrument"] in configured and p["size"]]
         except Exception as exc:
             logger.critical("positions unreadable at shutdown", extra={"event": "positions_unreadable",
                                                                        "reason": repr(exc)})
@@ -174,7 +179,7 @@ class ShutdownCoordinator:
     async def cancel_working(self, configured: set[Instrument], orders: list[dict], drain_remaining) -> list[dict]:
         mine = [o for o in orders if o["instrument"] in configured]
         for order in mine:
-            await self.gateway.cancel_order(order["order_id"])
+            self.requests.command("cancel_order", order_id=order["order_id"])
         deadline = time.monotonic() + self.config.flatten_timeout_s
         while mine and time.monotonic() < deadline:
             await drain_remaining()
@@ -191,8 +196,8 @@ class ShutdownCoordinator:
         side = "SELL" if position["size"] > 0 else "BUY"
         logger.warning("force-flattening at shutdown", extra={
             "event": "force_flatten", "instrument": instrument.symbol, "qty": abs(position["size"])})
-        await self.gateway.place_order({
-            "order_id": self.gateway.next_order_id(), "account_id": position["account_id"], "instrument": instrument,
+        self.requests.command("place_order", order={
+            "order_id": self.requests.next_order_id(), "account_id": position["account_id"], "instrument": instrument,
             "side": side, "qty": abs(position["size"]), "order_type": "MKT", "stop_price": None,
             "limit_price": None, "oca_group": None, "oca_type": None, "tif": "DAY", "outside_rth": True,
             "slot": "shutdown"})

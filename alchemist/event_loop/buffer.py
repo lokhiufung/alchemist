@@ -22,10 +22,18 @@ class EventBuffer:
         self.loop_thread: int | None = None
         self.wakeups = 0
         self.threadsafe_wakeups = 0
+        self.taps: list[deque[dict]] = []
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
         self.loop_thread = threading.get_ident()
+
+    def add_tap(self, tap: deque[dict]) -> None:
+        self.taps.append(tap)
+
+    def copy_to_taps(self, event: dict) -> None:
+        for tap in self.taps:
+            tap.append(event)
 
     def lane_for(self, event: dict) -> deque:
         return self.control if event["event_type"] in CONTROL_EVENTS else self.data
@@ -34,6 +42,7 @@ class EventBuffer:
         event.setdefault("pushed_at", time.time())
         self.idle.clear()
         self.lane_for(event).append(event)
+        self.copy_to_taps(event)
         if wake:
             self.raise_wakeup()
 
@@ -41,6 +50,7 @@ class EventBuffer:
         event.setdefault("pushed_at", time.time())
         self.idle.clear()
         self.control.appendleft(event)
+        self.copy_to_taps(event)
         self.raise_wakeup()
 
     def raise_wakeup(self) -> None:
@@ -78,11 +88,61 @@ class EventBuffer:
     async def wait_idle(self) -> None:
         await self.idle.wait()
 
-    async def wait(self, clock) -> None:
-        await clock.wait(self.config.drain_timeout_s)
+    async def wait(self) -> None:
+        try:
+            await asyncio.wait_for(self.drain_wakeup.wait(), self.config.drain_timeout_s)
+        except asyncio.TimeoutError:
+            pass
 
     def control_backlog_exceeded(self) -> bool:
         return len(self.control) > self.config.backlog_alert
 
     def __len__(self) -> int:
         return len(self.control) + len(self.data)
+
+
+class CommandBuffer:
+    def __init__(self) -> None:
+        self.queue: deque[dict] = deque()
+        self.taps: list[deque[dict]] = []
+        self.in_flight = 0
+        self.pushed = asyncio.Event()
+        self.idle = asyncio.Event()
+        self.idle.set()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.loop_thread: int | None = None
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.loop_thread = threading.get_ident()
+
+    def add_tap(self, tap: deque[dict]) -> None:
+        self.taps.append(tap)
+
+    def push(self, command: dict) -> None:
+        self.idle.clear()
+        self.queue.append(command)
+        for tap in self.taps:
+            tap.append(command)
+        if self.loop is not None and threading.get_ident() != self.loop_thread:
+            self.loop.call_soon_threadsafe(self.pushed.set)
+        else:
+            self.pushed.set()
+
+    async def get(self) -> dict:
+        while not self.queue:
+            self.pushed.clear()
+            await self.pushed.wait()
+        self.in_flight += 1
+        return self.queue.popleft()
+
+    def done(self) -> None:
+        self.in_flight -= 1
+        if self.in_flight == 0 and not self.queue:
+            self.idle.set()
+
+    async def wait_idle(self) -> None:
+        await self.idle.wait()
+
+    def __len__(self) -> int:
+        return len(self.queue)

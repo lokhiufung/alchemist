@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import AsyncIterator, Callable
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import ConfigError, Configuration, StrategyConfig, load_config
 from alchemist.constants.deploy import DeployStatus, RefusalReason
 from alchemist.event_loop.book import BookError, RuntimeBook
@@ -34,14 +33,15 @@ def without_slot(config: Configuration, key: str) -> tuple:
 
 
 class DeployService:
-    def __init__(self, config_path: Path, running_config: Configuration, book: RuntimeBook, gateway, clock: Clock,
+    def __init__(self, config_path: Path, running_config: Configuration, book: RuntimeBook, requests, watch_time,
                  build_slot: Callable[[StrategyConfig], object], process_exit_at: Callable[[], datetime | None],
                  is_closed: Callable[[], bool]) -> None:
         self.config_path = Path(config_path)
         self.running_config = running_config
         self.book = book
-        self.gateway = gateway
-        self.clock = clock
+        self.requests = requests
+        self.watch_time = watch_time
+        self.tasks: set[asyncio.Task] = set()
         self.build_slot = build_slot
         self.process_exit_at = process_exit_at
         self.is_closed = is_closed
@@ -53,6 +53,16 @@ class DeployService:
 
     def line(self, status: DeployStatus, reason: RefusalReason | str | None = None) -> dict:
         return {"status": status, "reason": reason, "revision": self.file_sha()}
+
+    def handle(self, request: dict) -> None:
+        task = asyncio.get_running_loop().create_task(self.answer(request))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def answer(self, request: dict) -> None:
+        async for line in self.deploy(request["key"], request["config_sha256"]):
+            self.requests.command("deploy_result", request_id=request["request_id"], line=line,
+                                  final=line["status"] != DeployStatus.PREPARING)
 
     async def deploy(self, key: str, config_sha256: str) -> AsyncIterator[dict]:
         if self.is_closed():
@@ -122,7 +132,7 @@ class DeployService:
 
     def check_session(self, candidate) -> None:
         profile = exchange_profile(candidate.signal_instrument)
-        if profile.is_open(candidate.session, self.clock.now()):
+        if profile.is_open(candidate.session, self.watch_time.moment()):
             raise DeployRefused(DeployStatus.REJECTED, RefusalReason.SESSION_OPEN)
 
     def check_exit(self, candidate) -> None:
@@ -133,15 +143,15 @@ class DeployService:
         run_date = exit_at.astimezone(ZoneInfo(profile.session(candidate.session).tz)).date()
         if profile.is_trading_day(run_date):
             start, end = profile.session_window(candidate.session, run_date)
-            if self.clock.now() < start and end <= exit_at:
+            if self.watch_time.moment() < start and end <= exit_at:
                 return
         raise DeployRefused(DeployStatus.REJECTED, RefusalReason.AFTER_PROCESS_EXIT)
 
     async def check_exposure(self, candidate, strategy_config: StrategyConfig) -> None:
         account, instrument = strategy_config.account_id, strategy_config.execution_instrument
         try:
-            positions = await self.gateway.get_positions()
-            orders = await self.gateway.get_open_orders()
+            positions = await self.requests.request("get_positions")
+            orders = await self.requests.request("get_open_orders")
         except Exception as exc:
             logger.warning("exposure unreadable", extra={"event": "exposure_unreadable", "reason": repr(exc)})
             raise DeployRefused(DeployStatus.REJECTED, RefusalReason.UNMANAGED_EXPOSURE) from exc
