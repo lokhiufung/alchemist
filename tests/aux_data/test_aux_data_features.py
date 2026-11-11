@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from alchemist.clock import ReplayClock
+from time_helpers import ManualWatchTime
 from alchemist.external_data.sources import ConfirmedBackupAuxSource
 from alchemist.instruments import FDAX, MES
 
@@ -16,7 +16,7 @@ PREVIOUS = date(2026, 4, 14)
 
 @pytest.mark.parametrize("second,expected", [("confirms", 7.0), ("disagrees", None), ("missing", None)])
 async def test_backup_value_used_only_when_confirmed(second, expected):
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     primary, backup, confirm = (ScriptedSource(clock) for _ in range(3))
     backup.publish(ny(0), TARGET, 7.0)
     if second != "missing":
@@ -26,7 +26,7 @@ async def test_backup_value_used_only_when_confirmed(second, expected):
 
 
 async def test_primary_value_wins_over_backup():
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     primary, backup, confirm = (ScriptedSource(clock) for _ in range(3))
     primary.publish(ny(0), TARGET, 1.0)
     backup.publish(ny(0), TARGET, 7.0)
@@ -38,7 +38,7 @@ async def test_primary_value_wins_over_backup():
 @pytest.mark.parametrize("instrument,start,end", [(MES, ny(0), ny(9, 29)), (FDAX, berlin(0), berlin(7, 59))])
 async def test_carried_value_never_arms(instrument, start, end):
     declare_names("X")
-    clock = ReplayClock(start)
+    clock = ManualWatchTime(start)
     source = ScriptedSource(clock)
     source.publish(start, PREVIOUS, 9.0)
     member = StubStrategy("m", instrument, ["X"])
@@ -49,7 +49,7 @@ async def test_carried_value_never_arms(instrument, start, end):
 
 async def test_fetch_at_most_once_per_target_before_settle_time():
     declare_names("X")
-    clock = ReplayClock(ny(10, day=14))
+    clock = ManualWatchTime(ny(10, day=14))
     source = ScriptedSource(clock)
     member = StubStrategy("m", MES, ["X"])
     provider = make_provider({"X": source}, [member], clock)
@@ -58,13 +58,13 @@ async def test_fetch_at_most_once_per_target_before_settle_time():
     group.begin_target(TARGET, ny(10, day=14))
     for minute in range(5):
         clock.advance(ny(10, minute, day=14))
-        await group.step(provider, clock.now())
+        await group.step(provider, clock.moment())
     assert source.fetches <= 1
 
 
 async def test_arm_groups_per_exchange_are_independent():
     declare_names("X", "Y")
-    clock = ReplayClock(utc(15, 4))
+    clock = ManualWatchTime(utc(15, 4))
     cme_source, eurex_source = ScriptedSource(clock), ScriptedSource(clock)
     cme_source.publish(utc(14, 21), TARGET, 1.0)
     cme = StubStrategy("cme", MES, ["X"])
@@ -80,15 +80,16 @@ async def test_arm_groups_per_exchange_are_independent():
 async def test_groups_stepped_every_interval():
     declare_names("X")
 
-    class SteppingClock(ReplayClock):
-        async def wait(self, timeout):
-            self.advance(self.now() + timedelta(seconds=timeout))
-            if self.now() >= ny(7, 10):
-                raise asyncio.CancelledError
+    clock = ManualWatchTime(ny(7))
 
-    clock = SteppingClock(ny(7))
+    async def stepping_sleep(timeout):
+        clock.step(timeout)
+        if clock.moment() >= ny(7, 10):
+            raise asyncio.CancelledError
+
     source = ScriptedSource(clock)
-    provider = make_provider({"X": source}, [StubStrategy("m", MES, ["X"])], clock, step_interval_s=60.0)
+    provider = make_provider({"X": source}, [StubStrategy("m", MES, ["X"])], clock, sleep=stepping_sleep,
+                             step_interval_s=60.0)
     with pytest.raises(asyncio.CancelledError):
         await provider.run()
     assert source.fetches == 10
@@ -96,7 +97,7 @@ async def test_groups_stepped_every_interval():
 
 async def test_not_armed_by_open_sits_session_out():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(10), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"])
@@ -108,7 +109,7 @@ async def test_not_armed_by_open_sits_session_out():
 
 async def test_seed_error_leaves_group_unarmed(caplog):
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"], raise_on_ready_call=1)
@@ -122,7 +123,7 @@ async def test_seed_error_leaves_group_unarmed(caplog):
 
 async def test_start_after_open_still_arms():
     declare_names("X")
-    clock = ReplayClock(ny(11))
+    clock = ManualWatchTime(ny(11))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
     provider = make_provider({"X": source}, [StubStrategy("m", MES, ["X"])], clock)
@@ -132,7 +133,7 @@ async def test_start_after_open_still_arms():
 
 async def test_target_roll_disarms_group():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"])
@@ -148,7 +149,7 @@ async def test_target_roll_disarms_group():
 
 async def test_changed_value_after_arm_is_adopted_and_reseeded():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(7), TARGET, 1.0)
     source.publish(ny(8, 30), TARGET, 3.0)
@@ -164,7 +165,7 @@ async def test_changed_value_after_arm_is_adopted_and_reseeded():
 @pytest.mark.parametrize("outcome,armed", [("fetch_fails", True), ("target_gone", True), ("reseed_raises", False)])
 async def test_recheck_outcomes(outcome, armed):
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(7), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"], raise_on_ready_call=2 if outcome == "reseed_raises" else None)
@@ -182,7 +183,7 @@ async def test_recheck_outcomes(outcome, armed):
 
 async def test_annotate_adds_bound_values_before_dispatch():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.25)
     provider = make_provider({"X": source}, [StubStrategy("m", MES, ["X"])], clock)
@@ -196,7 +197,7 @@ async def test_annotate_adds_bound_values_before_dispatch():
 
 async def test_annotate_leaves_other_trading_dates_alone():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.25)
     provider = make_provider({"X": source}, [StubStrategy("m", MES, ["X"])], clock)
@@ -208,7 +209,7 @@ async def test_annotate_leaves_other_trading_dates_alone():
 
 async def test_rebuild_while_armed_gets_current_frames():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"])
@@ -220,32 +221,32 @@ async def test_rebuild_while_armed_gets_current_frames():
 @pytest.mark.parametrize("joiner_reads,same_group", [(["X"], True), (["Y"], False)])
 async def test_late_joiner_gets_own_group_unless_covered(joiner_reads, same_group):
     declare_names("X", "Y")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     sources = {"X": ScriptedSource(clock), "Y": ScriptedSource(clock)}
     sources["X"].publish(ny(0), TARGET, 1.0)
     provider = make_provider(sources, [StubStrategy("a", MES, ["X"])], clock)
     await run_minutes(provider, clock, ny(7), ny(7, 1))
-    provider.book.strategies.append(StubStrategy("b", MES, joiner_reads))
+    provider.member_joined(StubStrategy("b", MES, joiner_reads))
     await run_minutes(provider, clock, ny(7, 2), ny(7, 3))
     assert (len(provider.groups) == 1) is same_group
 
 
-async def test_departed_member_is_dropped_without_a_copy_of_the_book():
+async def test_departed_member_is_dropped():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"])
     provider = make_provider({"X": source}, [member], clock)
     await run_minutes(provider, clock, ny(7), ny(7, 1))
-    provider.book.strategies.clear()
+    provider.member_left("m")
     await run_minutes(provider, clock, ny(7, 2), ny(7, 2))
     assert provider.groups[0].member_names == set()
 
 
 async def test_resident_task_crash_logs_critical(caplog):
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     provider = make_provider({"X": ScriptedSource(clock)}, [StubStrategy("m", MES, ["X"])], clock)
 
     async def explode():
@@ -259,34 +260,9 @@ async def test_resident_task_crash_logs_critical(caplog):
     assert any(r.levelno == logging.CRITICAL for r in caplog.records)
 
 
-async def test_members_changed_resolves_in_replay_and_is_quiet_live(tmp_path):
-    declare_names("X")
-    clock = ReplayClock(ny(7))
-    source = ScriptedSource(clock)
-    source.publish(ny(0), TARGET, 1.0)
-    replay_member = StubStrategy("r", MES, ["X"])
-    replay = make_provider({"X": source}, [replay_member], clock, resolve_date=TARGET)
-    await replay.members_changed()
-    assert replay_member.ready_calls == 1
-    live_member = StubStrategy("l", MES, ["X"])
-    live = make_provider({"X": source}, [live_member], clock)
-    await live.members_changed()
-    assert live_member.ready_calls == 0
 
 
-@pytest.mark.parametrize("value", ["present", "missing"])
-async def test_replay_resolves_or_raises(value, tmp_path):
-    from alchemist.external_data.provider import AuxDataError
-    from alchemist.external_data.sources import FileAuxSource
-    declare_names("X")
-    rows = [(PREVIOUS, 4.0)] + ([(TARGET, 5.0)] if value == "present" else [])
-    (tmp_path / "X.csv").write_text("date,value\n" + "".join(f"{d.isoformat()},{v}\n" for d, v in rows))
-    member = StubStrategy("m", MES, ["X"])
-    provider = make_provider({"X": FileAuxSource(str(tmp_path))}, [member], ReplayClock(ny(0)), resolve_date=TARGET)
-    if value == "missing":
-        with pytest.raises(AuxDataError):
-            await provider.start()
-        assert member.ready_calls == 0
-    else:
-        await provider.start()
-        assert member.ready_calls == 1 and provider.groups[0].armed
+def test_aux_holds_no_runtime_book_and_no_clock():
+    import inspect
+    from alchemist.external_data.provider import AuxProvider
+    assert set(inspect.signature(AuxProvider).parameters).isdisjoint({"book", "clock"})

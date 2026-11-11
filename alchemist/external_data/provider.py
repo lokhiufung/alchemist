@@ -5,8 +5,8 @@ import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import AuxConfig
+from alchemist.constants.aux_data import AUX_POLL_S
 from alchemist.exchanges import ExchangeProfile, exchange_profile
 from alchemist.external_data.sources import AuxSource
 from alchemist.instruments import Instrument
@@ -14,10 +14,6 @@ from alchemist.instruments import Instrument
 logger = logging.getLogger("aux_data")
 
 Column = tuple[Instrument, str]
-
-
-class AuxDataError(Exception):
-    pass
 
 
 def next_trading_day(profile: ExchangeProfile, day: date) -> date:
@@ -80,8 +76,7 @@ class AuxArmGroup:
         self.begin_target_state()
 
     def members_of(self, aux: "AuxProvider") -> list:
-        by_name = {s.name: s for s in aux.book.strategies}
-        return [by_name[n] for n in sorted(self.member_names) if n in by_name]
+        return [aux.members[n] for n in sorted(self.member_names) if n in aux.members]
 
     def disarm(self, aux: "AuxProvider") -> None:
         self.armed = False
@@ -212,42 +207,31 @@ class AuxArmGroup:
             self.disarm(aux)
             self.failed_to_seed = True
 
-    async def resolve(self, aux: "AuxProvider", day: date) -> None:
-        if self.armed:
-            return
-        self.begin_target(day, datetime.min, aux)
-        try:
-            fetched = await self.fetch_columns(aux)
-        except KeyError as exc:
-            raise AuxDataError(f"no aux source configured for {exc}") from exc
-        values = self.settled_values(fetched)
-        if values is None:
-            missing = sorted(f"{name} for {instrument.symbol}" for (instrument, name), rows in fetched.items()
-                             if not any(r["date"] == day for r in rows))
-            raise AuxDataError(f"aux value missing on {day.isoformat()}: {', '.join(missing)}")
-        if not self.arm(aux, values, fetched, datetime.min):
-            raise AuxDataError(f"aux seeding failed on {day.isoformat()} for {self.profile.name}")
-
 
 class AuxProvider:
-    def __init__(self, sources: dict[str, AuxSource], book, clock: Clock, config: AuxConfig) -> None:
+    def __init__(self, sources: dict[str, AuxSource], watch_time, config: AuxConfig,
+                 sleep=asyncio.sleep) -> None:
         self.sources = sources
-        self.book = book
-        self.clock = clock
+        self.watch_time = watch_time
         self.config = config
+        self.sleep = sleep
+        self.members: dict[str, object] = {}
         self.groups: list[AuxArmGroup] = []
         self.task: asyncio.Task | None = None
         self.annotated: dict[Instrument, list[AuxArmGroup]] = {}
 
+    def member_joined(self, strategy) -> None:
+        self.members[strategy.name] = strategy
+
+    def member_left(self, name: str) -> None:
+        self.members.pop(name, None)
+
     async def start(self) -> None:
-        if self.config.resolve_date is not None:
-            await self.resolve_all()
-        else:
-            await self.start_resident_task()
+        await self.start_resident_task()
 
     async def members_changed(self) -> None:
-        if self.config.resolve_date is not None:
-            await self.resolve_all()
+        if self.watch_time.now() is not None:
+            await self.step_all()
 
     async def start_resident_task(self) -> None:
         self.task = asyncio.create_task(self.guarded_run())
@@ -267,12 +251,15 @@ class AuxProvider:
             self.task = None
 
     async def run(self) -> None:
+        await self.watch_time.ready()
         while True:
+            stepped_at = self.watch_time.now()
             await self.step_all()
-            await self.clock.wait(self.config.step_interval_s)
+            while self.watch_time.now() - stepped_at < self.config.step_interval_s:
+                await self.sleep(min(self.config.step_interval_s, AUX_POLL_S))
 
     def sync_groups(self) -> None:
-        members = {s.name: s for s in self.book.strategies if s.aux_names()}
+        members = {name: s for name, s in self.members.items() if s.aux_names()}
         for group in self.groups:
             group.member_names &= members.keys()
         assigned = {n for g in self.groups for n in g.member_names}
@@ -297,17 +284,12 @@ class AuxProvider:
 
     async def step_all(self) -> None:
         self.sync_groups()
-        now = self.clock.now()
+        now = self.watch_time.moment()
         results = await asyncio.gather(*(g.step(self, now) for g in self.groups), return_exceptions=True)
         for group, result in zip(self.groups, results):
             if isinstance(result, Exception):
                 logger.error("aux group failed", extra={"event": "aux_group_failed", "group": group.profile.name,
                                                         "reason": repr(result)})
-
-    async def resolve_all(self) -> None:
-        self.sync_groups()
-        for group in self.groups:
-            await group.resolve(self, self.config.resolve_date)
 
     def annotate(self, instrument: Instrument, bar: dict) -> None:
         for group in self.annotated.get(instrument, ()):

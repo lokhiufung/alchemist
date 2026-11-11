@@ -3,8 +3,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from alchemist.clock import ReplayClock
-from alchemist.external_data.provider import AuxDataError
+from time_helpers import ManualWatchTime
 from alchemist.external_data.sources import ConfirmedBackupAuxSource, FileAuxSource
 from alchemist.instruments import FDAX, MES
 
@@ -28,7 +27,7 @@ def ready_times(strategy, log):
 
 async def test_scenario_arm_before_open():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(8), TARGET, 1.5)
     member = StubStrategy("m", MES, ["X"])
@@ -46,7 +45,7 @@ async def test_scenario_arm_before_open():
 
 async def test_scenario_unsettled_value_waits(caplog):
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), PREVIOUS, 9.0)
     source.publish(ny(8, 30), TARGET, 2.0)
@@ -69,7 +68,7 @@ async def test_scenario_unsettled_value_waits(caplog):
 async def test_scenario_missed_open(case):
     declare_names("X")
     start = ny(7) if case == "row_after_open" else ny(10)
-    clock = ReplayClock(start)
+    clock = ManualWatchTime(start)
     source = ScriptedSource(clock)
     source.publish(ny(10) if case == "row_after_open" else ny(8), TARGET, 1.0)
     source.publish(ny(16, 30), NEXT, 3.0)
@@ -90,7 +89,7 @@ async def test_scenario_missed_open(case):
 @pytest.mark.parametrize("case", ["change", "fetch_fails", "reseed_raises"])
 async def test_scenario_recheck_adopts_change(case, caplog):
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(7), TARGET, 1.0)
     member = StubStrategy("m", MES, ["X"], raise_on_ready_call=2 if case == "reseed_raises" else None)
@@ -119,7 +118,7 @@ async def test_scenario_recheck_adopts_change(case, caplog):
 
 async def test_scenario_independent_groups():
     declare_names("X", "Y")
-    clock = ReplayClock(utc(15, 4))
+    clock = ManualWatchTime(utc(15, 4))
     cme_source, eurex_source = ScriptedSource(clock), ScriptedSource(clock)
     cme_source.publish(utc(14, 21), TARGET, 1.0)
     eurex_source.always_fail = True
@@ -136,7 +135,7 @@ async def test_scenario_independent_groups():
 @pytest.mark.parametrize("case", ["confirms", "differs", "absent"])
 async def test_scenario_backup_needs_confirmation(case):
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     primary, backup, confirm = (ScriptedSource(clock) for _ in range(3))
     backup.publish(ny(0), TARGET, 7.0)
     if case == "confirms":
@@ -156,26 +155,34 @@ def write_series(folder, name, rows):
 
 
 @pytest.mark.parametrize("case", ["present", "missing"])
-async def test_scenario_replay_resolves_at_start(case, tmp_path):
+async def test_scenario_replay_arms_on_the_tape_time_at_the_open(case, tmp_path):
     declare_names("X")
     rows = [(PREVIOUS, 4.0)] + ([(TARGET, 5.0)] if case == "present" else [])
     write_series(tmp_path, "X", rows)
     member = StubStrategy("m", MES, ["X"])
-    provider = make_provider({"X": FileAuxSource(str(tmp_path))}, [member], ReplayClock(ny(0)), resolve_date=TARGET)
+    tape_time = ManualWatchTime(ny(9, 30))
+    provider = make_provider({"X": FileAuxSource(str(tmp_path))}, [member], tape_time)
+    await provider.members_changed()
     if case == "missing":
-        with pytest.raises(AuxDataError, match="X"):
-            await provider.start()
+        assert member.ready_calls == 0 and not provider.groups[0].armed
         return
-    await provider.start()
     assert member.ready_calls == 1 and member.calls[0][1]["X"][-1] == row(TARGET, 5.0)
     bar = bar_at(MES, ny(9, 30))
     provider.annotate(MES, bar)
     assert bar["aux_X"] == 5.0
 
 
+async def test_members_changed_waits_for_the_first_event():
+    declare_names("X")
+    member = StubStrategy("m", MES, ["X"])
+    provider = make_provider({"X": ScriptedSource(ManualWatchTime())}, [member], ManualWatchTime())
+    await provider.members_changed()
+    assert provider.groups == [] and member.calls == []
+
+
 async def test_scenario_late_member():
     declare_names("X", "Y")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     x_source, y_source = ScriptedSource(clock), ScriptedSource(clock)
     x_source.publish(ny(0), TARGET, 1.0)
     first = StubStrategy("first", MES, ["X"])
@@ -183,7 +190,8 @@ async def test_scenario_late_member():
     await run_minutes(provider, clock, ny(7), ny(7, 2))
     assert first.ready_calls == 1
     covered, new_name = StubStrategy("covered", MES, ["X"]), StubStrategy("new", MES, ["Y"])
-    provider.book.strategies += [covered, new_name]
+    provider.member_joined(covered)
+    provider.member_joined(new_name)
     await run_minutes(provider, clock, ny(7, 3), ny(7, 4))
     assert covered.ready_calls == 1 and new_name.ready_calls == 0
     assert len(provider.groups) == 2
@@ -195,7 +203,7 @@ async def test_scenario_late_member():
 
 async def test_scenario_frames_for_rebuild():
     declare_names("X")
-    clock = ReplayClock(ny(7))
+    clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), PREVIOUS, 4.0)
     source.publish(ny(0), TARGET, 5.0)

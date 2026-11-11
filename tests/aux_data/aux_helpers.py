@@ -1,7 +1,7 @@
 import asyncio
 from datetime import date, datetime, timedelta, timezone
 
-from alchemist.clock import ReplayClock
+from time_helpers import ManualWatchTime
 from alchemist.config import AuxConfig
 from alchemist.external_data.provider import AuxProvider
 from alchemist.external_data.sources import AuxSource
@@ -43,7 +43,7 @@ class ScriptedSource(AuxSource):
         return len(self.fetch_times)
 
     async def fetch(self, name, start, end):
-        now = self.clock.now()
+        now = self.clock.moment()
         self.fetch_times.append(now)
         if self.always_fail or (self.fail_from is not None and now >= self.fail_from):
             raise ConnectionError("source down")
@@ -72,18 +72,16 @@ class StubStrategy:
         self.calls.append((ready, frames))
 
 
-class Book:
-    def __init__(self, *strategies) -> None:
-        self.strategies = list(strategies)
-
-
 def declare_names(*names):
     for name in names:
         register_aux_name(name)
 
 
-def make_provider(sources, strategies, clock, **config):
-    return AuxProvider(sources, Book(*strategies), clock, AuxConfig(**config))
+def make_provider(sources, strategies, clock, sleep=asyncio.sleep, **config):
+    provider = AuxProvider(sources, clock, AuxConfig(**config), sleep=sleep)
+    for strategy in strategies:
+        provider.member_joined(strategy)
+    return provider
 
 
 async def run_minutes(provider, clock, start: datetime, end: datetime, on_step=None, interval: int = 60):
