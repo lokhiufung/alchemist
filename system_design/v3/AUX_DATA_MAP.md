@@ -152,14 +152,14 @@ Replay has files. Live has an outside source that can be down or late, and a bac
 
 #### Algorithm
 
-1.  Pick the source registered for the name: files in replay, the outside source live.
+1.  Build the source that the config file names for each auxiliary name (key of `aux_sources`): a replay config names a file source, a live config names an outside source. The engine does not pick by mode.
 2.  Fill a value missing from the primary source with a backup value only when a second source confirms the backup value.
 
 #### Parameters
 
 | Parameter | Configurable? | Supported | Default |
 |----|----|----|----|
-| Source per name | Configurable (registry) | file source; confirmed backup source | — |
+| Source per name | Configurable (config `aux_sources`; fixed table `AUX_SOURCES`, no user extension) | file source; confirmed backup source | — |
 | Confirmations a backup value needs | Configurable per process ([System map decision 58](SYSTEM_MAP.md)) | 1 second source | 1 |
 
 #### Invariant
@@ -564,7 +564,7 @@ Sources are in `external_data/sources.py`; the provider and groups are in `exter
 |----|----|
 | Group by arm session | `AuxProvider.sync_groups()`; `AuxArmGroup.covers()` |
 | \[ arm groups \] | `AuxArmGroup` |
-| Fetch value | `AuxSource.fetch()`, `FileAuxSource`, `ConfirmedBackupAuxSource`, `register_aux_source()` |
+| Fetch value | `AuxSource.fetch()`, `FileAuxSource`, `ConfirmedBackupAuxSource`, `build_aux_source()` |
 | Judge settled, Arm group, Recheck until open, Roll target date | `AuxArmGroup.step()` |
 | Members | `AuxProvider.member_joined()`, `member_left()`; sent by `RuntimeBook.commit()` through `RuntimeBook.member_listeners` |
 | First step at cold start | `AuxProvider.members_changed()`; called by the runner's `SlotsService` |
@@ -578,7 +578,7 @@ One service object, one source interface and one group class.
 
 | Piece | Role | Old behaviours |
 |----|----|----|
-| `AuxSource`, `AUX_SOURCES` | One outside source; picked by name from a registry. | 1 |
+| `AuxSource`, `AUX_SOURCES` | One outside source; picked by name from a fixed table, built from the config spec. | 1 |
 | `AuxArmGroup` | Target date, deadline, columns, armed state and warnings for one arm session. | 2, 3, 4, 5 |
 | `AuxProvider.start()`, `stop()` | Start and cancel the resident task; the task steps every step interval of watch time. | 3, 6 |
 | `AuxProvider.member_joined()`, `member_left()` | Keep the members from member events. | 9 |
@@ -606,7 +606,9 @@ class AuxSource(ABC):
     @abstractmethod
     async def fetch(self, name: str, start: date, end: date) -> Any: ...
 
-AUX_SOURCES: dict[str, type[AuxSource]] = {}
+AUX_SOURCES: dict[str, type[AuxSource]] = {"file": FileAuxSource, "confirmed_backup": ConfirmedBackupAuxSource}
+
+def build_aux_source(spec: dict) -> AuxSource: ...
 
 class AuxArmGroup:
     """Behaviours 2-5: arming state for one arm session."""

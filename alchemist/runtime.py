@@ -24,11 +24,12 @@ from alchemist.event_loop.shutdown import ShutdownCoordinator
 from alchemist.event_loop.watch_time import WatchTime
 from alchemist.exchanges import EXCHANGES
 from alchemist.external_data.provider import AuxProvider
+from alchemist.external_data.sources import build_aux_source
 from alchemist.gateways import get_gateway
 from alchemist.loader import StrategyLoadError, load_strategies
 from alchemist.logger import attach_watch_time
 from alchemist.messages import Command, make_event
-from alchemist.registry import get_aux_source, get_strategy
+from alchemist.registry import get_strategy
 from alchemist.requests import Requests
 from alchemist.safety.monitor import SafetyMonitor
 from alchemist.stores import CalcStateStore, RoundTripStore
@@ -149,8 +150,7 @@ class Runtime:
         stores = Stores(CalcStateStore(state, config.system.bot_id), RoundTripStore(state, config.system.bot_id))
         seeder = Seeder(requests, watch_time, config.event_loop, recorded_bars=partial(load_recorded_bars, recordings))
         book.attach(requests, seeder)
-        sources = {name: get_aux_source(options["source"])(**{k: v for k, v in options.items() if k != "source"})
-                   for name, options in config.aux_sources.items()}
+        sources = {name: build_aux_source(spec) for name, spec in config.aux_sources.items()}
         aux = AuxProvider(sources, watch_time, config.aux)
         book.member_listeners.append(aux)
         safety = SafetyMonitor(inbound, outbound, EXCHANGES, config.safety)

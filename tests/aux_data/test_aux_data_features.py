@@ -5,10 +5,10 @@ from datetime import date, timedelta
 import pytest
 
 from time_helpers import ManualWatchTime
-from alchemist.external_data.sources import ConfirmedBackupAuxSource
+from alchemist.external_data.sources import ConfirmedBackupAuxSource, FileAuxSource, build_aux_source
 from alchemist.instruments import FDAX, MES
 
-from aux_helpers import (tape_bar, TARGET, ScriptedSource, StubStrategy, berlin, declare_names, make_provider, ny, row,
+from aux_helpers import (tape_bar, TARGET, ScriptedSource, StubStrategy, berlin, make_provider, ny, row,
                          run_minutes, utc)
 
 PREVIOUS = date(2026, 4, 14)
@@ -25,6 +25,18 @@ async def test_backup_value_used_only_when_confirmed(second, expected):
     assert [r["value"] for r in rows] == ([] if expected is None else [expected])
 
 
+def test_source_built_from_config_spec_with_nested_sources():
+    file = {"source": "file", "root": "aux"}
+    source = build_aux_source({"source": "confirmed_backup", "primary": file, "backup": file, "confirm": file})
+    assert isinstance(source, ConfirmedBackupAuxSource)
+    assert all(isinstance(s, FileAuxSource) for s in (source.primary, source.backup, source.confirm))
+
+
+def test_unknown_source_name_refused():
+    with pytest.raises(KeyError, match="nope"):
+        build_aux_source({"source": "nope"})
+
+
 async def test_primary_value_wins_over_backup():
     clock = ManualWatchTime(ny(7))
     primary, backup, confirm = (ScriptedSource(clock) for _ in range(3))
@@ -37,7 +49,6 @@ async def test_primary_value_wins_over_backup():
 
 @pytest.mark.parametrize("instrument,start,end", [(MES, ny(0), ny(9, 29)), (FDAX, berlin(0), berlin(7, 59))])
 async def test_carried_value_never_arms(instrument, start, end):
-    declare_names("X")
     clock = ManualWatchTime(start)
     source = ScriptedSource(clock)
     source.publish(start, PREVIOUS, 9.0)
@@ -48,7 +59,6 @@ async def test_carried_value_never_arms(instrument, start, end):
 
 
 async def test_fetch_at_most_once_per_target_before_settle_time():
-    declare_names("X")
     clock = ManualWatchTime(ny(10, day=14))
     source = ScriptedSource(clock)
     member = StubStrategy("m", MES, ["X"])
@@ -63,7 +73,6 @@ async def test_fetch_at_most_once_per_target_before_settle_time():
 
 
 async def test_arm_groups_per_exchange_are_independent():
-    declare_names("X", "Y")
     clock = ManualWatchTime(utc(15, 4))
     cme_source, eurex_source = ScriptedSource(clock), ScriptedSource(clock)
     cme_source.publish(utc(14, 21), TARGET, 1.0)
@@ -78,7 +87,6 @@ async def test_arm_groups_per_exchange_are_independent():
 
 
 async def test_groups_stepped_every_interval():
-    declare_names("X")
 
     clock = ManualWatchTime(ny(7))
 
@@ -96,7 +104,6 @@ async def test_groups_stepped_every_interval():
 
 
 async def test_not_armed_by_open_sits_session_out():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(10), TARGET, 1.0)
@@ -108,7 +115,6 @@ async def test_not_armed_by_open_sits_session_out():
 
 
 async def test_seed_error_leaves_group_unarmed(caplog):
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
@@ -122,7 +128,6 @@ async def test_seed_error_leaves_group_unarmed(caplog):
 
 
 async def test_start_after_open_still_arms():
-    declare_names("X")
     clock = ManualWatchTime(ny(11))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
@@ -132,7 +137,6 @@ async def test_start_after_open_still_arms():
 
 
 async def test_target_roll_disarms_group():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
@@ -148,7 +152,6 @@ async def test_target_roll_disarms_group():
 
 
 async def test_changed_value_after_arm_is_adopted_and_reseeded():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(7), TARGET, 1.0)
@@ -164,7 +167,6 @@ async def test_changed_value_after_arm_is_adopted_and_reseeded():
 
 @pytest.mark.parametrize("outcome,armed", [("fetch_fails", True), ("target_gone", True), ("reseed_raises", False)])
 async def test_recheck_outcomes(outcome, armed):
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(7), TARGET, 1.0)
@@ -182,7 +184,6 @@ async def test_recheck_outcomes(outcome, armed):
 
 
 async def test_annotate_adds_bound_values_before_dispatch():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.25)
@@ -196,7 +197,6 @@ async def test_annotate_adds_bound_values_before_dispatch():
 
 
 async def test_annotate_leaves_other_trading_dates_alone():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.25)
@@ -208,7 +208,6 @@ async def test_annotate_leaves_other_trading_dates_alone():
 
 
 async def test_rebuild_while_armed_gets_current_frames():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
@@ -220,7 +219,6 @@ async def test_rebuild_while_armed_gets_current_frames():
 
 @pytest.mark.parametrize("joiner_reads,same_group", [(["X"], True), (["Y"], False)])
 async def test_late_joiner_gets_own_group_unless_covered(joiner_reads, same_group):
-    declare_names("X", "Y")
     clock = ManualWatchTime(ny(7))
     sources = {"X": ScriptedSource(clock), "Y": ScriptedSource(clock)}
     sources["X"].publish(ny(0), TARGET, 1.0)
@@ -232,7 +230,6 @@ async def test_late_joiner_gets_own_group_unless_covered(joiner_reads, same_grou
 
 
 async def test_departed_member_is_dropped():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), TARGET, 1.0)
@@ -245,7 +242,6 @@ async def test_departed_member_is_dropped():
 
 
 async def test_resident_task_crash_logs_critical(caplog):
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     provider = make_provider({"X": ScriptedSource(clock)}, [StubStrategy("m", MES, ["X"])], clock)
 

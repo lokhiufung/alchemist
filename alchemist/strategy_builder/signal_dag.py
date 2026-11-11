@@ -8,14 +8,14 @@ import typing
 from collections import deque
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from alchemist.calculations.calculation import Calculation, SessionFixedCalculation
 from alchemist.exchanges import ExchangeProfile, exchange_profile
 from alchemist.instruments import Instrument
 from alchemist.logger import strategy_logger
-from alchemist.registry import find_aux_name, get_calc, scope_of_class
+from alchemist.registry import get_calc, scope_of_class
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
 from alchemist.constants.strategy import BAR_FIELDS, HISTORY_KINDS, LEVEL_KINDS, LOGICAL
 
@@ -104,8 +104,10 @@ def conforms(value: Any, hint: Any) -> bool:
 
 
 class Graph:
-    def __init__(self, scope: str, profile: ExchangeProfile, session_name: str) -> None:
+    def __init__(self, scope: str, profile: ExchangeProfile, session_name: str,
+                 aux_names: Mapping[str, tuple[str, ...] | None]) -> None:
         self.scope = scope
+        self.aux_names = aux_names
         self.profile = profile
         self.session_name = session_name
         self.specs: dict[str, NodeSpec] = {}
@@ -132,10 +134,9 @@ class Graph:
     def bar(self, field: str) -> Node:
         if field in BAR_FIELDS:
             return self.leaf("bar", field, field)
-        aux = find_aux_name(field)
-        if aux is None:
-            raise SignalBuildError(f"market data {field!r} is not a bar field or a registered auxiliary name")
-        supplied = aux.supplied_sessions
+        if field not in self.aux_names:
+            raise SignalBuildError(f"market data {field!r} is not a bar field or a configured auxiliary name")
+        supplied = self.aux_names[field]
         if supplied is not None and self.session_name not in supplied:
             raise SignalBuildError(
                 f"market data {field!r} is not supplied for session {self.session_name!r} (supplied: {list(supplied)})")
@@ -231,16 +232,17 @@ class SignalDag(StrategySignal):
 
     @classmethod
     def from_config(cls, strategy_config) -> SignalDag:
-        signal = cls(strategy_config.signal_instrument)
+        signal = cls(strategy_config.signal_instrument, strategy_config.aux_names)
         signal.log = strategy_logger(strategy_config.name)
         return signal
 
-    def __init__(self, instrument: Instrument) -> None:
+    def __init__(self, instrument: Instrument, aux_names: Mapping[str, tuple[str, ...] | None]) -> None:
         self.log = SIGNAL_LOGGER
         self.instrument = instrument
         self.profile = exchange_profile(instrument)
         self.params = self.checked_params()
-        graph = Graph(scope_of_class(type(self)), self.profile, self.resolve_session(graph_owner="params"))
+        graph = Graph(scope_of_class(type(self)), self.profile, self.resolve_session(graph_owner="params"),
+                      aux_names)
         self.session = graph.session_name
         self.build_graph(graph, self.params)
         self.finish_build(graph)

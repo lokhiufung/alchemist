@@ -56,7 +56,7 @@ The graph calls:
 
 | Call | Adds |
 |----|----|
-| `g.bar(field)` | A market-data leaf: a bar field, or a registered auxiliary name. |
+| `g.bar(field)` | A market-data leaf: a bar field, or an auxiliary name configured in `aux_sources` (optional `supplied_sessions`). |
 | `g.strategy_data(field)` | A strategy-data leaf (`entry_price`, `secs_since_entry`); null while flat. A node that reads it is exit-side. |
 | `g.calc(name, calc_key, *inputs, **params)` | A calculation from the registry, wired to its inputs. |
 | `g.expr(name, fn, *inputs)` | An inline pure Python function of its inputs; unavailable on a bar where an input is null. |

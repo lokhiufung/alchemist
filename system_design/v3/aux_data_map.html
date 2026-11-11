@@ -198,11 +198,11 @@
 <dt>Need</dt><dd>A strategy reads an auxiliary series by name. The strategy must not know which source serves that name, and a new feed or backup must not change any other code.</dd>
 <dt>Upstream gives</dt><dd>Replay has files. Live has an outside source that can be down or late, and a backup source that can be wrong when used alone.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Pick the source registered for the name: files in replay, the outside source live.</li>
+<li>Build the source that the config file names for each auxiliary name (key of <code>aux_sources</code>): a replay config names a file source, a live config names an outside source. The engine does not pick by mode.</li>
 <li>Fill a value missing from the primary source with a backup value only when a second source confirms the backup value.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Source per name</td><td>Configurable (registry)</td><td>file source; confirmed backup source</td><td>—</td></tr>
+<tr><td>Source per name</td><td>Configurable (config <code>aux_sources</code>; fixed table <code>AUX_SOURCES</code>, no user extension)</td><td>file source; confirmed backup source</td><td>—</td></tr>
 <tr><td>Confirmations a backup value needs</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>1 second source</td><td>1</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>A new feed or backup is one new source class. An unconfirmed backup value is never used.</dd>
@@ -467,7 +467,7 @@
 <tbody>
 <tr><td>Group by arm session</td><td><code>AuxProvider.sync_groups()</code>; <code>AuxArmGroup.covers()</code></td></tr>
 <tr><td>[ arm groups ]</td><td><code>AuxArmGroup</code></td></tr>
-<tr><td>Fetch value</td><td><code>AuxSource.fetch()</code>, <code>FileAuxSource</code>, <code>ConfirmedBackupAuxSource</code>, <code>register_aux_source()</code></td></tr>
+<tr><td>Fetch value</td><td><code>AuxSource.fetch()</code>, <code>FileAuxSource</code>, <code>ConfirmedBackupAuxSource</code>, <code>build_aux_source()</code></td></tr>
 <tr><td>Judge settled, Arm group, Recheck until open, Roll target date</td><td><code>AuxArmGroup.step()</code></td></tr>
 <tr><td>Members</td><td><code>AuxProvider.member_joined()</code>, <code>member_left()</code>; sent by <code>RuntimeBook.commit()</code> through <code>RuntimeBook.member_listeners</code></td></tr>
 <tr><td>First step at cold start</td><td><code>AuxProvider.members_changed()</code>; called by the runner's <code>SlotsService</code></td></tr>
@@ -483,7 +483,7 @@
 <div class="table-wrap"><table>
 <thead><tr><th>Piece</th><th>Role</th><th>Old behaviours</th></tr></thead>
 <tbody>
-<tr><td><code>AuxSource</code>, <code>AUX_SOURCES</code></td><td>One outside source; picked by name from a registry.</td><td>1</td></tr>
+<tr><td><code>AuxSource</code>, <code>AUX_SOURCES</code></td><td>One outside source; picked by name from a fixed table, built from the config spec.</td><td>1</td></tr>
 <tr><td><code>AuxArmGroup</code></td><td>Target date, deadline, columns, armed state and warnings for one arm session.</td><td>2, 3, 4, 5</td></tr>
 <tr><td><code>AuxProvider.start()</code>, <code>stop()</code></td><td>Start and cancel the resident task; the task steps every step interval of watch time.</td><td>3, 6</td></tr>
 <tr><td><code>AuxProvider.member_joined()</code>, <code>member_left()</code></td><td>Keep the members from member events.</td><td>9</td></tr>
@@ -511,7 +511,9 @@ class AuxSource(ABC):
     async def fetch(self, name: str, start: date, end: date) -&gt; Any: ...
 
 
-AUX_SOURCES: dict[str, type[AuxSource]] = {}
+AUX_SOURCES: dict[str, type[AuxSource]] = {"file": FileAuxSource, "confirmed_backup": ConfirmedBackupAuxSource}
+
+def build_aux_source(spec: dict) -> AuxSource: ...
 
 
 class AuxArmGroup:

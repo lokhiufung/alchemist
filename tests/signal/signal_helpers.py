@@ -9,8 +9,8 @@ from alchemist.strategy_builder.signal_dag import SignalDag, SignalParams
 SESSION_OPEN_TS = datetime(2026, 4, 15, 13, 30, tzinfo=timezone.utc).timestamp()
 
 
-def strategy_config(instrument: Instrument = MES) -> StrategyConfig:
-    return StrategyConfig("slot", "strat", "ACC", (instrument,), (instrument,))
+def strategy_config(instrument: Instrument = MES, **aux_names: tuple[str, ...] | None) -> StrategyConfig:
+    return StrategyConfig("slot", "strat", "ACC", (instrument,), (instrument,), aux_names=aux_names)
 
 
 def make_bar(index: int, close: float, high: float | None = None, low: float | None = None, **extra) -> dict:

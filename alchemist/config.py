@@ -125,6 +125,7 @@ class StrategyConfig:
     execution_instruments: tuple[Instrument, ...]
     execution: dict | None = None
     snapshot_interval: int = 60
+    aux_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
 
     @property
     def signal_instrument(self) -> Instrument:
@@ -170,7 +171,7 @@ def instruments_from(value: Any) -> tuple[Instrument, ...]:
     return tuple(instrument(name) for name in names)
 
 
-def build_strategy(name: str, raw: dict) -> StrategyConfig:
+def build_strategy(name: str, raw: dict, aux_names: dict[str, tuple[str, ...] | None]) -> StrategyConfig:
     return StrategyConfig(
         name=name,
         strat=raw["strat"],
@@ -179,7 +180,17 @@ def build_strategy(name: str, raw: dict) -> StrategyConfig:
         execution_instruments=instruments_from(raw["execution_instrument"]),
         execution=raw.get("execution"),
         snapshot_interval=raw.get("snapshot_interval", 60),
+        aux_names=aux_names,
     )
+
+
+def split_aux_sources(raw: dict | None) -> tuple[dict[str, dict], dict[str, tuple[str, ...] | None]]:
+    specs, names = {}, {}
+    for name, body in (raw or {}).items():
+        spec = dict(body)
+        sessions = spec.pop("supplied_sessions", None)
+        specs[name], names[name] = spec, tuple(sessions) if sessions is not None else None
+    return specs, names
 
 
 def build_replay(raw: dict | None) -> ReplayConfig | None:
@@ -210,6 +221,7 @@ def load_config(path: Path) -> Configuration:
     system = raw["system"]
     gateway = dict(raw["gateway"])
     replay = build_replay(raw.get("replay"))
+    aux_sources, aux_names = split_aux_sources(raw.get("aux_sources"))
     return Configuration(
         path=Path(path),
         sha256=hashlib.sha256(raw_bytes).hexdigest(),
@@ -220,10 +232,10 @@ def load_config(path: Path) -> Configuration:
         ),
         gateway=build_gateway(gateway, replay),
         safety=build_safety(raw.get("safety")),
-        aux_sources=raw.get("aux_sources") or {},
+        aux_sources=aux_sources,
         aux=AuxConfig(**(raw.get("aux") or {})),
         execution=ExecutionConfig(**(raw.get("execution") or {})),
         event_loop=EventLoopConfig(**(raw.get("event_loop") or {})),
-        strategies={name: build_strategy(name, body) for name, body in (raw.get("strategies") or {}).items()},
+        strategies={name: build_strategy(name, body, aux_names) for name, body in (raw.get("strategies") or {}).items()},
         replay=replay,
     )

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from alchemist import registry
-from alchemist.registry import get_aux_source, get_calc, get_tape, register_aux_source, register_calc, register_tape
+from alchemist.registry import get_calc, get_tape, register_calc, register_tape
 
 
 def run_in_folder(folder: Path, source: str) -> None:
@@ -41,12 +41,9 @@ def test_unknown_calc_names_scope(tmp_path):
         get_calc("nope", str(tmp_path))
 
 
-def test_tape_and_aux_registries_bind_by_name():
+def test_tape_registry_binds_by_name():
     @register_tape("fake_tape")
     class FakeTape: ...
 
-    @register_aux_source("fake_source")
-    class FakeSource: ...
-
-    assert (get_tape("fake_tape"), get_aux_source("fake_source")) == (FakeTape, FakeSource)
+    assert get_tape("fake_tape") is FakeTape
 

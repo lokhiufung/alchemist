@@ -1,7 +1,7 @@
 import pytest
 
 from alchemist.calculations import Calculation, SessionFixedCalculation
-from alchemist.registry import register_aux_name, register_calc
+from alchemist.registry import register_calc
 from alchemist.strategy_builder.signal_dag import SignalBuildError
 from alchemist.instruments import FDAX
 
@@ -60,28 +60,24 @@ def test_refused_signal_leaves_no_state_for_next_build():
 
 
 def test_market_data_the_session_cannot_supply_is_refused():
-    register_aux_name("eurex_only_series", supplied_sessions=("FRA_DAY",))
-
     def build(g, p):
         close = g.bar("close")
         g.bar("eurex_only_series")
         entry_exit(g, close)
 
     with pytest.raises(SignalBuildError, match="eurex_only_series"):
-        make_signal(build).from_config(strategy_config())
-    assert make_signal(build).from_config(strategy_config(FDAX)) is not None
+        make_signal(build).from_config(strategy_config(eurex_only_series=("FRA_DAY",)))
+    assert make_signal(build).from_config(strategy_config(FDAX, eurex_only_series=("FRA_DAY",))) is not None
 
 
-def test_registered_aux_name_reads_the_annotated_bar_key():
-    register_aux_name("vix_close")
-
+def test_configured_aux_name_reads_the_annotated_bar_key():
     def build(g, p):
         close = g.bar("close")
         vix = g.bar("vix_close")
         g.entry(g.condition("calm", vix, "<", 20.0))
         g.exit("stop", close, "<", 90.0)
 
-    stepper = Stepper(make_signal(build).from_config(strategy_config()))
+    stepper = Stepper(make_signal(build).from_config(strategy_config(vix_close=None)))
     stepper.step(100.0, aux_vix_close=15.0)
     assert stepper.signal.entry_conditions() == {"calm": True}
 
@@ -362,8 +358,6 @@ def test_values_returns_a_copy():
 
 
 def freeze_fixture(late_series_at_entry):
-    register_aux_name("late_series")
-
     def build(g, p):
         close = g.bar("close")
         late = g.bar("late_series")
@@ -371,7 +365,7 @@ def freeze_fixture(late_series_at_entry):
         g.entry(g.condition("above", close, ">", 1000.0))
         g.exit("stop", close, "<", 1.0)
 
-    return Stepper(make_signal(build).from_config(strategy_config()))
+    return Stepper(make_signal(build).from_config(strategy_config(late_series=None)))
 
 
 def test_input_missing_at_entry_stays_unavailable():
@@ -452,8 +446,6 @@ def test_rebuild_and_replay_equals_fresh_process():
 
 
 def test_aux_names_lists_the_series_the_signal_reads():
-    register_aux_name("vix_close")
-
     def with_aux(g, p):
         close = g.bar("close")
         g.entry(g.condition("calm", g.bar("vix_close"), "<", 20.0))
@@ -462,7 +454,7 @@ def test_aux_names_lists_the_series_the_signal_reads():
     def without_aux(g, p):
         entry_exit(g, g.bar("close"))
 
-    assert make_signal(with_aux).from_config(strategy_config()).aux_names() == frozenset({"vix_close"})
+    assert make_signal(with_aux).from_config(strategy_config(vix_close=None)).aux_names() == frozenset({"vix_close"})
     assert make_signal(without_aux).from_config(strategy_config()).aux_names() == frozenset()
 
 

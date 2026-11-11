@@ -114,7 +114,7 @@
 <div class="table-wrap"><table>
 <thead><tr><th>Call</th><th>Adds</th></tr></thead>
 <tbody>
-<tr><td><code>g.bar(field)</code></td><td>A market-data leaf: a bar field, or a registered auxiliary name.</td></tr>
+<tr><td><code>g.bar(field)</code></td><td>A market-data leaf: a bar field, or an auxiliary name configured in <code>aux_sources</code> (optional <code>supplied_sessions</code>).</td></tr>
 <tr><td><code>g.strategy_data(field)</code></td><td>A strategy-data leaf (<code>entry_price</code>, <code>secs_since_entry</code>); null while flat. A node that reads it is exit-side.</td></tr>
 <tr><td><code>g.calc(name, calc_key, *inputs, **params)</code></td><td>A calculation from the registry, wired to its inputs.</td></tr>
 <tr><td><code>g.expr(name, fn, *inputs)</code></td><td>An inline pure Python function of its inputs; unavailable on a bar where an input is null.</td></tr>

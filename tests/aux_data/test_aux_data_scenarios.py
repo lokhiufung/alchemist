@@ -7,7 +7,7 @@ from time_helpers import ManualWatchTime
 from alchemist.external_data.sources import ConfirmedBackupAuxSource, FileAuxSource
 from alchemist.instruments import FDAX, MES
 
-from aux_helpers import (tape_bar, TARGET, ScriptedSource, StubStrategy, berlin, declare_names, make_provider, ny, row,
+from aux_helpers import (tape_bar, TARGET, ScriptedSource, StubStrategy, berlin, make_provider, ny, row,
                          run_minutes, utc)
 
 PREVIOUS = date(2026, 4, 14)
@@ -26,7 +26,6 @@ def ready_times(strategy, log):
 
 
 async def test_scenario_arm_before_open():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(8), TARGET, 1.5)
@@ -44,7 +43,6 @@ async def test_scenario_arm_before_open():
 
 
 async def test_scenario_unsettled_value_waits(caplog):
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), PREVIOUS, 9.0)
@@ -66,7 +64,6 @@ async def test_scenario_unsettled_value_waits(caplog):
 
 @pytest.mark.parametrize("case", ["row_after_open", "process_started_after_open"])
 async def test_scenario_missed_open(case):
-    declare_names("X")
     start = ny(7) if case == "row_after_open" else ny(10)
     clock = ManualWatchTime(start)
     source = ScriptedSource(clock)
@@ -88,7 +85,6 @@ async def test_scenario_missed_open(case):
 
 @pytest.mark.parametrize("case", ["change", "fetch_fails", "reseed_raises"])
 async def test_scenario_recheck_adopts_change(case, caplog):
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(7), TARGET, 1.0)
@@ -117,7 +113,6 @@ async def test_scenario_recheck_adopts_change(case, caplog):
 
 
 async def test_scenario_independent_groups():
-    declare_names("X", "Y")
     clock = ManualWatchTime(utc(15, 4))
     cme_source, eurex_source = ScriptedSource(clock), ScriptedSource(clock)
     cme_source.publish(utc(14, 21), TARGET, 1.0)
@@ -134,7 +129,6 @@ async def test_scenario_independent_groups():
 
 @pytest.mark.parametrize("case", ["confirms", "differs", "absent"])
 async def test_scenario_backup_needs_confirmation(case):
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     primary, backup, confirm = (ScriptedSource(clock) for _ in range(3))
     backup.publish(ny(0), TARGET, 7.0)
@@ -156,7 +150,6 @@ def write_series(folder, name, rows):
 
 @pytest.mark.parametrize("case", ["present", "missing"])
 async def test_scenario_replay_arms_on_the_tape_time_at_the_open(case, tmp_path):
-    declare_names("X")
     rows = [(PREVIOUS, 4.0)] + ([(TARGET, 5.0)] if case == "present" else [])
     write_series(tmp_path, "X", rows)
     member = StubStrategy("m", MES, ["X"])
@@ -173,7 +166,6 @@ async def test_scenario_replay_arms_on_the_tape_time_at_the_open(case, tmp_path)
 
 
 async def test_members_changed_waits_for_the_first_event():
-    declare_names("X")
     member = StubStrategy("m", MES, ["X"])
     provider = make_provider({"X": ScriptedSource(ManualWatchTime())}, [member], ManualWatchTime())
     await provider.members_changed()
@@ -181,7 +173,6 @@ async def test_members_changed_waits_for_the_first_event():
 
 
 async def test_scenario_late_member():
-    declare_names("X", "Y")
     clock = ManualWatchTime(ny(7))
     x_source, y_source = ScriptedSource(clock), ScriptedSource(clock)
     x_source.publish(ny(0), TARGET, 1.0)
@@ -202,7 +193,6 @@ async def test_scenario_late_member():
 
 
 async def test_scenario_frames_for_rebuild():
-    declare_names("X")
     clock = ManualWatchTime(ny(7))
     source = ScriptedSource(clock)
     source.publish(ny(0), PREVIOUS, 4.0)

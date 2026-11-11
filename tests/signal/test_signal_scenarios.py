@@ -3,7 +3,7 @@ import logging
 import pytest
 
 from alchemist.calculations import Calculation
-from alchemist.registry import register_aux_source, register_calc
+from alchemist.registry import register_calc
 from alchemist.strategy_builder.signal_dag import SignalBuildError
 
 from signal_helpers import Stepper, make_bar, make_signal, strategy_config

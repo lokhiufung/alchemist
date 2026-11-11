@@ -6,7 +6,6 @@ from alchemist.config import AuxConfig
 from alchemist.external_data.provider import AuxProvider
 from alchemist.external_data.sources import AuxSource
 from alchemist.instruments import FDAX, MES
-from alchemist.registry import register_aux_name
 
 TARGET = date(2026, 4, 15)
 
@@ -70,11 +69,6 @@ class StubStrategy:
             if self.raise_on_ready_call == self.ready_calls:
                 raise RuntimeError("seed failed")
         self.calls.append((ready, frames))
-
-
-def declare_names(*names):
-    for name in names:
-        register_aux_name(name)
 
 
 def make_provider(sources, strategies, clock, sleep=asyncio.sleep, **config):

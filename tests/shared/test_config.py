@@ -102,3 +102,22 @@ def test_gateway_watch_numbers_are_configurable_per_process(tmp_path, monkeypatc
     text = GOLDEN_YAML.replace("  name: simulation", "  name: simulation\n  heartbeat_interval_s: 2.0\n  reconnect_cap_s: 60.0")
     gateway = load_config(write(tmp_path, text)).gateway
     assert (gateway.heartbeat_interval_s, gateway.reconnect_cap_s, gateway.options) == (2.0, 60.0, {})
+
+
+AUX_YAML = GOLDEN_YAML + """
+aux_sources:
+  vix_close:
+    source: file
+    root: data/aux
+  eurex_series:
+    source: file
+    root: data/aux
+    supplied_sessions: [FRA_DAY]
+"""
+
+
+def test_aux_names_come_from_aux_sources_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOLDEN_OUT", str(tmp_path))
+    config = load_config(write(tmp_path, AUX_YAML))
+    assert config.aux_sources["eurex_series"] == {"source": "file", "root": "data/aux"}
+    assert config.strategies["macd_rsi_rth_long"].aux_names == {"vix_close": None, "eurex_series": ("FRA_DAY",)}
