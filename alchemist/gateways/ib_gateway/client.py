@@ -4,7 +4,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from alchemist.gateways.ib_gateway.gateway import BOT, IbGateway, IbTransport
+from alchemist.gateways.ib_gateway.gateway import BOT, IbGateway
+from alchemist.gateways.ib_gateway.transport import IbTransport
 
 
 def create_transport(gateway: IbGateway) -> IbTransport:

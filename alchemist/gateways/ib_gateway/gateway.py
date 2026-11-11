@@ -6,7 +6,6 @@ import logging
 import queue
 import threading
 import time
-from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,6 +16,7 @@ from alchemist.exchanges import exchange_profile
 from alchemist.gateways.gateway import Gateway, log_broker
 from alchemist.gateways.ib_gateway.errors import (CANCEL_REFUSAL_CODES, CONNECTION_LOST_CODE, CONNECTION_RESTORED_CODES,
                                             DATA_FARM_OK_CODES, ORDER_REJECT_CODES, REQUEST_ID_FLOOR)
+from alchemist.gateways.ib_gateway.transport import IbTransport
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
@@ -28,37 +28,6 @@ SEED_CHUNK_BARS = 2000
 BOT, SLD = "BOT", "SLD"
 STATUS_TO_UPDATE = {"Submitted": "OPEN", "PreSubmitted": "OPEN", "Filled": "FILLED", "Cancelled": "CANCELLED",
                     "ApiCancelled": "CANCELLED"}
-
-
-class IbTransport(ABC):
-    @abstractmethod
-    def connect(self, host: str, port: int, client_id: int) -> None: ...
-    @abstractmethod
-    def disconnect(self) -> None: ...
-    @abstractmethod
-    def req_current_time(self) -> None: ...
-    @abstractmethod
-    def req_contract_details(self, req_id: int, spec: dict) -> None: ...
-    @abstractmethod
-    def req_tick_by_tick(self, req_id: int, contract: dict) -> None: ...
-    @abstractmethod
-    def cancel_tick_by_tick(self, req_id: int) -> None: ...
-    @abstractmethod
-    def req_order_updates(self) -> None: ...
-    @abstractmethod
-    def req_account_updates(self, accounts: list[str]) -> None: ...
-    @abstractmethod
-    def place_order(self, order_id: int, contract: dict, spec: dict) -> None: ...
-    @abstractmethod
-    def cancel_order(self, order_id: int) -> None: ...
-    @abstractmethod
-    def req_executions(self, req_id: int, since: float | None) -> None: ...
-    @abstractmethod
-    def req_open_orders(self) -> None: ...
-    @abstractmethod
-    def req_positions(self) -> None: ...
-    @abstractmethod
-    def req_historical_data(self, req_id: int, contract: dict, end: datetime, duration: str, bar_size: str) -> None: ...
 
 
 class IbGateway(Gateway):
