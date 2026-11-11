@@ -2,7 +2,6 @@ from __future__ import annotations
 
 BAR_HISTORY = 5000
 FLUSH_INTERVAL_S = 60.0
-TERMINAL_SUCCESS = ("registered", "noop")
 NEXT_SESSION_LOOKAHEAD_DAYS = 10
 POLL_S = 0.005
 RECHECK_OUTSIDE_SESSION_S = 30.0

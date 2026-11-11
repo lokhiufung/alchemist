@@ -12,8 +12,9 @@ from typing import AsyncIterator, Callable
 from zoneinfo import ZoneInfo
 
 from alchemist.clock import Clock
-from alchemist.config import Configuration, ConfigError, StrategyConfig, load_config
-from alchemist.constants.event_loop import NEXT_SESSION_LOOKAHEAD_DAYS, TERMINAL_SUCCESS
+from alchemist.config import ConfigError, Configuration, StrategyConfig, load_config
+from alchemist.constants.deploy import DeployStatus, RefusalReason
+from alchemist.constants.event_loop import NEXT_SESSION_LOOKAHEAD_DAYS
 from alchemist.event_loop.book import BookError, RuntimeBook
 from alchemist.exchanges import exchange_profile
 from alchemist.loader import StrategyLoadError
@@ -22,9 +23,8 @@ from alchemist.strategy_builder.signal_dag import SignalBuildError
 logger = logging.getLogger("deploy")
 
 
-
 class DeployRefused(Exception):
-    def __init__(self, status: str, reason: str | None = None) -> None:
+    def __init__(self, status: DeployStatus, reason: RefusalReason | None = None) -> None:
         super().__init__(f"{status}: {reason}")
         self.status, self.reason = status, reason
 
@@ -52,15 +52,15 @@ class DeployService:
     def file_sha(self) -> str:
         return hashlib.sha256(self.config_path.read_bytes()).hexdigest()
 
-    def line(self, status: str, reason: str | None = None) -> dict:
+    def line(self, status: DeployStatus, reason: RefusalReason | str | None = None) -> dict:
         return {"status": status, "reason": reason, "revision": self.file_sha()}
 
     async def deploy(self, key: str, config_sha256: str) -> AsyncIterator[dict]:
         if self.is_closed():
-            yield self.line("shutting_down")
+            yield self.line(DeployStatus.SHUTTING_DOWN)
             return
         if self.busy:
-            yield self.line("busy")
+            yield self.line(DeployStatus.BUSY)
             return
         self.busy = True
         try:
@@ -78,7 +78,7 @@ class DeployService:
         except DeployRefused as refusal:
             yield self.line(refusal.status, refusal.reason)
             return
-        yield self.line("preparing")
+        yield self.line(DeployStatus.PREPARING)
         try:
             await self.book.admit(candidate, guard=lambda book: self.commit_guard(candidate))
         except DeployRefused as refusal:
@@ -86,45 +86,45 @@ class DeployService:
             return
         except Exception as exc:
             logger.exception("deploy failed", extra={"event": "deploy_failed", "strategy": key})
-            yield self.line("failed", str(exc))
+            yield self.line(DeployStatus.FAILED, str(exc))
             return
         self.running_config, self.revision = new_config, self.file_sha()
-        yield self.line("registered")
+        yield self.line(DeployStatus.REGISTERED)
 
     async def preflight(self, key: str, config_sha256: str):
         if config_sha256 != self.file_sha():
-            raise DeployRefused("rejected", "stale_config")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.STALE_CONFIG)
         running = {s.name for s in self.book.strategies}
         if key in running and config_sha256 == self.revision:
-            raise DeployRefused("noop")
+            raise DeployRefused(DeployStatus.NOOP)
         try:
             new_config = load_config(self.config_path)
         except ConfigError as exc:
-            raise DeployRefused("rejected", "stale_config") from exc
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.STALE_CONFIG) from exc
         if key not in new_config.strategies:
-            raise DeployRefused("rejected", "unknown_key")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.UNKNOWN_KEY)
         if key in running:
-            raise DeployRefused("rejected", "conflict")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.CONFLICT)
         if without_slot(new_config, key) != without_slot(self.running_config, key):
-            raise DeployRefused("rejected", "config_drift")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.CONFIG_DRIFT)
         strategy_config = new_config.strategies[key]
         try:
             candidate = self.build_slot(strategy_config)
         except StrategyLoadError as exc:
-            raise DeployRefused("rejected", "import_error") from exc
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.IMPORT_ERROR) from exc
         except (SignalBuildError, ValueError, TypeError) as exc:
-            raise DeployRefused("rejected", "params_invalid") from exc
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.PARAMS_INVALID) from exc
         self.check_session(candidate)
         self.check_exit(candidate)
         if not any(s.config.account_id == strategy_config.account_id for s in self.book.strategies):
-            raise DeployRefused("rejected", "unknown_account_route")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.UNKNOWN_ACCOUNT_ROUTE)
         await self.check_exposure(candidate, strategy_config)
         return candidate, new_config
 
     def check_session(self, candidate) -> None:
         profile = exchange_profile(candidate.signal_instrument)
         if profile.is_open(candidate.session, self.clock.now()):
-            raise DeployRefused("rejected", "session_open")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.SESSION_OPEN)
 
     def check_exit(self, candidate) -> None:
         exit_at = self.process_exit_at()
@@ -139,7 +139,7 @@ class DeployService:
             start, end = profile.session_window(candidate.session, day)
             if start > now:
                 if end > exit_at:
-                    raise DeployRefused("rejected", "after_process_exit")
+                    raise DeployRefused(DeployStatus.REJECTED, RefusalReason.AFTER_PROCESS_EXIT)
                 return
 
     async def check_exposure(self, candidate, strategy_config: StrategyConfig) -> None:
@@ -149,18 +149,18 @@ class DeployService:
             orders = await self.gateway.get_open_orders()
         except Exception as exc:
             logger.warning("exposure unreadable", extra={"event": "exposure_unreadable", "reason": repr(exc)})
-            raise DeployRefused("rejected", "unmanaged_exposure") from exc
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.UNMANAGED_EXPOSURE) from exc
         exposed = any(p["account_id"] == account and p["instrument"] == instrument and p["size"] for p in positions)
         exposed = exposed or any(o.get("account_id", account) == account and o["instrument"] == instrument
                                  for o in orders)
         managed = any(s.config.account_id == account and s.execution_instrument == instrument
                       for s in self.book.strategies)
         if exposed and not managed:
-            raise DeployRefused("rejected", "unmanaged_exposure")
+            raise DeployRefused(DeployStatus.REJECTED, RefusalReason.UNMANAGED_EXPOSURE)
 
     def commit_guard(self, candidate) -> None:
         if self.is_closed():
-            raise DeployRefused("shutting_down")
+            raise DeployRefused(DeployStatus.SHUTTING_DOWN)
         self.check_session(candidate)
 
 
@@ -178,4 +178,4 @@ async def send_deploy_request(socket_path: Path, strategy_key: str, config_sha25
         print(text, flush=True)
         last = json.loads(text)["status"]
     writer.close()
-    return 0 if last in TERMINAL_SUCCESS else 1
+    return 0 if last is not None and DeployStatus(last).is_success else 1
