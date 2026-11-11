@@ -90,7 +90,7 @@ def test_9_logs_are_json_lines_per_component(runs):
     for name, lines in logs.items():
         assert lines, name
         for line in lines:
-            assert {"timestamp", "clock_time", "level", "logger", "method", "message", "event"} <= set(line), (name, line)
+            assert {"timestamp", "event_time", "level", "logger", "method", "message", "event"} <= set(line), (name, line)
             assert f"{line['logger']}.log" == name
     strategy_lines, order_lines = logs["macd_rsi_rth_long_strategy.log"], logs["om.log"]
     assert {"signal_snapshot", "state_transition", "entry_decision", "exit_decision"} <= {
@@ -101,6 +101,14 @@ def test_9_logs_are_json_lines_per_component(runs):
     assert [(line["event"], line.get("status")) for line in broker_lines] == [
         ("order_sent", None), ("broker_order_update", "SUBMITTED"), ("broker_order_update", "FILLED")] * 2
     tape_lines = strategy_lines + order_lines
-    assert {line["clock_time"][:10] for line in tape_lines} == {"2026-04-15"}
-    assert [line["clock_time"] for line in order_lines][::2] == [
+    assert {line["event_time"][:10] for line in tape_lines} == {"2026-04-15"}
+    assert [line["event_time"] for line in order_lines][::2] == [
         "2026-04-15T13:40:02+00:00", "2026-04-15T13:40:19+00:00"]
+
+
+def test_10_safety_runs_in_replay_and_stays_quiet(runs):
+    (_, out), _ = runs
+    safety = log_lines(out)["safety.log"]
+    assert {line["event"] for line in safety} == {"service_started", "service_stopped"}
+    events = {line["event"] for lines in log_lines(out).values() for line in lines}
+    assert events.isdisjoint({"alert", "repaired_fill", "connection_lost", "command_failed"})

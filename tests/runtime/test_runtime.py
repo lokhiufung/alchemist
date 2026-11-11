@@ -10,13 +10,12 @@ from pathlib import Path
 import pytest
 
 import alchemist.gateways  # noqa: F401
-from alchemist.clock import ReplayClock
 from alchemist.config import load_config
 from alchemist.constants.mode import Mode
-from alchemist.event_loop.recorders import NullRecorder
-from alchemist.runtime import Runtime, log_deploy_fingerprint
-from alchemist.safety.null import NullSafety
-from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
+from alchemist.event_loop.recorders import BarRecorder, TradeRecorder
+from alchemist.runtime import ADAPTERS, Runtime, log_deploy_fingerprint
+from alchemist.safety.monitor import SafetyMonitor
+from alchemist.stores import CalcStateStore, RoundTripStore
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,33 +62,24 @@ def test_build_order_follows_the_system_map(tmp_path):
     assert [name for name, _ in runtime.services] == ["gateway", "event_loop", "aux_data", "slots", "safety"]
 
 
-def test_replay_build_passes_the_do_nothing_stand_ins(tmp_path):
-    config = load_config(write_config(tmp_path, ROOT / "local" / "strategies"))
-    runtime = Runtime.build(config, Mode.REPLAY)
-    assert isinstance(runtime.clock, ReplayClock) and isinstance(runtime.safety, NullSafety)
-    assert isinstance(runtime.event_loop.bar_recorder, NullRecorder)
-    assert isinstance(runtime.event_loop.trade_recorder, NullRecorder)
-    slot = runtime.slots[0]
-    assert isinstance(slot.stores.calc_state, InMemoryCalcStateStore)
-    assert isinstance(slot.stores.round_trips, InMemoryRoundTripStore)
-
-
-@pytest.mark.parametrize("mode", [Mode.PAPER, Mode.LIVE])
-def test_paper_and_live_build_wall_clock_safety_and_file_stand_ins(mode, tmp_path):
-    from alchemist.clock import WallClock
-    from alchemist.event_loop.recorders import BarRecorder, TradeRecorder
-    from alchemist.safety.monitor import SafetyMonitor
-    from alchemist.stores import CalcStateStore, RoundTripStore
+@pytest.mark.parametrize("mode", [Mode.REPLAY, Mode.PAPER, Mode.LIVE])
+def test_every_mode_builds_the_same_core(mode, tmp_path):
     config = load_config(write_config(tmp_path, ROOT / "local" / "strategies"))
     runtime = Runtime.build(config, mode)
-    assert isinstance(runtime.clock, WallClock) and isinstance(runtime.safety, SafetyMonitor)
-    assert isinstance(runtime.event_loop.bar_recorder, BarRecorder)
-    assert isinstance(runtime.event_loop.trade_recorder, TradeRecorder)
+    loop = runtime.event_loop_service.event_loop
+    assert isinstance(runtime.safety, SafetyMonitor) and not hasattr(runtime, "clock")
+    assert isinstance(loop.bar_recorder, BarRecorder) and isinstance(loop.trade_recorder, TradeRecorder)
     assert isinstance(runtime.slots[0].stores.calc_state, CalcStateStore)
     assert isinstance(runtime.slots[0].stores.round_trips, RoundTripStore)
     names = [name for name, _ in runtime.services]
-    assert names[-2:] == ["safety", "deploy_socket"]
-    assert runtime.services[-2][1] is runtime.safety
+    core = ["gateway", "event_loop", "aux_data", "slots", "safety"]
+    assert names == (core if mode is Mode.REPLAY else core + ["deploy_socket"])
+
+
+@pytest.mark.parametrize("mode,socket,signals", [(Mode.REPLAY, False, False), (Mode.PAPER, True, True),
+                                                 (Mode.LIVE, True, True)])
+def test_mode_selects_only_the_edge_adapters(mode, socket, signals):
+    assert (ADAPTERS[mode].deploy_socket, ADAPTERS[mode].signal_handlers) == (socket, signals)
 
 
 class RecordingService:
@@ -106,7 +96,7 @@ class RecordingService:
 
 
 def bare_runtime(services):
-    return Runtime(None, Mode.REPLAY, services, None, None, None)
+    return Runtime(None, ADAPTERS[Mode.REPLAY], services, None, None, None)
 
 
 async def test_services_start_in_order_and_stop_in_reverse():
@@ -175,39 +165,56 @@ def test_log_deploy_fingerprint_names_hash_bot_and_strategies(tmp_path, caplog):
     assert list(record.strategies) == ["macd_rsi_rth_long"]
 
 
-async def test_sigterm_flattens_then_exits():
-    from el_helpers import StubAux, StubRecorder, StubSafety
+class LoopService:
+    def __init__(self, loop):
+        self.event_loop = loop
+        self.task = None
+
+    async def start(self):
+        self.task = asyncio.get_running_loop().create_task(self.event_loop.run())
+
+    async def stop(self):
+        return None
+
+
+async def test_os_signal_event_flattens_then_exits():
+    from el_helpers import StubAux, StubDeploy, StubRecorder, StubSafety
     from alchemist.config import EventLoopConfig
     from alchemist.event_loop.book import RuntimeBook
     from alchemist.event_loop.buffer import EventBuffer
     from alchemist.event_loop.loop import EventLoop
     from alchemist.event_loop.shutdown import ShutdownCoordinator
     from alchemist.instruments import ES
+    from alchemist.messages import make_event
+    from request_helpers import DirectRequests
     from sd_helpers import FlattenStrategy, ShutdownGateway
+    from time_helpers import ManualWatchTime
 
     log = []
     config = EventLoopConfig(flatten_timeout_s=0.05)
-    clock = ReplayClock(datetime(2026, 4, 15, 15, 0, tzinfo=timezone.utc))
+    watch_time = ManualWatchTime(datetime(2026, 4, 15, 15, 0, tzinfo=timezone.utc))
     book, gateway = RuntimeBook(), ShutdownGateway(positions=[
         {"account_id": "ACC", "instrument": ES, "size": 1, "avg_cost": 1.0, "currency": "USD"}])
+    requests = DirectRequests(gateway)
     book.strategies.append(FlattenStrategy("es", ES, flat_on_request=None))
-    shutdown = ShutdownCoordinator(book, gateway, clock, config)
-    loop = EventLoop(EventBuffer(config), book, gateway, StubAux(), StubSafety(), StubRecorder(), StubRecorder(),
-                     shutdown, clock, config)
-    services = [(n, RecordingService(n, log)) for n in ("gateway", "event_loop", "safety")]
-    runtime = Runtime(None, Mode.PAPER, services, loop, shutdown, gateway)
+    book.sessions_by_strategy["es"] = "NY_RTH"
+    shutdown = ShutdownCoordinator(book, requests, watch_time, config)
+    inbound = EventBuffer(config)
+    loop = EventLoop(inbound, requests, book, StubAux(), StubRecorder(), StubRecorder(), shutdown, watch_time,
+                     StubDeploy(), StubSafety().check_in, config)
+    loop_service = LoopService(loop)
+    services = [("gateway", RecordingService("gateway", log)), ("event_loop", loop_service),
+                ("safety", RecordingService("safety", log))]
+    runtime = Runtime(None, ADAPTERS[Mode.REPLAY], services, loop_service, shutdown, gateway, inbound)
     async with runtime:
-        shutdown.request_shutdown("signal")
+        inbound.push(make_event("os_signal", {"signal": "SIGTERM"}, 0.0))
         await runtime.run()
+    assert shutdown.shutdown_requested
     assert [(o["side"], o["qty"], o["order_type"]) for o in gateway.placed] == [("SELL", 1, "MKT")]
-    assert [e for e in log if e[0] == "stop"] == [("stop", "safety"), ("stop", "event_loop"), ("stop", "gateway")]
+    assert [e for e in log if e[0] == "stop"] == [("stop", "safety"), ("stop", "gateway")]
 
 
 async def test_run_exits_with_code_2_when_not_flat_at_shutdown():
-    class Loop:
-        async def run(self):
-            return None
-
     class Shutdown:
         not_flat_at_shutdown = True
 
@@ -215,7 +222,12 @@ async def test_run_exits_with_code_2_when_not_flat_at_shutdown():
         async def start_feed(self):
             return None
 
-    runtime = Runtime(None, Mode.REPLAY, [], Loop(), Shutdown(), Gateway())
+    async def finished():
+        return None
+
+    loop_service = LoopService(None)
+    loop_service.task = asyncio.ensure_future(finished())
+    runtime = Runtime(None, ADAPTERS[Mode.REPLAY], [], loop_service, Shutdown(), Gateway())
     with pytest.raises(SystemExit) as raised:
         await runtime.run()
     assert raised.value.code == 2
@@ -228,7 +240,7 @@ def test_no_component_reads_the_run_mode():
     assert offenders == []
 
 
-async def test_cold_start_admits_every_slot_then_hands_the_book_to_the_loop():
+async def test_cold_start_waits_for_the_first_event_then_admits_every_slot():
     from alchemist.runtime import SlotsService
 
     admitted, switched = [], []
@@ -241,9 +253,15 @@ async def test_cold_start_admits_every_slot_then_hands_the_book_to_the_loop():
         async def members_changed(self):
             switched.append("aux")
 
-    service = SlotsService(Book(), ["a", "b"], Aux(), after_cold_start=lambda book: switched.append("loop"))
-    await service.start()
-    assert admitted == ["a", "b"] and switched == ["aux", "loop"]
+    from time_helpers import ManualWatchTime
+    watch_time = ManualWatchTime()
+    service = SlotsService(Book(), ["a", "b"], Aux(), watch_time)
+    starting = asyncio.ensure_future(service.start())
+    await asyncio.sleep(0)
+    assert admitted == []
+    watch_time.set(1_776_259_800.0)
+    await starting
+    assert admitted == ["a", "b"] and switched == ["aux"]
 
 
 def test_deploy_client_without_a_running_process_exits_nonzero(tmp_path):
