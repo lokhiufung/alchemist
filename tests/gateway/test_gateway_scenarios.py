@@ -17,7 +17,7 @@ async def test_scenario_market_order_fills(slippage):
     d.show(5000.0)
     buy = make_order(d.gateway, "MKT", "BUY")
     await d.gateway.place_order(buy)
-    end_of_bar = d.gateway.clock.timestamp()
+    end_of_bar = d.gateway.tape_time
     d.show(5002.0)
     sell = make_order(d.gateway, "MKT", "SELL")
     await d.gateway.place_order(sell)

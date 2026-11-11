@@ -30,10 +30,10 @@ def atr(daily, period=14):
     return sum(ranges) / period
 
 
-def test_simulated_broker_registered_and_declares_one_second_bars():
+async def test_simulated_broker_registered_and_declares_one_second_bars():
     assert get_gateway("simulation") is SimulationGateway
     gateway, _ = make_gateway()
-    assert gateway.market_data_type(MES) == ("bar_update", 1.0)
+    assert await gateway.market_data_type(MES) == ("bar_update", 1.0)
 
 
 async def test_weekend_date_refused():
@@ -208,8 +208,8 @@ class GatedBuffer:
 
 def gated_gateway(rows):
     gateway, _ = make_gateway(tape=ListTape(rows))
-    gateway.event_buffer = GatedBuffer()
-    return gateway, gateway.event_buffer
+    gateway.inbound = GatedBuffer()
+    return gateway, gateway.inbound
 
 
 async def test_feed_sends_next_bar_only_when_buffer_idle():

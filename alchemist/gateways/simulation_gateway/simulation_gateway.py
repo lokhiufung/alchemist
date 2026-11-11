@@ -5,11 +5,11 @@ import hashlib
 import heapq
 import json
 import logging
+import time
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterator
 
-from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import EXCHANGES, exchange_profile
 from alchemist.gateways.gateway import Gateway
@@ -106,8 +106,8 @@ class OrderFillingEngine:
 
 
 class SimulationGateway(Gateway):
-    def __init__(self, event_buffer, config: GatewayConfig, clock: Clock, tape: TapeSource | None = None) -> None:
-        super().__init__(event_buffer, config, clock)
+    def __init__(self, inbound, outbound, config: GatewayConfig, tape: TapeSource | None = None, **kwargs) -> None:
+        super().__init__(inbound, outbound, config, **kwargs)
         self.replay = config.replay
         self.tape = tape or tape_from_spec(self.replay.tape)
         self.day_bars: dict[Instrument, list[dict]] = {}
@@ -122,12 +122,25 @@ class SimulationGateway(Gateway):
         self.positions: dict[tuple[str, Instrument], dict] = {}
         self.funds: dict[tuple[str, str], float] = {}
         self.feed_task: asyncio.Task | None = None
+        self.tape_time = self.replay_start()
 
-    def market_data_type(self, instrument: Instrument) -> tuple[str, float | None]:
+    def replay_profiles(self) -> list:
+        return [p for p in EXCHANGES.values() if self.replay.session in p.sessions or self.replay.session in p.aliases]
+
+    def replay_start(self) -> float:
+        for profile in self.replay_profiles():
+            if profile.is_trading_day(self.replay.date):
+                return profile.session_window(self.replay.session, self.replay.date)[0].timestamp()
+        return datetime.combine(self.replay.date, datetime.min.time(), timezone.utc).timestamp()
+
+    def event_time(self) -> float:
+        return self.tape_time
+
+    async def market_data_type(self, instrument: Instrument) -> tuple[str, float | None]:
         return ("bar_update", BAR_SECONDS)
 
     async def connect(self) -> None:
-        profiles = [p for p in EXCHANGES.values() if self.replay.session in p.sessions or self.replay.session in p.aliases]
+        profiles = self.replay_profiles()
         if not profiles:
             raise ReplayDataError(f"replay session {self.replay.session} is not a session of any exchange")
         if not any(p.is_trading_day(self.replay.date) for p in profiles):
@@ -139,7 +152,7 @@ class SimulationGateway(Gateway):
             self.feed_task.cancel()
         self.journal.close()
 
-    async def reconnect(self) -> None:
+    async def restart_broker_process(self) -> None:
         return None
 
     async def subscribe_order_update(self) -> None:
@@ -174,8 +187,11 @@ class SimulationGateway(Gateway):
     def next_order_id(self) -> int:
         return self.ids.next()
 
+    def order_id_floor(self) -> int:
+        return self.ids.following
+
     def emit(self, event_type: str, data: dict, caller_depth: int = 1) -> None:
-        self.push_broker_event(event_type, data, self.clock.timestamp(), caller_depth + 1)
+        self.push_broker_event(event_type, data, self.tape_time, caller_depth + 1)
 
     def emit_status(self, order: dict, status: str, ts: float, filled: int = 0,
                     price: float | None = None, reason: str | None = None) -> None:
@@ -192,7 +208,8 @@ class SimulationGateway(Gateway):
         if order["order_type"] in ("STP", "LMT"):
             field = "stop_price" if order["order_type"] == "STP" else "limit_price"
             order[field] = round_price(order[field], instrument.tick_size, order["side"], order["order_type"])
-        now = self.clock.now()
+        self.ids.raise_floor(order["order_id"] + 1)
+        now = datetime.fromtimestamp(self.tape_time, timezone.utc)
         self.log_order_sent(order)
         self.journal.write({"instrument": instrument.symbol, "order_id": order["order_id"],
                             "order_type": order["order_type"], "qty": order["qty"], "side": order["side"],
@@ -277,7 +294,7 @@ class SimulationGateway(Gateway):
         self.log_cancel_sent(order_id)
         order = self.resting.pop(order_id, None)
         if order is not None:
-            self.emit_status(order, "CANCELLED", self.clock.timestamp())
+            self.emit_status(order, "CANCELLED", self.tape_time)
 
     async def get_executions(self, since: float | None = None) -> list[dict[str, Any]]:
         return [dict(row) for row in self.executions if since is None or row["ts"] > since]
@@ -285,7 +302,7 @@ class SimulationGateway(Gateway):
     async def get_open_orders(self, timeout: float = 5.0) -> list[dict[str, Any]]:
         return [dict(self.resting[i]) for i in sorted(self.resting)]
 
-    async def heartbeat(self, timeout: float = 3.0) -> bool:
+    async def ping(self, timeout: float) -> bool:
         return True
 
     async def get_positions(self, timeout: float = 5.0) -> list[dict]:
@@ -356,16 +373,22 @@ class SimulationGateway(Gateway):
             await self.start_replay()
         except Exception:
             logger.critical("replay feed failed", exc_info=True, extra={"event": "replay_feed_failed"})
-            self.event_buffer.push(make_event("end_of_data", {}, self.clock.timestamp()))
+            self.push("end_of_data", {})
+
+    async def wait_quiet(self) -> None:
+        while not (self.inbound.idle.is_set() and self.outbound.idle.is_set()):
+            await self.inbound.wait_idle()
+            await self.outbound.wait_idle()
 
     async def start_replay(self) -> None:
         for bar in heapq.merge(*self.day_bars.values(), key=lambda b: b["start_ts"]):
-            await self.event_buffer.wait_idle()
+            await self.wait_quiet()
+            self.tape_time = bar["end_ts"]
             self.match_bar(bar["instrument"], bar)
             self.tape_sha256.update(canonical_bar(bar))
-            self.event_buffer.push(make_event("bar_update", bar, self.clock.timestamp()))
-        await self.event_buffer.wait_idle()
-        self.event_buffer.push(make_event("end_of_data", {}, self.clock.timestamp()))
+            self.push("bar_update", {**bar, "recv_ts": time.time()})
+        await self.wait_quiet()
+        self.push("end_of_data", {})
         self.write_tape_fingerprint()
 
     def write_tape_fingerprint(self) -> None:

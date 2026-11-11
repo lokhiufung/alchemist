@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 import alchemist.gateways  # noqa: F401
-from alchemist.clock import WallClock
+from alchemist.event_loop.buffer import CommandBuffer
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.ib_gateway.gateway import IbGateway
@@ -50,7 +50,7 @@ async def gateway():
     config = GatewayConfig("ibkr", options={"host": os.environ["IBKR_HOST"], "port": int(os.environ["IBKR_PORT"]),
                                             "client_id": int(os.environ["IBKR_CLIENT_ID"]),
                                             "accounts": [os.environ["IBKR_ACCOUNT"]]})
-    live = IbGateway(buffer, config, WallClock())
+    live = IbGateway(buffer, CommandBuffer(), config)
     await live.connect()
     await live.subscribe_order_update()
     await live.subscribe_account_update()
@@ -78,14 +78,12 @@ def order_for(gateway, instrument, order_type, side, **fields):
 async def test_scenario_subscribe_stream(gateway, symbol):
     instrument = instruments()[symbol]
     contract = await gateway.resolve_contract(instrument)
-    gateway.set_instrument_sessions({instrument: exchange_profile(instrument).data_session})
-    await gateway.subscribe_tick(contract)
+    await gateway.subscribe(contract)
     assert await wait_until(lambda: gateway.buffer.of_type("tick_update"), WAITS["first_message_s"])
     ticks = gateway.buffer.of_type("tick_update")
     assert all(t["instrument"] == instrument and t["size"] > 0 for t in ticks)
     assert all(abs(t["price"] / contract["min_tick"] - round(t["price"] / contract["min_tick"])) < 1e-6 for t in ticks)
     assert [t["recv_ts"] for t in ticks] == sorted(t["recv_ts"] for t in ticks)
-    assert gateway.last_tick_ts is not None
 
 
 async def test_scenario_resolve_contracts(gateway):
@@ -101,14 +99,14 @@ async def test_scenario_resolve_contracts(gateway):
 async def test_scenario_heartbeat_and_reconnect(gateway):
     mes = instruments()["MES"]
     contract = await gateway.resolve_contract(mes)
-    await gateway.subscribe_tick(contract)
+    await gateway.subscribe(contract)
     last_id = gateway.next_order_id()
-    assert await gateway.heartbeat(timeout=3.0) is True
+    assert await gateway.ping(timeout=3.0) is True
     await gateway.reconnect()
     assert await wait_until(lambda: gateway.buffer.of_type("tick_update"), WAITS["first_message_s"])
     assert gateway.next_order_id() > last_id
     await gateway.disconnect()
-    assert await gateway.heartbeat(timeout=3.0) is False
+    assert await gateway.ping(timeout=3.0) is False
 
 
 async def test_scenario_market_order_fills(gateway):

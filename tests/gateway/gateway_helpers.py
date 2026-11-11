@@ -1,8 +1,10 @@
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import ReplayClock
+import asyncio
+
 from alchemist.config import GatewayConfig, ReplayConfig
+from alchemist.event_loop.buffer import CommandBuffer
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.simulation_gateway import SimulationGateway
 from alchemist.gateways.simulation_gateway.tapes import TapeSource
@@ -14,6 +16,8 @@ REPLAY_DATE = date(2026, 4, 15)
 class RecordingBuffer:
     def __init__(self) -> None:
         self.events: list[dict] = []
+        self.idle = asyncio.Event()
+        self.idle.set()
 
     def push(self, event) -> None:
         self.events.append(event)
@@ -50,9 +54,7 @@ def make_gateway(replay_kwargs=None, tape=None, journal=None):
     replay = ReplayConfig(**{"tape": "synthetic:golden_session", "date": REPLAY_DATE, "session": "NY_RTH",
                              "journal": journal, **(replay_kwargs or {})})
     buffer = RecordingBuffer()
-    start, _ = exchange_profile(MES).session_window("NY_RTH", replay.date)
-    gateway = SimulationGateway(buffer, GatewayConfig("simulation", replay=replay),
-                                ReplayClock(start.astimezone(timezone.utc)), tape=tape)
+    gateway = SimulationGateway(buffer, CommandBuffer(), GatewayConfig("simulation", replay=replay), tape=tape)
     return gateway, buffer
 
 
@@ -73,7 +75,7 @@ class Driver:
         instrument = instrument or self.instrument
         bar = tape_bar(instrument, self.open_ts + self.index, close, high=high, low=low, open_=open_)
         self.index += 1
-        self.gateway.clock.advance(datetime.fromtimestamp(bar["end_ts"], timezone.utc))
+        self.gateway.tape_time = bar["end_ts"]
         self.gateway.match_bar(instrument, bar)
         return bar
 

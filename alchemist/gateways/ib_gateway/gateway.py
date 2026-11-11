@@ -10,7 +10,6 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.gateway import Gateway, log_broker
@@ -35,8 +34,9 @@ logger = logging.getLogger("gateway")
 
 
 class IbGateway(Gateway):
-    def __init__(self, event_buffer, config: GatewayConfig, clock: Clock, transport: IbTransport | None = None) -> None:
-        super().__init__(event_buffer, config, clock)
+    def __init__(self, inbound, outbound, config: GatewayConfig, transport: IbTransport | None = None,
+                 **kwargs) -> None:
+        super().__init__(inbound, outbound, config, **kwargs)
         options = config.options
         self.host, self.port, self.client_id = options["host"], options["port"], options["client_id"]
         self.accounts: list[str] = list(options.get("accounts", []))
@@ -59,13 +59,13 @@ class IbGateway(Gateway):
         self.rejected: set[int] = set()
         self.waiters: dict[Any, asyncio.Future] = {}
         self.collected: dict[Any, list] = {}
-        self.instrument_sessions: dict[Instrument, str] = {}
-        self.last_tick: float | None = None
-        self.resubscribe_requested = False
         self.roll_mismatch: set[str] = set()
         self.commissions: dict[str, dict] = {}
         self.sender: queue.Queue = queue.Queue()
         self.sender_thread: threading.Thread | None = None
+        self.system_now = lambda: datetime.now(timezone.utc)
+        self.instrument_sessions: dict[Instrument, str] = {}
+        self.recoveries: set[asyncio.Task] = set()
 
     def next_request_id(self) -> int:
         return next(self.request_ids)
@@ -73,22 +73,35 @@ class IbGateway(Gateway):
     def next_order_id(self) -> int:
         return self.ids.next()
 
-    @property
-    def last_tick_ts(self) -> float | None:
-        return self.last_tick
+    def order_id_floor(self) -> int:
+        return self.ids.following
 
     def set_instrument_sessions(self, sessions: dict[Instrument, str]) -> None:
         self.instrument_sessions = dict(sessions)
+
+    async def restart_broker_process(self) -> None:
+        logger.critical("broker process restart requested, but no restart action is configured",
+                        extra={"event": "broker_restart_unconfigured"})
+
+    def run_on_loop(self, make_coroutine) -> None:
+        if self.loop is None:
+            return
+
+        def start() -> None:
+            task = self.loop.create_task(make_coroutine())
+            self.recoveries.add(task)
+            task.add_done_callback(self.recoveries.discard)
+        self.loop.call_soon_threadsafe(start)
+
+    async def recover_streams(self, code: int) -> None:
+        await self.resubscribe(list(self.subscriptions))
+        self.push("connection_restored", {"next_order_id": self.order_id_floor(), "code": code})
 
     def roll_mismatch_dates(self) -> frozenset:
         return frozenset(self.roll_mismatch)
 
     async def get_commissions(self) -> dict[str, dict]:
         return dict(self.commissions)
-
-    def consume_resubscribe_request(self) -> bool:
-        requested, self.resubscribe_requested = self.resubscribe_requested, False
-        return requested
 
     def resolve_waiter(self, key: Any, result: Any = None, error: Exception | None = None) -> None:
         future = self.waiters.get(key)
@@ -151,18 +164,6 @@ class IbGateway(Gateway):
         self.sender.put(None)
         self.sender_thread = None
 
-    async def reconnect(self) -> None:
-        self.connected = False
-        self.transport.disconnect()
-        await self.connect()
-        await self.resubscribe_streams()
-
-    async def resubscribe_streams(self) -> None:
-        await self.subscribe_order_update()
-        await self.subscribe_account_update()
-        for instrument in list(self.subscribed_in):
-            await self.subscribe_tick(self.contracts[instrument])
-
     async def subscribe_order_update(self) -> None:
         self.transport.req_order_updates()
 
@@ -173,7 +174,7 @@ class IbGateway(Gateway):
         profile = exchange_profile(instrument)
         spec = dict(profile.broker_identity(instrument))
         if instrument.asset_class.value == "future":
-            spec["contract_month"] = profile.front_contract(instrument, self.clock.now().date())
+            spec["contract_month"] = profile.front_contract(instrument, self.system_now().date())
         details = await self.request_details(spec)
         contract = {**spec, **details, "instrument": instrument}
         self.contracts[instrument] = contract
@@ -219,19 +220,15 @@ class IbGateway(Gateway):
         if generation != self.generation or instrument is None:
             return
         recv_ts = time.time() if now is None else now
-        self.event_buffer.push(make_event("tick_update", {"instrument": instrument, "broker_ts": broker_ts,
-                                                          "recv_ts": recv_ts, "price": price, "size": size},
-                                          recv_ts))
-        session = self.instrument_sessions.get(instrument)
-        profile = exchange_profile(instrument)
-        if session is not None and profile.is_open(session, datetime.fromtimestamp(recv_ts, timezone.utc)):
-            self.last_tick = broker_ts
+        self.inbound.push(make_event("tick_update", {"instrument": instrument, "broker_ts": broker_ts,
+                                                     "recv_ts": recv_ts, "price": price, "size": size},
+                                     broker_ts))
 
     def on_next_valid_id(self, order_id: int) -> None:
         self.ids.raise_floor(order_id)
         self.resolve_waiter(("connect", self.generation), True)
 
-    async def heartbeat(self, timeout: float = 3.0) -> bool:
+    async def ping(self, timeout: float) -> bool:
         if not self.connected:
             return False
         try:
@@ -247,7 +244,7 @@ class IbGateway(Gateway):
     def on_error(self, req_id: int, code: int, message: str) -> None:
         log_broker("broker_error", {"req_id": req_id, "code": code, "error_message": message})
         if code in DATA_FARM_OK_CODES or code in CONNECTION_RESTORED_CODES:
-            self.resubscribe_requested = True
+            self.run_on_loop(lambda: self.recover_streams(code))
         elif code == CONNECTION_LOST_CODE:
             self.connected = False
         is_request = req_id >= REQUEST_ID_FLOOR
@@ -291,6 +288,7 @@ class IbGateway(Gateway):
         if order["order_type"] in ("STP", "LMT"):
             field = "stop_price" if order["order_type"] == "STP" else "limit_price"
             order[field] = round_price(order[field], contract["min_tick"], order["side"], order["order_type"])
+        self.ids.raise_floor(order["order_id"] + 1)
         self.orders[order["order_id"]] = order
         self.log_order_sent(order)
         spec = {"action": order["side"], "qty": order["qty"], "order_type": order["order_type"],
@@ -376,7 +374,7 @@ class IbGateway(Gateway):
     async def get_daily_history(self, instrument: Instrument, start: date, end: date, session: str) -> list[dict]:
         profile = exchange_profile(instrument)
         zone = ZoneInfo(profile.session(session).tz)
-        now = self.clock.now()
+        now = self.system_now()
         last_close = self.last_completed_close(profile, session, now)
         window_end = min(datetime.combine(end, datetime.max.time(), zone), last_close)
         days = (window_end.date() - start).days + 1
@@ -427,7 +425,7 @@ class IbGateway(Gateway):
 
     async def get_intraday_seed_bars(self, instrument: Instrument, session: str) -> list:
         profile = exchange_profile(instrument)
-        now = self.clock.now()
+        now = self.system_now()
         close = self.last_completed_close(profile, session, now)
         open_at = profile.session_window_at(session, close - timedelta(seconds=1))[0]
         contract = self.history_instrument(instrument, now.date())

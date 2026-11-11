@@ -4,6 +4,7 @@ import threading
 import pytest
 
 from alchemist.config import GatewayConfig
+from alchemist.event_loop.buffer import CommandBuffer
 from alchemist.gateways import Gateway, OrderIdSequence, check_order, round_price
 from alchemist.instruments import MES
 from alchemist.gateways import get_gateway
@@ -18,11 +19,11 @@ class RecordingBuffer:
 
 
 COMPLETE = {
-    "connect": None, "disconnect": None, "reconnect": None, "subscribe_order_update": None,
+    "connect": None, "disconnect": None, "subscribe_order_update": None, "order_id_floor": 1,
     "resolve_contract": None, "subscribe_tick": None, "next_order_id": 1, "place_order": None,
-    "cancel_order": None, "get_executions": [], "get_open_orders": [], "heartbeat": True,
+    "cancel_order": None, "get_executions": [], "get_open_orders": [], "ping": True,
     "get_daily_history": [], "get_intraday_seed_bars": [], "subscribe_account_update": None,
-    "get_positions": [],
+    "get_positions": [], "restart_broker_process": None,
 }
 
 
@@ -31,7 +32,7 @@ def gateway_class(missing: str | None = None):
     for name, result in COMPLETE.items():
         if name == missing:
             continue
-        if name == "next_order_id":
+        if name in ("next_order_id", "order_id_floor"):
             namespace[name] = lambda self: 1
         else:
             async def method(self, *args, _result=result, **kwargs):
@@ -118,30 +119,28 @@ def test_order_ids_never_fall_back_when_the_floor_is_lower():
 
 
 def test_subclass_missing_required_operation_fails_at_build():
-    with pytest.raises(TypeError, match="heartbeat"):
-        gateway_class(missing="heartbeat")(RecordingBuffer(), GatewayConfig("stub"), None)
+    with pytest.raises(TypeError, match="ping"):
+        gateway_class(missing="ping")(RecordingBuffer(), CommandBuffer(), GatewayConfig("stub"))
 
 
-def test_complete_gateway_builds_with_collaborators():
-    buffer, config = RecordingBuffer(), GatewayConfig("stub")
-    gateway = gateway_class()(buffer, config, "clock")
-    assert (gateway.event_buffer, gateway.config, gateway.clock) == (buffer, config, "clock")
+def test_complete_gateway_builds_with_its_two_buffers():
+    buffer, outbound, config = RecordingBuffer(), CommandBuffer(), GatewayConfig("stub")
+    gateway = gateway_class()(buffer, outbound, config)
+    assert (gateway.inbound, gateway.outbound, gateway.config) == (buffer, outbound, config)
+    assert not hasattr(gateway, "clock") and not hasattr(gateway, "last_tick_ts")
 
 
 def test_capabilities_have_safe_defaults():
-    gateway = gateway_class()(RecordingBuffer(), GatewayConfig("stub"), None)
-    assert gateway.last_tick_ts is None
-    assert gateway.market_data_type(MES) == ("tick_update", None)
+    gateway = gateway_class()(RecordingBuffer(), CommandBuffer(), GatewayConfig("stub"))
     assert gateway.market_data_ready() is True
-    assert gateway.consume_resubscribe_request() is False
     assert gateway.roll_mismatch_dates() == frozenset()
     assert gateway.intraday_seed_failure_is_fatal() is False
-    assert gateway.set_instrument_sessions({MES: "NY_RTH"}) is None
-    assert not hasattr(gateway, "on_bar")
+    assert not hasattr(gateway, "on_bar") and not hasattr(gateway, "consume_resubscribe_request")
 
 
 async def test_async_capability_defaults():
-    gateway = gateway_class()(RecordingBuffer(), GatewayConfig("stub"), None)
+    gateway = gateway_class()(RecordingBuffer(), CommandBuffer(), GatewayConfig("stub"))
+    assert await gateway.market_data_type(MES) == ("tick_update", None)
     assert await gateway.get_commissions() == {}
     assert await gateway.unsubscribe_tick(object()) is None
 
@@ -157,7 +156,7 @@ def test_unknown_gateway_name_lists_known():
 
 
 async def test_start_feed_default_does_nothing_and_simulated_broker_replays():
-    gateway = gateway_class()(RecordingBuffer(), GatewayConfig("stub"), None)
+    gateway = gateway_class()(RecordingBuffer(), CommandBuffer(), GatewayConfig("stub"))
     assert await gateway.start_feed() is None
     from gateway_helpers import make_gateway
     from alchemist.instruments import MES as instrument

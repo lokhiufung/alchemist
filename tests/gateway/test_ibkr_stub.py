@@ -26,19 +26,21 @@ def test_ibkr_gateway_picked_by_registered_name():
 async def test_reconnect_restores_order_account_and_tick_streams():
     gateway, buffer, transport, contracts = await connected(instruments=(MES, ES))
     for contract in contracts.values():
-        await gateway.subscribe_tick(contract)
+        await gateway.subscribe(contract)
     await gateway.subscribe_order_update()
     await gateway.subscribe_account_update()
     transport.calls.clear()
     await gateway.reconnect()
     names = transport.names()
+    assert [e["event_type"] for e in buffer.events if e["event_type"].startswith("connection")] == [
+        "connection_lost", "connection_restored"]
     assert names.count("req_tick_by_tick") == 2 and "req_order_updates" in names and "req_account_updates" in names
     assert names.index("connect") < names.index("req_order_updates")
 
 
 async def test_stale_subscription_dropped_after_reconnect():
     gateway, buffer, transport, contracts = await connected()
-    await gateway.subscribe_tick(contracts[MES])
+    await gateway.subscribe(contracts[MES])
     old_generation = gateway.generation
     req_id = next(iter(gateway.tick_requests))
     await gateway.reconnect()
@@ -72,7 +74,7 @@ async def test_market_data_appended_in_time_order():
 
 async def test_declared_message_type_matches_messages_sent():
     gateway, buffer, transport, contracts = await connected()
-    assert gateway.market_data_type(MES) == ("tick_update", None)
+    assert await gateway.market_data_type(MES) == ("tick_update", None)
     await gateway.subscribe_tick(contracts[MES])
     gateway.on_tick(gateway.generation, next(iter(gateway.tick_requests)), 1.0, 1.0, 1)
     assert {e["event_type"] for e in buffer.events} == {"tick_update"}
@@ -91,19 +93,12 @@ async def test_reader_thread_wakes_loop_through_thread_safe_call():
     assert seen_threads == ["reader"] and len(buffer.of_type("tick_update")) == 1
 
 
-async def test_last_tick_ts_ignores_instrument_whose_data_session_is_closed():
-    gateway, buffer, transport, contracts = await connected(instruments=(MES, FDAX))
-    for contract in contracts.values():
-        await gateway.subscribe_tick(contract)
-    gateway.set_instrument_sessions({MES: "NY_GLOBEX", FDAX: "FRA_DAY"})
-    ids = {instrument: req for req, instrument in gateway.tick_requests.items()}
-    saturday = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc).timestamp()
-    gateway.on_tick(gateway.generation, ids[FDAX], saturday, 1.0, 1,
-                    now=saturday)
-    assert gateway.last_tick_ts is None
+async def test_tick_event_time_is_the_broker_timestamp():
+    gateway, buffer, transport, contracts = await connected()
+    await gateway.subscribe_tick(contracts[MES])
     monday = datetime(2026, 4, 20, 14, 0, tzinfo=timezone.utc).timestamp()
-    gateway.on_tick(gateway.generation, ids[MES], monday, 5000.0, 1, now=monday)
-    assert gateway.last_tick_ts == monday
+    gateway.on_tick(gateway.generation, next(iter(gateway.tick_requests)), monday, 5000.0, 1, now=monday + 0.2)
+    assert buffer.events[-1]["event_time"] == monday and buffer.events[-1]["data"]["recv_ts"] == monday + 0.2
 
 
 @pytest.mark.parametrize("instrument,expected", [
@@ -151,32 +146,47 @@ async def test_order_reject_codes_become_rejected_by_order_id(code):
     assert len(updates(buffer)) == before
 
 
-async def test_data_farm_recovery_raises_one_shot_resubscribe():
-    gateway, *_ = await connected()
+def restored_events(buffer):
+    return [e for e in buffer.events if e["event_type"] == "connection_restored"]
+
+
+async def settle_recoveries(gateway):
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await asyncio.gather(*gateway.recoveries)
+
+
+async def test_data_farm_recovery_emits_one_connection_restored():
+    gateway, buffer, transport, contracts = await connected()
+    await gateway.subscribe(contracts[MES])
     gateway.on_error(-1, 2103, "farm broken")
-    assert gateway.consume_resubscribe_request() is False
+    await settle_recoveries(gateway)
+    assert restored_events(buffer) == []
+    transport.calls.clear()
     gateway.on_error(-1, 2104, "farm ok")
-    assert gateway.consume_resubscribe_request() is True
-    assert gateway.consume_resubscribe_request() is False
+    await settle_recoveries(gateway)
+    assert len(restored_events(buffer)) == 1
+    assert transport.names()[-2:] == ["cancel_tick_by_tick", "req_tick_by_tick"]
 
 
-async def test_connectivity_restored_codes_raise_a_resubscribe_request():
-    gateway, *_ = await connected()
+async def test_connectivity_restored_codes_emit_connection_restored():
+    gateway, buffer, *_ = await connected()
     gateway.on_error(-1, 1102, "restored")
-    assert gateway.consume_resubscribe_request() is True
+    await settle_recoveries(gateway)
+    assert len(restored_events(buffer)) == 1
 
 
 @pytest.mark.parametrize("answer_delay,expected", [(0.1, True), (0.4, False), (None, False)])
-async def test_heartbeat_true_iff_answer_within_timeout(answer_delay, expected):
+async def test_ping_true_iff_answer_within_timeout(answer_delay, expected):
     gateway, buffer, transport, _ = await connected()
     transport.answer_time_after = answer_delay
-    assert await gateway.heartbeat(timeout=0.2) is expected
+    assert await gateway.ping(timeout=0.2) is expected
 
 
-async def test_heartbeat_is_false_when_disconnected():
+async def test_ping_is_false_when_disconnected():
     gateway, buffer, transport, _ = await connected()
     await gateway.disconnect()
-    assert await gateway.heartbeat(timeout=0.2) is False
+    assert await gateway.ping(timeout=0.2) is False
 
 
 def test_real_transport_builds_without_connecting():
@@ -188,13 +198,6 @@ def test_real_transport_builds_without_connecting():
 
 
 import math
-
-from alchemist.clock import ReplayClock
-from alchemist.event_loop.book import RuntimeBook
-from alchemist.event_loop.seeder import Seeder
-from alchemist.config import EventLoopConfig
-
-from seed_helpers import SeedStrategy
 
 
 def sent_orders(transport):
@@ -303,7 +306,7 @@ async def test_open_orders_rows_carry_the_instrument():
 
 async def history_gateway(now):
     gateway, buffer, transport = make_ibkr()
-    gateway.clock = ReplayClock(now)
+    gateway.system_now = lambda: now
     await gateway.connect()
     return gateway, transport
 
@@ -404,18 +407,3 @@ async def test_new_instrument_subscribed_without_touching_running_feeds():
     assert len([c for c in transport.calls if c[0] == "req_tick_by_tick"]) == 2
 
 
-async def test_sessions_declared_again_for_new_instrument():
-    gateway, buffer, transport = make_ibkr()
-    gateway.clock = ReplayClock(datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc))
-    await gateway.connect()
-    seeder = Seeder(gateway, gateway.clock, EventLoopConfig())
-    book = RuntimeBook()
-    book.attach(gateway, seeder)
-    seeder.attempt = lambda strategy: asyncio.sleep(0)
-    await book.admit(SeedStrategy("cme", MES))
-    await book.admit(SeedStrategy("eurex", FDAX))
-    assert gateway.instrument_sessions == {MES: "NY_GLOBEX", FDAX: "FRA_DAY"}
-    frankfurt_morning = datetime(2026, 4, 15, 8, 0, tzinfo=timezone.utc).timestamp()
-    req_id = next(r for r, i in gateway.tick_requests.items() if i == FDAX)
-    gateway.on_tick(gateway.generation, req_id, frankfurt_morning, 1.0, 1, now=frankfurt_morning)
-    assert gateway.last_tick_ts == frankfurt_morning
