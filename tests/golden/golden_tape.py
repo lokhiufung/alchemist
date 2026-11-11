@@ -1,27 +1,33 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import atexit
+import shutil
+import tempfile
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
-from alchemist.constants.simulation import (
-    BAR_VOLUME,
-    BASE_PRICE,
-    HIGH_PRICE,
-    LOW_PRICE,
-    PRIOR_SESSIONS,
-    QUIET_BARS,
-    REPLAY_DATE,
-    SESSION_BARS,
-    STEP_DOWN,
-    STEP_UP,
-    TARGET_PRICE,
-    TICK,
-)
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from alchemist.exchanges import exchange_profile
-from alchemist.instruments import Instrument
-from alchemist.registry import register_tape
+from alchemist.instruments import MES, Instrument
+
+REPLAY_DATE = date(2026, 4, 15)
+PRIOR_SESSIONS = 60
+SESSION_BARS = 23_400
+BASE_PRICE = 5000.0
+HIGH_PRICE = 5010.0
+LOW_PRICE = 4990.0
+TICK = 0.25
+QUIET_BARS = 600
+STEP_UP = 2.0
+STEP_DOWN = 1.0
+TARGET_PRICE = 5011.0
+BAR_VOLUME = 100.0
+PARQUET_COLUMNS = ("open", "high", "low", "close", "volume")
 
 
 def on_tick(price: float) -> float:
@@ -69,7 +75,6 @@ def session_bars(instrument: Instrument, open_ts: float, closes: tuple[float, ..
         previous = close
 
 
-@register_tape("golden_session")
 def golden_session(instrument: Instrument, start: datetime, end: datetime) -> Iterator[dict]:
     profile = exchange_profile(instrument)
     session = profile.session("regular").name
@@ -86,3 +91,21 @@ def golden_session(instrument: Instrument, start: datetime, end: datetime) -> It
                     if start.timestamp() <= bar["start_ts"] < end.timestamp():
                         yield bar
         day += timedelta(days=1)
+
+
+def write_golden_tape(path: Path, instrument: Instrument = MES) -> Path:
+    first = min(prior_session_dates(exchange_profile(instrument)))
+    start = datetime.combine(first - timedelta(days=1), time(), timezone.utc)
+    end = datetime.combine(REPLAY_DATE + timedelta(days=2), time(), timezone.utc)
+    bars = list(golden_session(instrument, start, end))
+    columns = {"symbol": [instrument.symbol] * len(bars), "start_ts": [b["start_ts"] for b in bars]}
+    columns.update({key: [b[key] for b in bars] for key in PARQUET_COLUMNS})
+    pq.write_table(pa.table(columns), path)
+    return path
+
+
+@lru_cache(maxsize=1)
+def golden_tape_path() -> str:
+    folder = Path(tempfile.mkdtemp(prefix="golden_tape_"))
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    return str(write_golden_tape(folder / "golden_session.parquet"))

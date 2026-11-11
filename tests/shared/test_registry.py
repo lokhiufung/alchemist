@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from alchemist import registry
-from alchemist.registry import get_calc, get_tape, register_calc, register_tape
+from alchemist.registry import get_calc, register_calc
 
 
 def run_in_folder(folder: Path, source: str) -> None:
@@ -39,11 +39,4 @@ def test_get_calc_falls_back_to_builtin(tmp_path):
 def test_unknown_calc_names_scope(tmp_path):
     with pytest.raises(KeyError, match="nope"):
         get_calc("nope", str(tmp_path))
-
-
-def test_tape_registry_binds_by_name():
-    @register_tape("fake_tape")
-    class FakeTape: ...
-
-    assert get_tape("fake_tape") is FakeTape
 

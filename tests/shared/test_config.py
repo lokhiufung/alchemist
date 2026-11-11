@@ -16,7 +16,7 @@ gateway:
   name: simulation
 
 replay:
-  tape: synthetic:golden_session
+  tape: data/golden_session.parquet
   date: 2026-04-15
   session: NY_RTH
   pad_before_s: 0

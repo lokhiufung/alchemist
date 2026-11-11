@@ -16,6 +16,7 @@ from alchemist.event_loop.recorders import BarRecorder, TradeRecorder
 from alchemist.runtime import ADAPTERS, Runtime, log_deploy_fingerprint
 from alchemist.safety.monitor import SafetyMonitor
 from alchemist.stores import CalcStateStore, RoundTripStore
+from golden_tape import golden_tape_path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,7 +30,7 @@ gateway:
   name: simulation
 
 replay:
-  tape: synthetic:golden_session
+  tape: {tape}
   date: 2026-04-15
   session: NY_RTH
   journal: {out}/broker_journal.jsonl
@@ -45,7 +46,7 @@ strategies:
 
 def write_config(tmp_path, strategies_root):
     path = tmp_path / "config.yaml"
-    path.write_text(CONFIG_TEMPLATE.format(out=tmp_path / "out", strategies=strategies_root))
+    path.write_text(CONFIG_TEMPLATE.format(out=tmp_path / "out", strategies=strategies_root, tape=golden_tape_path()))
     return path
 
 
@@ -148,7 +149,7 @@ def test_broken_strategy_folder_exits_nonzero(fault, tmp_path):
 
 def test_unset_environment_variable_exits_nonzero_naming_it(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text(CONFIG_TEMPLATE.format(out="${DEFINITELY_NOT_SET}", strategies="x"))
+    path.write_text(CONFIG_TEMPLATE.format(out="${DEFINITELY_NOT_SET}", strategies="x", tape="x"))
     env = {k: v for k, v in os.environ.items() if k != "DEFINITELY_NOT_SET"}
     result = subprocess.run([sys.executable, "run_strategies.py", "--config", str(path), "--mode", "replay"],
                             cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)

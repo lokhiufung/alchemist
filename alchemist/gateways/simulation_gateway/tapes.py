@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Callable, Iterator
+from typing import Iterator
 
-from alchemist.constants.simulation import BAR_SECONDS, SYNTHETIC_PREFIX
+from alchemist.constants.simulation import BAR_SECONDS
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
-from alchemist.registry import get_tape
 
 
 class ReplayDataError(Exception):
@@ -17,14 +16,6 @@ class ReplayDataError(Exception):
 class TapeSource(ABC):
     @abstractmethod
     def bars(self, instrument: Instrument, start: datetime, end: datetime) -> Iterator[dict]: ...
-
-
-class SyntheticTape(TapeSource):
-    def __init__(self, generator: Callable[[Instrument, datetime, datetime], Iterator[dict]]) -> None:
-        self.generator = generator
-
-    def bars(self, instrument: Instrument, start: datetime, end: datetime) -> Iterator[dict]:
-        return self.generator(instrument, start, end)
 
 
 class ParquetTape(TapeSource):
@@ -45,12 +36,6 @@ class ParquetTape(TapeSource):
                        "low": columns["low"][index], "close": columns["close"][index],
                        "volume": columns["volume"][index], "resolution_s": BAR_SECONDS,
                        "broker_ts": begin + BAR_SECONDS}
-
-
-def tape_from_spec(spec: str) -> TapeSource:
-    if spec.startswith(SYNTHETIC_PREFIX):
-        return SyntheticTape(get_tape(spec[len(SYNTHETIC_PREFIX):]))
-    return ParquetTape(spec)
 
 
 def check_tape_in_session(tape: TapeSource, instrument: Instrument, session: str,

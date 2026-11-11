@@ -14,8 +14,8 @@ from alchemist.config import GatewayConfig
 from alchemist.exchanges import EXCHANGES, exchange_profile
 from alchemist.gateways.gateway import Gateway
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
-from alchemist.gateways.simulation_gateway.tapes import (BAR_SECONDS, ReplayDataError, TapeSource, check_tape_in_session,
-                                      tape_from_spec)
+from alchemist.gateways.simulation_gateway.tapes import (BAR_SECONDS, ParquetTape, ReplayDataError, TapeSource,
+                                      check_tape_in_session)
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
 from alchemist.constants.simulation import (
@@ -109,7 +109,7 @@ class SimulationGateway(Gateway):
     def __init__(self, inbound, outbound, config: GatewayConfig, tape: TapeSource | None = None, **kwargs) -> None:
         super().__init__(inbound, outbound, config, **kwargs)
         self.replay = config.replay
-        self.tape = tape or tape_from_spec(self.replay.tape)
+        self.tape = tape or ParquetTape(self.replay.tape)
         self.day_bars: dict[Instrument, list[dict]] = {}
         self.tape_sha256 = hashlib.sha256()
         self.ids = OrderIdSequence(1)

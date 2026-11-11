@@ -4,9 +4,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-import alchemist.gateways  # noqa: F401
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.simulation_gateway.tapes import tape_from_spec
 from alchemist.instruments import FDAX, MES, NQ
 from alchemist.loader import load_strategies
 from alchemist.registry import get_strategy
@@ -16,6 +14,7 @@ from alchemist.gateways.simulation_gateway import SimulationGateway
 from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
 from alchemist.strategy_builder.strategy import Stores
 
+from golden_tape import golden_session, golden_tape_path
 from strategy_helpers import (snapshot_rows, snapshot_rows, SESSION_OPEN, StubSignal, StubStrategy, fill_update, make_bar, make_strategy,
                               place_and_fill, settle)
 
@@ -64,7 +63,7 @@ class RecordingExecution:
 async def test_golden_round_trip_books_position():
     load_strategies(__import__("pathlib").Path("local/strategies"))
     strategy_class = get_strategy("macd_rsi_rth_long")
-    replay = ReplayConfig("synthetic:golden_session", date(2026, 4, 15), "NY_RTH")
+    replay = ReplayConfig(golden_tape_path(), date(2026, 4, 15), "NY_RTH")
     start, end = exchange_profile(MES).session_window("NY_RTH", replay.date)
     from request_helpers import OrderSink
     from time_helpers import ManualWatchTime
@@ -89,7 +88,7 @@ async def test_golden_round_trip_books_position():
     real_step = strategy.signal.step
     strategy.signal.step = lambda bars, data: (steps.append((bars[-1]["start_ts"], dict(data))), real_step(bars, data))[1]
 
-    bars = list(tape_from_spec("synthetic:golden_session").bars(MES, start, end))
+    bars = list(golden_session(MES, start, end))
     window = deque(maxlen=500)
     positions = {}
     for index, bar in enumerate(bars):

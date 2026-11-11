@@ -9,6 +9,7 @@ from alchemist.exchanges import exchange_profile
 from alchemist.gateways.simulation_gateway import SimulationGateway
 from alchemist.gateways.simulation_gateway.tapes import TapeSource
 from alchemist.instruments import MES
+from golden_tape import golden_tape_path
 
 REPLAY_DATE = date(2026, 4, 15)
 
@@ -51,7 +52,7 @@ def session_seconds(instrument, session: str, day: date, count: int, start_offse
 
 
 def make_gateway(replay_kwargs=None, tape=None, journal=None):
-    replay = ReplayConfig(**{"tape": "synthetic:golden_session", "date": REPLAY_DATE, "session": "NY_RTH",
+    replay = ReplayConfig(**{"tape": golden_tape_path(), "date": REPLAY_DATE, "session": "NY_RTH",
                              "journal": journal, **(replay_kwargs or {})})
     buffer = RecordingBuffer()
     gateway = SimulationGateway(buffer, CommandBuffer(), GatewayConfig("simulation", replay=replay), tape=tape)

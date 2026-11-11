@@ -11,7 +11,6 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _calcs: dict[str, dict[str, tuple[type, str]]] = {}
 _signal_dags: dict[str, tuple[type, str]] = {}
 _strategies: dict[str, tuple[type, str]] = {}
-_tapes: dict[str, tuple[type, str]] = {}
 
 
 def _caller_file(depth: int) -> Path:
@@ -69,14 +68,6 @@ def register_strategy(name: str) -> Callable[[type], type]:
 
 def get_strategy(name: str) -> type:
     return lookup(_strategies, "strategy", name)
-
-
-def register_tape(name: str) -> Callable[[type], type]:
-    return _decorator(lambda f: _tapes, name)
-
-
-def get_tape(name: str) -> type:
-    return lookup(_tapes, "tape", name)
 
 
 def scope_of_class(cls: Any) -> str:

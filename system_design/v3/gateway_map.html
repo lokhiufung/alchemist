@@ -37,6 +37,7 @@
 <div class="meta"><p><strong>Streaming core agreed 2026-11-11.</strong> Commands arrive on the outbound buffer, events and replies leave on the inbound buffer, and the Gateway does its own connection work (<a href="system_map.html#streaming-core">System map decisions 61–70</a>).</p>
 <p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3).</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-11</strong> — <a href="#f12">Feature 12</a>: the tape source is a parquet file path only; the synthetic generator step and <code>SyntheticTape</code> are removed (<a href="system_map.html#d57">System map decision 57</a>). The golden tape is written by the test code.</li>
 <li><strong>2026-11-11</strong> — Compiled with /component-design: every existing Gateway test now has a row under the feature it protects.</li>
 <li><strong>2026-11-11</strong> — <a href="#f2">Feature 2</a> step 3: <code>recv_ts</code> is the system time (wall clock), so <code>recv_ts</code> − broker timestamp is the feed latency (System map decisions 55, 62); the earlier "monotonic clock" contradicted that definition.</li>
 <li><strong>2026-11-11</strong> — Streaming core agreed: features 1, 2, 6, 7, 9–12, 14 changed; reconnect with backoff moved in from Safety; new feature 15 (commands and correlation ids); <code>last_tick_ts</code>, <code>consume_resubscribe_request</code> and <code>heartbeat()</code> as a Safety call removed; decisions 4 and 8 changed.</li>
@@ -395,18 +396,17 @@
 
 <div class="behaviour" id="f12"><h3><span class="num">12</span>The simulated broker prepares its own replay data<span class="added">settled · was behaviour 15 · System map decision 45 · decision 7</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A replay needs ticks, daily history and seed bars with the same definitions as the broker's. The runner must write no data files and must read no strategy before the strategy exists.</dd>
-<dt>Upstream gives</dt><dd>The config names a tape source, a replay date and a session. The tape is a file (or a synthetic generator) much larger than one day.</dd>
+<dt>Upstream gives</dt><dd>The config names a tape source, a replay date and a session. The tape is a parquet file much larger than one day.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>Read the tape lazily, and collect only the rows each request needs.</li>
 <li>Before replay starts, check that every row in the replay window and in the history the tape serves falls inside the session, using the exchange profile's session hours, calendar and early closes. Refuse a tape with rows outside the session, and a day-session-only tape given for an overnight session.</li>
 <li>Answer daily history and seed-bar requests from the tape, like the broker gateway; return an empty list when the tape has no prior session.</li>
 <li>Pad the replay window before and after the session with flat bars, when the option is on.</li>
-<li>A synthetic generator is a second tape source behind the same simulated broker.</li>
 <li>Send the replay bars one at a time, in the row order of the tape, so two events with the same event time keep the tape's order (<a href="system_map.html#d66">System map decision 66</a>). Before each bar, wait until the inbound buffer is idle (the Event Loop has handled every event it took) and every command on the outbound buffer is answered; then match resting orders against the bar (<a href="#f6">feature 6</a>) and send the bar as one <code>bar_update</code> (<a href="#f2">feature 2</a>). After the last bar, wait until the buffer is idle again, then send <code>end_of_data</code>. The feed runs as its own task, started by <code>start_feed()</code>.</li>
 <li>When the config sets <code>replay.journal</code>, write the broker journal: one row per order received and one row per fill sent, in the journal format of the <a href="system_map.html#golden-end-to-end">golden sample</a>.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Tape source</td><td>Configurable</td><td>Parquet file, synthetic generator</td><td>—</td></tr>
+<tr><td>Tape source</td><td>Configurable</td><td>Parquet file path</td><td>—</td></tr>
 <tr><td>Flat-bar padding before / after the session</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>) (<code>replay.pad_before_s</code>, <code>replay.pad_after_s</code>)</td><td>any seconds ≥ 0; 0 means off</td><td>0 (off)</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>The runner writes no data file. At most one replay bar is in the inbound buffer or being handled at any time. The simulated broker is the only part of the engine that knows the run is a simulation. Replay history has the same definitions as broker history (<a href="#f8">feature 8</a>).</dd>
@@ -459,7 +459,7 @@
 
 <details open><summary>End to end · the sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>tests/gateway/test_gateway_sample.py::test_golden_replay_delivers_every_bar_then_end_of_data_and_fills_two_orders</code></td></tr>
-<tr><th>Input</th><td>The system golden sample on the simulated broker: the <code>golden_session</code> synthetic tape for MES on 2026-04-15 (NY_RTH, 60 prior sessions), and two scripted MKT orders, a BUY 1 and a SELL 1, sent on the phase B entry bar and the target bar (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
+<tr><th>Input</th><td>The system golden sample on the simulated broker: the <code>golden_session</code> parquet tape for MES on 2026-04-15 (NY_RTH, 60 prior sessions), and two scripted MKT orders, a BUY 1 and a SELL 1, sent on the phase B entry bar and the target bar (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
 <tr><th>Parameter cases</th><td>subclass ∈ {simulated broker}</td></tr>
 <tr><th>Passes when</th><td>Daily history gives ATR(14) = 20.00 from the 60 prior sessions; 23,400 <code>bar_update</code> messages are in the buffer with time never going backwards, followed by <code>end_of_data</code>; each MKT order fills at the close of the bar it was sent on; exactly two FILLED order updates; the executions query returns two rows whose order ids match the two orders; the journal has the 4 rows in the journal format of the golden sample.</td></tr>
 <tr><th>Fails when</th><td>A bar is dropped, duplicated or out of order; an order fills on another bar; an order produces no order update; an execution row has no order id; or a journal row breaks the journal format.</td></tr>
@@ -683,13 +683,14 @@
 
 <details><summary>12. The simulated broker prepares its own replay data<span class="count">24 tests · 27 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_replay_refuses_tape_rows_outside_session</code></td><td>exchange ∈ {CME, Eurex}</td><td>replay start with an out-of-session row</td><td>refused</td></tr>
-<tr><td><code>test_replay_daily_history_matches_broker_definitions</code></td><td>tape ∈ {Parquet, synthetic}</td><td>daily frame vs. the broker gateway's frame for the same bars</td><td>equal</td></tr>
+<tr><td><code>test_replay_daily_history_matches_broker_definitions</code></td><td>tape ∈ {Parquet, in-memory}</td><td>daily frame vs. the broker gateway's frame for the same bars</td><td>equal</td></tr>
 <tr><td><code>test_replay_no_prior_session_returns_empty_seed</code></td><td>—</td><td>seed bars returned</td><td>empty list</td></tr>
 <tr><td><code>test_feed_sends_next_bar_only_when_buffer_idle</code></td><td>bars ∈ {3}</td><td><code>bar_update</code> messages sent before the buffer turns idle</td><td>exactly 1 per idle; then <code>end_of_data</code></td></tr>
 <tr><td><code>test_check_counts_rows_inside_session</code></td><td>—</td><td><code>check_tape_in_session(tape, MES, &#x27;NY_RTH&#x27;, start, end)</code></td><td><code>= 10</code></td></tr>
 <tr><td><code>test_day_session_only_tape_refused_for_overnight_session</code></td><td>—</td><td><code>check_tape_in_session(tape, MES, &#x27;NY_GLOBEX&#x27;, globex_start, globex_end)</code></td><td><code>raises ReplayDataError matching &#x27;regular session only&#x27;</code></td></tr>
 <tr><td><code>test_flat_padding_surrounds_the_session</code></td><td>—</td><td><code>[b[&#x27;start_ts&#x27;] - open_ts for b in bars]; {b[&#x27;close&#x27;] for b in bars}; bars[0][&#x27;volume&#x27;]</code></td><td><code>= [-3, -2, -1, 0, 1, 2, 3, 4, 5]; = {77.0}; = 0.0</code></td></tr>
 <tr><td><code>test_golden_daily_atr_is_20</code></td><td>—</td><td><code>len(daily); atr(daily); all((c[&#x27;close&#x27;] == 5000.0 and c[&#x27;high&#x27;] == 5010.0 and (c[&#x27;low&#x27;] =…</code></td><td><code>≥ 15; = 20.0; true</code></td></tr>
+<tr><td><code>test_golden_parquet_tape_equals_generator</code></td><td>—</td><td><code>day_bars()</code></td><td><code>= list(golden_session(MES, start, end))</code></td></tr>
 <tr><td><code>test_golden_phase_a_flat</code></td><td>—</td><td><code>{(b[&#x27;open&#x27;], b[&#x27;high&#x27;], b[&#x27;low&#x27;], b[&#x27;close&#x27;]) for b in day_bars()[:600]}</code></td><td><code>= {(5000.0,) * 4}</code></td></tr>
 <tr><td><code>test_golden_phase_b_zigzag_reaches_5011</code></td><td>—</td><td><code>set(closes[618:]); all((c * 4 == round(c * 4) for c in closes))</code></td><td><code>= {5011.0}; true</code></td></tr>
 <tr><td><code>test_golden_prior_sessions_have_designed_shape</code></td><td>—</td><td><code>all((len(s) == 23400 for s in sessions)); {(s[0][&#x27;open&#x27;], max((b[&#x27;high&#x27;] for b in s)), mi…</code></td><td><code>true; = {(5000.0, 5010.0, 4990.0, 5000.0)}</code></td></tr>
@@ -702,7 +703,6 @@
 <tr><td><code>test_parquet_tape_filters_instrument_and_window</code></td><td>—</td><td><code>got[0][&#x27;instrument&#x27;]; got[0][&#x27;end_ts&#x27;]; len(narrowed)</code></td><td><code>= MES; = got[0][&#x27;start_ts&#x27;] + 1.0; = 3</code></td></tr>
 <tr><td><code>test_replay_start_refuses_out_of_session_row</code></td><td>2 cases</td><td><code>gateway.resolve_contract(instrument)</code></td><td><code>raises ReplayDataError matching &#x27;outside session&#x27;</code></td></tr>
 <tr><td><code>test_simulated_broker_waits_until_every_command_is_answered_before_the_next_bar</code></td><td>—</td><td><code>taken[&#x27;command_type&#x27;]; [e[&#x27;event_type&#x27;] for e in inbound.events]</code></td><td><code>= &#x27;get_positions&#x27;; = [&#x27;bar_update&#x27;, &#x27;bar_update&#x27;, &#x27;end_of_data&#x27;]</code></td></tr>
-<tr><td><code>test_tape_from_spec_picks_synthetic_or_parquet</code></td><td>—</td><td><code>isinstance(tape_from_spec(str(tmp_path / &#x27;x.parquet&#x27;)), ParquetTape); get_tape(&#x27;golden_se…</code></td><td><code>true; is not None</code></td></tr>
 <tr><td><code>test_trading_day_with_no_tape_bars_refused_naming_date_and_session</code></td><td>—</td><td><code>gateway.resolve_contract(MES)</code></td><td><code>raises ReplayDataError matching &#x27;2026-04-15.*NY_RTH&#x27;</code></td></tr>
 <tr><td><code>test_two_instruments_merge_in_time_order</code></td><td>—</td><td><code>stamps; len(stamps)</code></td><td><code>= sorted(stamps); = 6</code></td></tr>
 <tr><td><code>test_weekend_date_refused</code></td><td>—</td><td><code>gateway.connect()</code></td><td><code>raises ReplayDataError matching &#x27;2026-04-18.*NY_RTH&#x27;</code></td></tr>
@@ -765,7 +765,7 @@
 <h2>Reference</h2>
 <p>Implementation detail and history. The skeleton still cites the old behaviour numbers; each feature card lists the behaviours it replaces.</p>
 <h3>Step → code</h3>
-<p>Each box of the algorithm map and the code that carries it. <code>Gateway</code> is in <code>gateways/gateway.py</code>; the simulated broker (<code>SimulationGateway</code>) is in <code>gateways/simulation_gateway/simulation_gateway.py</code>, with tapes in <code>gateways/simulation_gateway/tapes.py</code> and <code>synthetic_tapes.py</code>; the IBKR gateway (<code>IbGateway</code>) is in <code>gateways/ib_gateway/gateway.py</code>, with <code>transport.py</code> (the <code>IbTransport</code> interface), <code>client.py</code> and <code>errors.py</code>; the gateway table <code>GATEWAYS</code> and <code>get_gateway()</code> are in <code>gateways/__init__.py</code>; the command types are <code>constants/gateway.py</code> · <code>COMMAND_TYPES</code>.</p>
+<p>Each box of the algorithm map and the code that carries it. <code>Gateway</code> is in <code>gateways/gateway.py</code>; the simulated broker (<code>SimulationGateway</code>) is in <code>gateways/simulation_gateway/simulation_gateway.py</code>, with tapes in <code>gateways/simulation_gateway/tapes.py</code>; the IBKR gateway (<code>IbGateway</code>) is in <code>gateways/ib_gateway/gateway.py</code>, with <code>transport.py</code> (the <code>IbTransport</code> interface), <code>client.py</code> and <code>errors.py</code>; the gateway table <code>GATEWAYS</code> and <code>get_gateway()</code> are in <code>gateways/__init__.py</code>; the command types are <code>constants/gateway.py</code> · <code>COMMAND_TYPES</code>.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Step</th><th>Code</th></tr></thead>
 <tbody>
@@ -778,7 +778,7 @@
 <tr><td>Fill on bar (simulated)</td><td><code>SimulationGateway.start_replay()</code>, <code>wait_quiet()</code>, <code>match_bar()</code>; <code>OrderFillingEngine.resting_price()</code>; <code>EventBuffer.wait_idle()</code>, <code>CommandBuffer.wait_idle()</code></td></tr>
 <tr><td>Translate status</td><td><code>IbGateway.on_error()</code>, <code>on_order_status()</code>; a recovery code runs <code>IbGateway.recover_streams()</code>, which subscribes the streams again and then emits <code>connection_restored</code></td></tr>
 <tr><td>Report account</td><td><code>Gateway.subscribe_account_update()</code>, <code>get_positions()</code>, <code>poll_positions()</code></td></tr>
-<tr><td>Build history frame</td><td><code>Gateway.get_daily_history()</code>, <code>get_intraday_seed_bars()</code>, <code>roll_mismatch_dates()</code>; tape: <code>TapeSource</code>, <code>ParquetTape</code>, <code>SyntheticTape</code>, <code>check_tape_in_session()</code></td></tr>
+<tr><td>Build history frame</td><td><code>Gateway.get_daily_history()</code>, <code>get_intraday_seed_bars()</code>, <code>roll_mismatch_dates()</code>; tape: <code>TapeSource</code>, <code>ParquetTape</code>, <code>check_tape_in_session()</code></td></tr>
 <tr><td>Probe socket</td><td><code>Gateway.run_heartbeat()</code>, <code>ping(timeout)</code>; constants <code>HEARTBEAT_INTERVAL_S</code>, <code>HEARTBEAT_TIMEOUT_S</code></td></tr>
 <tr><td>Reconnect</td><td><code>Gateway.reconnect_forever()</code>, <code>restore_streams()</code>, <code>resubscribe()</code>, <code>connect()</code>, <code>disconnect()</code>; <code>reconnect_delay()</code>; constants <code>RECONNECT_BASE_S</code>, <code>RECONNECT_CAP_S</code></td></tr>
 <tr><td>Consume commands</td><td><code>Gateway.run_commands()</code>, <code>run_command()</code>; one reply per command (<code>messages.py</code> · <code>make_reply()</code>; reply event named by <code>constants/messages.py</code> · <code>REPLY_EVENTS</code>: <code>executions</code>, <code>open_orders</code>, <code>positions</code>); non-broker commands go to <code>Gateway.sinks</code> (<code>alert</code>, <code>deploy_result</code>)</td></tr>

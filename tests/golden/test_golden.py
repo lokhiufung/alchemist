@@ -8,12 +8,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from golden_tape import golden_tape_path
+
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED = Path(__file__).parent / "expected"
 
 
 def run_golden(out: Path) -> subprocess.CompletedProcess:
-    env = {**os.environ, "GOLDEN_OUT": str(out)}
+    env = {**os.environ, "GOLDEN_OUT": str(out), "GOLDEN_TAPE": golden_tape_path()}
     return subprocess.run(
         [sys.executable, "run_strategies.py", "--config", "tests/golden/config.yaml", "--mode", "replay"],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=600)

@@ -240,7 +240,7 @@ The golden sample is one replay run of the real deployment path. The run uses th
 | Entry point | `python run_strategies.py --config tests/golden/config.yaml --mode replay`, started as a child process. The entry point runs the same `Runtime.build` that paper and live use (decision 47). | `run_strategies.py` |
 | Strategy | A frozen copy of the public example strategy `macd_rsi_rth_long` (signal `macd_signal_dag`, default params). The copy keeps the golden answer stable when a person edits the public example. | `tests/golden/strategies/macd_rsi_rth_long/` |
 | Config | A real deployment config: the simulated broker, a `replay:` section, one slot that trades MES on MES, and `strategies_root` set to the frozen copy. | `tests/golden/config.yaml` |
-| Data | A synthetic tape of 1-second bars from the scripted generator `golden_session`. The generator uses no random numbers. The tape holds one full NY_RTH session on the replay date, and the prior sessions that warmup needs. The simulated broker sends each replay bar to the Event Loop as one `bar_update` (decision 49). | A synthetic tape source behind the simulated broker ([Gateway feature 12](GATEWAY_MAP.md)) |
+| Data | A parquet tape of 1-second bars. The golden test writes the tape at test time with the scripted generator `golden_session`. The generator uses no random numbers. The tape holds one full NY_RTH session on the replay date, and the prior sessions that warmup needs. The simulated broker sends each replay bar to the Event Loop as one `bar_update` (decision 49). | `tests/golden/golden_tape.py`; the test passes the file path in the environment variable `GOLDEN_TAPE`. The simulated broker reads it as a parquet tape ([Gateway feature 12](GATEWAY_MAP.md)) |
 | Expected output | The frozen broker journal and the frozen tape fingerprint. | `tests/golden/expected/` |
 
 The config file (the output folder comes from the environment variable `GOLDEN_OUT`, so each run writes to its own temporary folder):
@@ -255,7 +255,7 @@ gateway:
   name: simulation
 
 replay:
-  tape: synthetic:golden_session
+  tape: ${GOLDEN_TAPE}
   date: 2026-04-15
   session: NY_RTH
   pad_before_s: 0
@@ -662,7 +662,7 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 45. Who prepares replay data?
 
-**Answer:** The simulated broker, on request ([Gateway feature 12](GATEWAY_MAP.md)). It reads the tape lazily, checks it against the session from the exchange profile with one generic check, and answers daily-history and prior-session requests like the broker gateway. Padding and synthetic tapes are simulated broker options. The Gateway builds daily bars in live and replay; the Event Loop only requests them. This follows decision 6.
+**Answer:** The simulated broker, on request ([Gateway feature 12](GATEWAY_MAP.md)). It reads the tape lazily, checks it against the session from the exchange profile with one generic check, and answers daily-history and prior-session requests like the broker gateway. The tape is a parquet file path; padding is a simulated broker option. The Gateway builds daily bars in live and replay; the Event Loop only requests them. This follows decision 6.
 
 **Rejected:** Rejected: the runner slicing the tape and writing history files before start (a second history path that must read strategies before they exist); one hand-written session check per exchange.
 
@@ -729,9 +729,11 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 57. How is the golden run wired?
 
-**Answer:** The config key `gateway.name` picks the gateway by name from the gateway table (decision 30). The `golden_session` generator lives in the engine's synthetic tape registry, in `alchemist/gateways/simulation_gateway/synthetic_tapes.py`, registered under the name `golden_session`, so the real entry point finds it by name. The zigzag steps are u = 2.00 and d = 1.00.
+**Answer:** The config key `gateway.name` picks the gateway by name from the gateway table (decision 30). The replay tape is always a parquet file path in `replay.tape`; the engine has no synthetic tape registry. The `golden_session` generator lives in the test code, `tests/golden/golden_tape.py`. The golden test writes the generator's bars to a temporary parquet file and passes its path to the real entry point in the environment variable `GOLDEN_TAPE`. The zigzag steps are u = 2.00 and d = 1.00.
 
-*decided 2026-11-09*
+**Rejected:** Rejected: a synthetic tape registry in the engine (dropped 2026-11-11: a file path is simpler, and only the tests need a generator).
+
+*decided 2026-11-09 · changed 2026-11-11 · was a synthetic tape registry in the engine*
 
 #### 58. Which operational numbers are configurable?
 

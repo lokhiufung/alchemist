@@ -4,19 +4,18 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import alchemist.gateways  # noqa: F401  registers the golden tape
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.simulation_gateway.tapes import ParquetTape, ReplayDataError, SyntheticTape, check_tape_in_session, tape_from_spec
+from alchemist.gateways.simulation_gateway.tapes import ParquetTape, ReplayDataError, check_tape_in_session
 from alchemist.instruments import FDAX, MES
-from alchemist.registry import get_tape
 
 from gateway_helpers import REPLAY_DATE, ListTape, session_seconds, tape_bar
+from golden_tape import golden_session, golden_tape_path
 
 CME = exchange_profile(MES)
 
 
 def day_bars(day=REPLAY_DATE):
-    tape = tape_from_spec("synthetic:golden_session")
+    tape = ParquetTape(golden_tape_path())
     start, end = CME.session_window("NY_RTH", day)
     return list(tape.bars(MES, start, end))
 
@@ -43,7 +42,7 @@ def test_golden_phase_b_zigzag_reaches_5011():
 
 
 def test_golden_prior_sessions_have_designed_shape():
-    tape = tape_from_spec("synthetic:golden_session")
+    tape = ParquetTape(golden_tape_path())
     sessions = []
     day = date(2026, 4, 14)
     while len(sessions) < 60:
@@ -57,7 +56,7 @@ def test_golden_prior_sessions_have_designed_shape():
 
 
 def test_golden_tape_has_nothing_before_sixty_sessions_or_after_replay_day():
-    tape = tape_from_spec("synthetic:golden_session")
+    tape = ParquetTape(golden_tape_path())
     far_start, far_end = CME.session_window("NY_RTH", date(2025, 12, 1))
     next_start, next_end = CME.session_window("NY_RTH", date(2026, 4, 16))
     assert list(tape.bars(MES, far_start, far_end)) == []
@@ -68,12 +67,9 @@ def test_golden_tape_is_deterministic():
     assert day_bars() == day_bars()
 
 
-def test_tape_from_spec_picks_synthetic_or_parquet(tmp_path):
-    assert isinstance(tape_from_spec("synthetic:golden_session"), SyntheticTape)
-    assert isinstance(tape_from_spec(str(tmp_path / "x.parquet")), ParquetTape)
-    with pytest.raises(KeyError, match="golden_session"):
-        tape_from_spec("synthetic:nope")
-    assert get_tape("golden_session") is not None
+def test_golden_parquet_tape_equals_generator():
+    start, end = CME.session_window("NY_RTH", REPLAY_DATE)
+    assert day_bars() == list(golden_session(MES, start, end))
 
 
 def test_parquet_tape_filters_instrument_and_window(tmp_path):

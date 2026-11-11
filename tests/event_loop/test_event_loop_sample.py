@@ -4,7 +4,6 @@ from datetime import date
 
 import pytest
 
-import alchemist.gateways  # noqa: F401
 from alchemist.config import EventLoopConfig, GatewayConfig, ReplayConfig
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import CommandBuffer, EventBuffer
@@ -17,6 +16,7 @@ from alchemist.instruments import MES
 from alchemist.requests import Requests
 
 from el_helpers import RecordingStrategy, StubAux, StubDeploy, StubRecorder, StubSafety
+from golden_tape import golden_tape_path
 from seed_helpers import SeedStrategy
 
 ENTRY_INDEX, TARGET_INDEX = 601, 618
@@ -49,7 +49,7 @@ class TradingStrategy(RecordingStrategy, SeedStrategy):
 
 
 async def test_golden_bar_updates_fills_and_end_of_data(caplog, tmp_path):
-    replay = ReplayConfig("synthetic:golden_session", date(2026, 4, 15), "NY_RTH", journal=tmp_path / "j.jsonl")
+    replay = ReplayConfig(golden_tape_path(), date(2026, 4, 15), "NY_RTH", journal=tmp_path / "j.jsonl")
     config = EventLoopConfig()
     buffer, outbound = EventBuffer(config), CommandBuffer()
     watch_time = WatchTime(system_time=lambda: 0.0)

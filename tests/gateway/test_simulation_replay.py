@@ -103,7 +103,7 @@ def reference_rows():
     return rows
 
 
-@pytest.mark.parametrize("tape_kind", ["parquet", "synthetic"])
+@pytest.mark.parametrize("tape_kind", ["parquet", "in_memory"])
 async def test_replay_daily_history_matches_broker_definitions(tape_kind, tmp_path):
     rows = reference_rows()
     if tape_kind == "parquet":

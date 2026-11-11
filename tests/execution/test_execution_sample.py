@@ -1,10 +1,9 @@
 from datetime import date, datetime, timezone
 
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.simulation_gateway.tapes import tape_from_spec
 from alchemist.instruments import MES
 
-import alchemist.gateways  # noqa: F401
+from golden_tape import golden_session
 from exec_helpers import ScriptedSignal, Slot, settle
 
 ENTRY_INDEX, TARGET_INDEX = 601, 618
@@ -16,7 +15,7 @@ async def test_golden_macd_entry_then_target_exit():
     signal.exits = {TARGET_INDEX: {"target": True}}
     slot = Slot(signal)
     start, end = exchange_profile(MES).session_window("NY_RTH", date(2026, 4, 15))
-    bars = list(tape_from_spec("synthetic:golden_session").bars(MES, start, end))
+    bars = list(golden_session(MES, start, end))
     assert len(bars) == 23_400
 
     processing = []
