@@ -19,9 +19,7 @@ from alchemist.registry import get_signal_dag
 from alchemist.stores import CalcStateStore, RoundTripStore
 from alchemist.strategy_builder.strategy_executions import make_execution
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
-
-REBUILD_YIELD_BUDGET_S = 0.001
-REPLAY_WINDOW = 2000
+from alchemist.constants.strategy import REBUILD_YIELD_BUDGET_S, REPLAY_WINDOW
 
 
 @dataclass

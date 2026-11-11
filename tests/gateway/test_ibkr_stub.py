@@ -7,7 +7,7 @@ import pytest
 
 import alchemist.gateways  # noqa: F401
 from alchemist.exchanges import exchange_profile
-from alchemist.gateways.ib_gateway.errors import CANCEL_REFUSAL_CODES, ORDER_REJECT_CODES
+from alchemist.constants.ib_gateway import CANCEL_REFUSAL_CODES, ORDER_REJECT_CODES
 from alchemist.instruments import ES, FDAX, FDXM, MES, AssetClass, Instrument
 from alchemist.gateways import get_gateway
 

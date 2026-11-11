@@ -8,7 +8,8 @@ import queue
 from datetime import datetime, timezone
 from pathlib import Path
 
-LOGS_DIR = "logs"
+from alchemist.constants.runtime import LOGS_DIR
+
 RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message", "asctime", "clock_time"}
 
 

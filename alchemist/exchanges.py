@@ -5,14 +5,18 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Callable
 from zoneinfo import ZoneInfo
 
+from alchemist.constants.exchanges import (
+    CME_NAME,
+    EUREX_HOLIDAYS_2026,
+    EUREX_NAME,
+    NASDAQ_NAME,
+    QUARTERLY_MONTHS,
+    US_EARLY_CLOSES_2026,
+    US_HOLIDAYS_2026,
+)
+
 if TYPE_CHECKING:
     from alchemist.instruments import Instrument
-
-CME_NAME = "CME"
-EUREX_NAME = "EUREX"
-NASDAQ_NAME = "NASDAQ"
-
-QUARTERLY_MONTHS = (3, 6, 9, 12)
 
 
 @dataclass(frozen=True)
@@ -117,13 +121,6 @@ def _stock_identity(instrument: "Instrument") -> dict:
     return {"venue": "SMART", "currency": instrument.currency,
             "trading_class": instrument.symbol, "sec_type": instrument.asset_class.value}
 
-
-US_HOLIDAYS_2026 = frozenset(date(2026, m, d) for m, d in (
-    (1, 1), (1, 19), (2, 16), (4, 3), (5, 25), (6, 19), (7, 3), (9, 7), (11, 26), (12, 25)))
-US_EARLY_CLOSES_2026 = {date(2026, 11, 27): time(13, 0), date(2026, 12, 24): time(13, 0)}
-
-EUREX_HOLIDAYS_2026 = frozenset(date(2026, m, d) for m, d in (
-    (1, 1), (4, 3), (4, 6), (5, 1), (12, 24), (12, 25), (12, 31)))
 
 _NY = "America/New_York"
 

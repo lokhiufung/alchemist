@@ -18,11 +18,15 @@ from alchemist.gateways.simulation_gateway.tapes import (BAR_SECONDS, ReplayData
                                       tape_from_spec)
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
+from alchemist.constants.simulation import (
+    FILL_REFERENCES,
+    FINGERPRINT_FILE,
+    PRICE_KEYS,
+    SEED_LOOKBACK_SESSIONS,
+    SESSION_MARGIN,
+    STARTING_FUNDS,
+)
 
-SEED_LOOKBACK_SESSIONS = 10
-SESSION_MARGIN = timedelta(hours=6)
-PRICE_KEYS = ("open", "high", "low", "close", "volume")
-FINGERPRINT_FILE = "tape.sha256"
 
 logger = logging.getLogger("gateway")
 
@@ -34,10 +38,6 @@ def canonical_bar(bar: dict) -> bytes:
     for key in PRICE_KEYS:
         parts[key] = f"{bar[key]:.2f}"
     return ("{" + ",".join(f'"{k}":{parts[k]}' for k in sorted(parts)) + "}\n").encode()
-
-
-STARTING_FUNDS = 1_000_000.0
-FILL_REFERENCES = ("close",)
 
 
 def iso_ms(moment: datetime) -> str:

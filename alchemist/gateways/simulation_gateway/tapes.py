@@ -4,12 +4,10 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Callable, Iterator
 
+from alchemist.constants.simulation import BAR_SECONDS, SYNTHETIC_PREFIX
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 from alchemist.registry import get_tape
-
-BAR_SECONDS = 1.0
-SYNTHETIC_PREFIX = "synthetic:"
 
 
 class ReplayDataError(Exception):

@@ -5,9 +5,7 @@ import threading
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
-PRICED_FIELD = {"STP": "stop_price", "LMT": "limit_price"}
-OCA_TYPES = (1, 2, 3)
-ROUND_UP = {("BUY", "STP"), ("SELL", "LMT")}
+from alchemist.constants.gateway import OCA_TYPES, PRICED_FIELD, ROUND_UP
 
 
 def round_price(price: float, tick_size: float, side: str, order_type: str) -> float:

@@ -5,22 +5,23 @@ from functools import lru_cache
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
+from alchemist.constants.simulation import (
+    BAR_VOLUME,
+    BASE_PRICE,
+    HIGH_PRICE,
+    LOW_PRICE,
+    PRIOR_SESSIONS,
+    QUIET_BARS,
+    REPLAY_DATE,
+    SESSION_BARS,
+    STEP_DOWN,
+    STEP_UP,
+    TARGET_PRICE,
+    TICK,
+)
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 from alchemist.registry import register_tape
-
-REPLAY_DATE = date(2026, 4, 15)
-PRIOR_SESSIONS = 60
-SESSION_BARS = 23_400
-BASE_PRICE = 5000.0
-HIGH_PRICE = 5010.0
-LOW_PRICE = 4990.0
-TICK = 0.25
-QUIET_BARS = 600
-STEP_UP = 2.0
-STEP_DOWN = 1.0
-TARGET_PRICE = 5011.0
-BAR_VOLUME = 100.0
 
 
 def on_tick(price: float) -> float:

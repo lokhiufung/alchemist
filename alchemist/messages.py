@@ -87,9 +87,5 @@ class Event(TypedDict):
     enqueued_at: float
 
 
-EVENT_TYPES = ("tick_update", "bar_update", "order_update", "position_update",
-               "balance_update", "repaired_fill", "book_op", "end_of_data")
-
-
 def make_event(event_type: str, data: dict[str, Any], now: float) -> Event:
     return {"event_type": event_type, "data": data, "enqueued_at": now}

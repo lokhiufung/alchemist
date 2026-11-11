@@ -3,9 +3,9 @@ from __future__ import annotations
 from alchemist.managers.order_manager import CLOSED, OrderState
 from alchemist.strategy_builder.strategy_executions.strategy_execution import (ExecutionConfigError, Phase,
                                                                               StrategyExecution)
+from alchemist.constants.strategy import LEG_TYPES
 
 
-LEG_TYPES = ("STP", "LMT")
 WORKING = {OrderState.SUBMITTED, OrderState.OPEN, OrderState.PARTIALLY_FILLED}
 TRADE_PHASES = {Phase.PROCESSING_PROTECTION_ORDERS, Phase.IN_POSITION_PROTECTED, Phase.PROCESSING_EXIT_ORDER,
                 Phase.IN_POSITION_ACTIVITY}

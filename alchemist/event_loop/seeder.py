@@ -10,12 +10,11 @@ from zoneinfo import ZoneInfo
 
 from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
+from alchemist.constants.event_loop import DAYS_PER_MONTH
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("event_loop")
-
-DAYS_PER_MONTH = 31
 
 
 class TerminalSeedError(Exception):

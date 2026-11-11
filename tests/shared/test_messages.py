@@ -1,4 +1,5 @@
-from alchemist.messages import EVENT_TYPES, make_event
+from alchemist.constants.messages import EVENT_TYPES
+from alchemist.messages import make_event
 
 
 def test_event_types_closed_set():

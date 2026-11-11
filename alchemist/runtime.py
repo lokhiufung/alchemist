@@ -29,14 +29,10 @@ from alchemist.safety.monitor import SafetyMonitor
 from alchemist.safety.null import NullSafety
 from alchemist.stores import CalcStateStore, InMemoryCalcStateStore, InMemoryRoundTripStore, RoundTripStore
 from alchemist.strategy_builder.strategy import Stores
+from alchemist.constants.runtime import NOT_FLAT_EXIT_CODE, SERVICE_LOGGERS, SOCKET_FILE
 
 startup_logger = logging.getLogger("startup")
 shutdown_logger = logging.getLogger("shutdown")
-SERVICE_LOGGERS = {"gateway": "gateway", "event_loop": "event_loop", "aux_data": "aux_data", "safety": "safety",
-                   "deploy_socket": "deploy"}
-
-NOT_FLAT_EXIT_CODE = 2
-SOCKET_FILE = "deploy.sock"
 
 
 @runtime_checkable

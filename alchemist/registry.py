@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-BUILTIN_SCOPE = "builtin"
+from alchemist.constants.runtime import BUILTIN_SCOPE
+
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
 _calcs: dict[str, dict[str, tuple[type, str]]] = {}

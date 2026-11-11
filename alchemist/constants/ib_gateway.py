@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ORDER_REJECT_CODES = frozenset({110, 200, 201, 203, 321, 401, 512})
 CANCEL_REFUSAL_CODES = frozenset({10147, 10148, 161})
 CONNECTION_RESTORED_CODES = frozenset({1101, 1102})
@@ -5,3 +7,8 @@ CONNECTION_LOST_CODE = 1100
 DATA_FARM_OK_CODES = frozenset({2104, 2106, 2158})
 HARMLESS_CODES = frozenset({2100, 2101, 2102, 2103, 2105, 2107, 2108, 2157, 2119})
 REQUEST_ID_FLOOR = 1_000_000_000
+ROLL_THIN_DAYS = 5
+SEED_CHUNK_BARS = 2000
+BOT, SLD = "BOT", "SLD"
+STATUS_TO_UPDATE = {"Submitted": "OPEN", "PreSubmitted": "OPEN", "Filled": "FILLED", "Cancelled": "CANCELLED",
+                    "ApiCancelled": "CANCELLED"}

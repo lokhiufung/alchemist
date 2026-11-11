@@ -6,14 +6,10 @@ import time
 from collections import defaultdict
 from typing import Callable
 
+from alchemist.constants.event_loop import FLUSH_INTERVAL_S
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("event_loop")
-
-FLUSH_INTERVAL_S = 60.0
-SECOND_PRECISION_S = 1.0
-FINE_PRECISION_S = 0.001
-PRECISION_SAMPLES = 100
 
 
 def percentile(samples: list[float], fraction: float) -> float | None:
@@ -54,6 +50,9 @@ class Samples:
 
 class LatencyMetrics:
     MAX_SAMPLES = 4096
+    PRECISION_SAMPLES = 100
+    SECOND_PRECISION_S = 1.0
+    FINE_PRECISION_S = 0.001
 
     def __init__(self, wall: Callable[[], float] = time.time) -> None:
         self.wall = wall
@@ -66,13 +65,13 @@ class LatencyMetrics:
 
     def precision(self, instrument: Instrument) -> float:
         stamps = self.broker_stamps.get(instrument, [])
-        return SECOND_PRECISION_S if all(float(ts).is_integer() for ts in stamps) else FINE_PRECISION_S
+        return self.SECOND_PRECISION_S if all(float(ts).is_integer() for ts in stamps) else self.FINE_PRECISION_S
 
     def record_feed(self, instrument: Instrument, broker_ts: float, recv_ts: float) -> None:
         self.series["feed"][instrument].append(recv_ts - broker_ts)
         stamps = self.broker_stamps[instrument]
         stamps.append(broker_ts)
-        del stamps[:-PRECISION_SAMPLES]
+        del stamps[:-self.PRECISION_SAMPLES]
 
     def record_decode(self, instrument: Instrument, decode_s: float) -> None:
         self.series["decode"][instrument].append(decode_s)

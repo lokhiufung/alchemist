@@ -8,13 +8,11 @@ from functools import partial
 
 from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
+from alchemist.constants.event_loop import POLL_S, RECHECK_OUTSIDE_SESSION_S
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("shutdown")
-
-POLL_S = 0.005
-RECHECK_OUTSIDE_SESSION_S = 30.0
 
 
 class ShutdownCoordinator:

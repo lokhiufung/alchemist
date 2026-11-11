@@ -5,13 +5,16 @@ import logging
 import time
 from enum import Enum
 
+from alchemist.constants.order_manager import (
+    CANCEL_REJECTED_INTERNALLY,
+    OCA_SLOT_PREFIX_LEN,
+    OCA_TYPE,
+    ORDER_RECORD_ONLY,
+    STORE_NAMES,
+)
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("om")
-
-OCA_GROUP_MAX_LEN = 48
-OCA_SLOT_PREFIX_LEN = 24
-OCA_TYPE = 2
 
 
 class OrderState(str, Enum):
@@ -27,9 +30,6 @@ class OrderState(str, Enum):
 
 CLOSED = {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED}
 ACKNOWLEDGED = {OrderState.SUBMITTED, OrderState.OPEN, OrderState.PARTIALLY_FILLED}
-CANCEL_REJECTED_INTERNALLY = "CANCEL_REJECTED_INTERNALLY"
-STORE_NAMES = ("submitted", "open", "cancelling", "closed")
-ORDER_RECORD_ONLY = ("status", "filled", "avg_fill_price", "submitted_at")
 
 
 class OrderManager:

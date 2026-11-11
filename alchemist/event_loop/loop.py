@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 
 from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
+from alchemist.constants.event_loop import BAR_HISTORY
 from alchemist.event_loop.book import BookClosed, RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
 from alchemist.event_loop.metrics import LatencyMetrics
@@ -19,7 +20,6 @@ from alchemist.messages import make_event
 
 logger = logging.getLogger("event_loop")
 
-BAR_HISTORY = 5000
 
 Handler = Callable[["EventLoop", dict], Awaitable[None]]
 HANDLERS: dict[str, Handler] = {}

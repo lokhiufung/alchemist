@@ -17,16 +17,13 @@ from alchemist.instruments import Instrument
 from alchemist.logger import strategy_logger
 from alchemist.registry import find_aux_name, get_calc, scope_of_class
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
+from alchemist.constants.strategy import BAR_FIELDS, HISTORY_KINDS, LEVEL_KINDS, LOGICAL
 
 SIGNAL_LOGGER = logging.getLogger("signal")
 
-BAR_FIELDS = ("open", "high", "low", "close", "volume", "start_ts", "end_ts")
-HISTORY_KINDS = ("daily", "intraday", "aux")
 ARITHMETIC = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv}
 COMPARISON = {"<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge, "==": operator.eq}
-LOGICAL = ("AND", "OR")
 OPERATORS = (*ARITHMETIC, *COMPARISON, *LOGICAL)
-LEVEL_KINDS = ("bar", "strategy_data", "calc", "expr")
 
 
 class SignalBuildError(ValueError):

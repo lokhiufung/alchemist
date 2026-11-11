@@ -6,9 +6,7 @@ import time
 from collections import deque
 
 from alchemist.config import EventLoopConfig
-
-CONTROL_EVENTS = frozenset({"order_update", "balance_update", "repaired_fill", "position_update", "book_op",
-                            "end_of_data"})
+from alchemist.constants.event_loop import CONTROL_EVENTS
 
 
 class EventBuffer:

@@ -3,7 +3,7 @@ import logging
 import pytest
 
 from alchemist.instruments import MES
-from alchemist.managers.order_manager import CANCEL_REJECTED_INTERNALLY, OCA_GROUP_MAX_LEN
+from alchemist.constants.order_manager import CANCEL_REJECTED_INTERNALLY, OCA_GROUP_MAX_LEN
 
 from om_helpers import FakeGateway, group_leg, make_manager, open_order, update
 

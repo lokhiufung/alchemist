@@ -7,9 +7,7 @@ from typing import Any, Awaitable, Callable
 from alchemist.event_loop.resampler import Resampler
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
-
-
-BAR_HISTORY = 5000
+from alchemist.constants.event_loop import BAR_HISTORY
 
 
 class BookClosed(RuntimeError): ...
@@ -130,7 +128,6 @@ class RuntimeBook:
 
     def strategies_for(self, instrument: Instrument) -> list:
         return [s for s in self.strategies if s.signal_instrument == instrument]
-
 
 
 async def enqueue_book_op(event_buffer: deque, drain_wakeup: Callable[[], None],

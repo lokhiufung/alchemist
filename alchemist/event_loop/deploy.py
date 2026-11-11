@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from alchemist.clock import Clock
 from alchemist.config import Configuration, ConfigError, StrategyConfig, load_config
+from alchemist.constants.event_loop import NEXT_SESSION_LOOKAHEAD_DAYS, TERMINAL_SUCCESS
 from alchemist.event_loop.book import BookError, RuntimeBook
 from alchemist.exchanges import exchange_profile
 from alchemist.loader import StrategyLoadError
@@ -20,8 +21,6 @@ from alchemist.strategy_builder.signal_dag import SignalBuildError
 
 logger = logging.getLogger("deploy")
 
-TERMINAL_SUCCESS = ("registered", "noop")
-NEXT_SESSION_LOOKAHEAD_DAYS = 10
 
 
 class DeployRefused(Exception):

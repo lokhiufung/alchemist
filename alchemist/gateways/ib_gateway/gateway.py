@@ -14,20 +14,24 @@ from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.gateway import Gateway, log_broker
-from alchemist.gateways.ib_gateway.errors import (CANCEL_REFUSAL_CODES, CONNECTION_LOST_CODE, CONNECTION_RESTORED_CODES,
-                                            DATA_FARM_OK_CODES, ORDER_REJECT_CODES, REQUEST_ID_FLOOR)
 from alchemist.gateways.ib_gateway.transport import IbTransport
 from alchemist.gateways.utils import OrderIdSequence, check_order, round_price
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
+from alchemist.constants.ib_gateway import (
+    BOT,
+    CANCEL_REFUSAL_CODES,
+    CONNECTION_LOST_CODE,
+    CONNECTION_RESTORED_CODES,
+    DATA_FARM_OK_CODES,
+    ORDER_REJECT_CODES,
+    REQUEST_ID_FLOOR,
+    ROLL_THIN_DAYS,
+    SEED_CHUNK_BARS,
+    STATUS_TO_UPDATE,
+)
 
 logger = logging.getLogger("gateway")
-
-ROLL_THIN_DAYS = 5
-SEED_CHUNK_BARS = 2000
-BOT, SLD = "BOT", "SLD"
-STATUS_TO_UPDATE = {"Submitted": "OPEN", "PreSubmitted": "OPEN", "Filled": "FILLED", "Cancelled": "CANCELLED",
-                    "ApiCancelled": "CANCELLED"}
 
 
 class IbGateway(Gateway):

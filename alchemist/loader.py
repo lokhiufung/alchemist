@@ -4,7 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-STRATEGY_FILES = ("calculations.py", "strategy_signal.py", "strategy.py")
+from alchemist.constants.runtime import STRATEGY_FILES
 
 
 class StrategyLoadError(Exception):

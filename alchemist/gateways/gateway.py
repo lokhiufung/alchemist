@@ -7,14 +7,13 @@ from typing import Any
 
 from alchemist.clock import Clock
 from alchemist.config import GatewayConfig
+from alchemist.constants.gateway import ORDER_SENT_KEYS
 from alchemist.instruments import Instrument
 from alchemist.messages import make_event
 
 __all__ = ["Gateway", "log_broker"]
 
 broker_logger = logging.getLogger("gateway")
-ORDER_SENT_KEYS = ("order_id", "account_id", "instrument", "side", "qty", "order_type", "stop_price", "limit_price",
-                   "oca_group", "tif", "outside_rth")
 
 
 def log_broker(event: str, fields: dict[str, Any], caller_depth: int = 1) -> None:

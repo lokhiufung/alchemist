@@ -7,8 +7,7 @@ from zoneinfo import ZoneInfo
 
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument, instrument as lookup_instrument
-
-BAR_KEYS = ("start_ts", "end_ts", "open", "high", "low", "close", "volume", "resolution_s", "broker_ts")
+from alchemist.constants.event_loop import BAR_KEYS
 
 
 def session_day(instrument: Instrument, session: str, at_ts: float) -> str:
