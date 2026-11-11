@@ -34,8 +34,12 @@
 <div class="eyebrow">Component map · EVENT_LOOP_MAP · Alchemist v3</div>
 <h1>Event Loop</h1>
 <div class="lede"><p>The engine's heartbeat. It drains one shared queue of events, packs ticks into bars at each strategy's resolution, and hands every bar and order update to the right strategies — in time order, exactly once — while keeping one broken strategy from stopping the rest.</p></div>
-<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: sessions and cutoffs follow each instrument's exchange profile, each on its own clock.</p>
+<div class="meta"><p><strong>Streaming core agreed 2026-11-11.</strong> One inbound and one outbound buffer, event time and watch time in place of a shared clock, recorders as sinks and deploy requests as events (<a href="system_map.html#streaming-core">System map decisions 61–70</a>).</p>
+<p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: sessions and cutoffs follow each instrument's exchange profile, each on its own clock.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-11</strong> — Compiled with /component-design: every existing Event Loop test now has a row under the feature it protects; a test table for <a href="#f14">feature 14</a> is added; <code>run_event_loop()</code> is marked Planned in the skeleton (the code today is <code>EventLoop.run()</code>).</li>
+<li><strong>2026-11-11</strong> — <a href="#f2">Feature 2</a> step 2: the stale "then the Gateway sees the bar" is removed, as <a href="gateway_map.html#d8">Gateway decision 8</a> agreed. <a href="#f11">Feature 11</a> step 5: the commit sends a member event to Aux Data (System map decision 71). Flush grace stays 1.0 s until measured in watch time (System map decision 72).</li>
+<li><strong>2026-11-11</strong> — Streaming core agreed: features 1, 4, 8, 10–13 changed (watch-time flush and shutdown watch, recorders as sinks in every mode, deploy requests as events, <code>run_op</code> and the shared <code>Clock</code> removed); new feature 14, the two buffers and their taps; tests and skeleton updated.</li>
 <li><strong>2026-11-11</strong> — One run covers one trading day (<a href="system_map.html#d60">System map decision 60</a>). <a href="#f8">Feature 8</a>: each strategy's cutoff is computed one time for the run's trading date; new parameter run end; at the run end the process requests shutdown by itself. <a href="#f12">Feature 12</a>: <code>after_process_exit</code> checks only the session on the run's trading date.</li>
 <li><strong>2026-11-10</strong> — The Event Loop no longer shows each bar to the Gateway (<a href="gateway_map.html#d8">Gateway decision 8</a>). <a href="#f4">Feature 4</a>: the event buffer signals when it is idle; the replay feed waits for that signal before it sends the next bar, so replay no longer preloads the whole day.</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
@@ -53,23 +57,23 @@
 <section id="goal-and-scope">
 <div class="eyebrow">Event Loop · 1 · Goal and scope</div>
 <h2>Goal and scope</h2>
-<p><strong>What it is.</strong> The Event Loop is the only consumer of the event buffer and the only scheduler of strategy calls. The Event Loop delivers every input a strategy receives: bars, order updates, balance updates, warmup history and session-end flatten requests. The Event Loop also adds new strategies to the runtime book. The Event Loop is one concrete component, not an interface with subclasses: the replay runner and the live runner give the Event Loop a different clock and different collaborators, and nothing else differs (<a href="#f13">feature 13</a>).</p>
-<p><strong>Why it exists.</strong> Four producers write events from different threads: the Gateway feed, Safety, the bar flush and the deploy service. Each strategy must receive those events in one time order, exactly once, and an exception in one strategy must not stop the other strategies. Strategies consume bars, but the broker sends ticks. The Event Loop owns the time order, the tick-to-bar conversion and the fault isolation, so that no other component must do these three jobs.</p>
-<p><strong>Goal.</strong> Take events from the event buffer, turn ticks into completed bars at each strategy's resolution, and deliver bars, order updates and balance updates to the right strategies, in time order, exactly once, with fault isolation.</p>
+<p><strong>What it is.</strong> The Event Loop is the only consumer of the event buffer and the only scheduler of strategy calls. The Event Loop delivers every input a strategy receives: bars, order updates, balance updates, warmup history and session-end flatten requests. The Event Loop also adds new strategies to the runtime book. The Event Loop is one concrete component, not an interface with subclasses, and it is the same code in every mode; only the adapters at the edges differ (<a href="#f13">feature 13</a>).</p>
+<p><strong>Why it exists.</strong> Four producers write events from different threads: the Gateway, Safety, the bar flush and the deploy socket. Each strategy must receive those events in one time order, exactly once, and an exception in one strategy must not stop the other strategies. Strategies consume bars, but the broker sends ticks. The Event Loop owns the time order, the tick-to-bar conversion and the fault isolation, so that no other component must do these three jobs.</p>
+<p><strong>Goal.</strong> Take events from the inbound buffer, turn ticks into completed bars at each strategy's resolution, and deliver bars, order updates and balance updates to the right strategies, in time order, exactly once, with fault isolation.</p>
 
 <h3>Public interface</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
 <tbody>
-<tr><td rowspan="4">Other components call the Event Loop</td><td>Gateway feed, Safety, bar flush</td><td>Push an event into the buffer (Safety pushes repaired fills, Rejected updates and position updates); wait until the buffer is idle</td><td>event: type, data, enqueued_at</td></tr>
+<tr><td rowspan="4">Producers push to the inbound buffer</td><td>Gateway, Safety, bar flush</td><td>Push an event (the Gateway pushes market data, order updates, connection events and replies; Safety pushes repaired fills and Rejected updates); wait until the buffer is idle</td><td>event: type, data, enqueued_at</td></tr>
 <tr><td>Replay runner</td><td>Push a fill to the front of the buffer</td><td>fill event</td></tr>
-<tr><td>Any task off the loop</td><td>Run a book operation and await its result</td><td>an operation on the runtime book → result or error</td></tr>
-<tr><td>Operator (local socket)</td><td>Deploy one strategy</td><td>strategy key → one status line per step</td></tr>
-<tr><td rowspan="5">The Event Loop calls other components</td><td>Strategy</td><td>Step on a bar; book an order or balance update; seed with warmup history; request flatten; ask "flat and idle?" and "processing an order?"; quarantine</td><td>bar, update, history, flatten reason</td></tr>
-<tr><td>Gateway</td><td>Request daily history and seed bars; read each instrument's market-data message type; resolve contracts, subscribe and unsubscribe ticks</td><td>history request, query, instrument</td></tr>
+<tr><td>Runner</td><td>Give each instrument's declared market-data message type at build</td><td>instrument → message type, resolution</td></tr>
+<tr><td>Deploy socket</td><td>Push a <code>deploy_request</code> event</td><td>strategy key, config sha256</td></tr>
+<tr><td rowspan="5">The Event Loop calls or produces</td><td>Strategy</td><td>Step on a bar; book an order or balance update; seed with warmup history; request flatten; ask "flat and idle?" and "processing an order?"; quarantine</td><td>bar, update, history, flatten reason</td></tr>
+<tr><td>Outbound buffer</td><td>Push commands: history and seed-bar requests, contract resolution, subscribe and unsubscribe, <code>deploy_result</code> status lines</td><td>command with correlation id</td></tr>
 <tr><td>Aux Data</td><td>Annotate a bar</td><td>bar → bar + aux values</td></tr>
 <tr><td>Safety</td><td>Check in from the loop (freeze detector)</td><td>check-in</td></tr>
-<tr><td>Clock</td><td>Read the time; wait</td><td>now, wait</td></tr>
+<tr><td>Recorders</td><td>Hand bar and fill events to the sinks</td><td>bar, fill, with session and strategy key</td></tr>
 </tbody></table></div>
 
 <h3>Scope</h3>
@@ -101,11 +105,11 @@
   <text class="ps-t" x="480" y="124">Event Loop</text><text class="ps-r" x="480" y="144">one drain,</text><text class="ps-r" x="480" y="160">one time order</text>
 
   <rect class="ps-ext" x="20" y="48" width="130" height="48" rx="24"/><text class="ps-x" x="85" y="77">Gateway</text>
-  <path class="ps-a" d="M150,62 H400"/><text class="ps-l" x="275" y="56">ticks, updates, history</text>
-  <path class="ps-a" d="M400,84 H150"/><text class="ps-l" x="275" y="100">history / subscribe / query, bar</text>
-  <rect class="ps-ext" x="20" y="118" width="130" height="44" rx="22"/><text class="ps-x" x="85" y="145">operator</text>
-  <path class="ps-a" d="M150,130 H400"/><text class="ps-l" x="275" y="124">deploy request</text>
-  <path class="ps-a" d="M400,150 H150"/><text class="ps-l" x="275" y="166">status lines</text>
+  <path class="ps-a" d="M150,62 H400"/><text class="ps-l" x="275" y="56">events (inbound buffer)</text>
+  <path class="ps-a" d="M400,84 H150"/><text class="ps-l" x="275" y="100">commands (outbound buffer)</text>
+  <rect class="ps-ext" x="20" y="118" width="130" height="44" rx="22"/><text class="ps-x" x="85" y="145">deploy socket</text>
+  <path class="ps-a" d="M150,130 H400"/><text class="ps-l" x="275" y="124">deploy_request</text>
+  <path class="ps-a" d="M400,150 H150"/><text class="ps-l" x="275" y="166">deploy_result</text>
   <rect class="ps-ext" x="20" y="190" width="130" height="44" rx="22"/><text class="ps-x" x="85" y="217">Safety</text>
   <path class="ps-a" d="M150,202 H400"/><text class="ps-l" x="275" y="196">repaired fill</text>
   <path class="ps-a" d="M400,222 H150"/><text class="ps-l" x="275" y="238">check-in</text>
@@ -128,7 +132,7 @@
 
 <h3>Algorithm map</h3>
 <div class="diagram">
-<svg viewBox="0 0 1000 800" role="img" aria-label="Events enter two lanes of the event buffer and are drained control lane first, then dispatched by type. A tick is bucketed by second; a closed bar goes back into the data lane. A dispatched bar gets Aux Data values, is shown to the Gateway, and fans out to strategies in runtime-book order with order and balance updates. Side steps: book changes, seeding, deploy, recording, session-end flatten and the stuck-order check; the clock drives the bar flush, the flatten and the check." xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1000 800" role="img" aria-label="Events enter two lanes of the event buffer and are drained control lane first, then dispatched by type. A tick is bucketed by second; a closed bar goes back into the data lane. A dispatched bar gets Aux Data values, is shown to the Gateway, and fans out to strategies in runtime-book order with order and balance updates. Side steps: book changes, seeding, deploy, recording, session-end flatten and the stuck-order check; the watch time drives the bar flush and the flatten." xmlns="http://www.w3.org/2000/svg">
   <style>
     .stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
     .main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
@@ -166,7 +170,7 @@
   <text class="t" x="520" y="322">Dispatch by event type</text><text class="r" x="520" y="340">one handler per type</text>
   <path class="a" d="M520,352 V390"/><text class="l" x="528" y="375">bar</text>
   <rect class="main" x="410" y="390" width="220" height="52" rx="8"/>
-  <text class="t" x="520" y="412">Annotate the bar</text><text class="r" x="520" y="430">Aux values, then Gateway</text>
+  <text class="t" x="520" y="412">Annotate the bar</text><text class="r" x="520" y="430">Aux values</text>
   <path class="a" d="M520,442 V480"/><text class="l" x="528" y="465">bar + aux values</text>
   <rect class="main" x="410" y="480" width="220" height="52" rx="8"/>
   <text class="t" x="520" y="502">Fan out to strategies</text><text class="r" x="520" y="520">book order · quarantine at 3</text>
@@ -190,17 +194,16 @@
   <rect class="ext" x="700" y="386" width="120" height="26" rx="13"/><text class="x" x="760" y="404">Aux Data</text>
   <path class="a" d="M630,395 H700"/><path class="a" d="M700,407 H630"/>
   <text class="l" x="665" y="389" text-anchor="middle">bar</text>
-  <rect class="ext" x="700" y="420" width="120" height="26" rx="13"/><text class="x" x="760" y="438">Gateway</text>
-  <path class="a" d="M630,433 H700"/><text class="l" x="665" y="450" text-anchor="middle">bar</text>
+  
 
   <!-- recording -->
   <rect class="stp" x="700" y="480" width="150" height="52" rx="8"/>
   <text class="t" x="775" y="502">Record bars, trades</text><text class="r" x="775" y="520">daily files</text>
   <path class="a" d="M630,506 H700"/><text class="l" x="665" y="500" text-anchor="middle">bar, fill</text>
 
-  <!-- clock and timed steps -->
+  <!-- watch time and timed steps -->
   <rect class="st" x="680" y="570" width="170" height="40" rx="6"/>
-  <text class="r" x="765" y="594">[ clock: now, wait ]</text>
+  <text class="r" x="765" y="594">[ watch time ]</text>
   <path class="c" d="M850,590 H875 V165 H850"/>
   <path class="c" d="M765,610 V640"/>
   <rect class="stp" x="680" y="640" width="170" height="52" rx="8"/>
@@ -209,18 +212,18 @@
   <path class="a" d="M850,666 H900"/><text class="l" x="875" y="660" text-anchor="middle">flatten</text>
 
   <!-- left column -->
-  <rect class="ext" x="10" y="70" width="125" height="52" rx="18"/><text class="x" x="72" y="100">operator</text>
-  <text class="l" x="72" y="64" text-anchor="middle">request · status</text>
+  <rect class="ext" x="10" y="70" width="125" height="52" rx="18"/><text class="x" x="72" y="100">deploy socket</text>
+  <text class="l" x="72" y="64" text-anchor="middle">deploy_request · deploy_result</text>
   <path class="a" d="M135,86 H150"/><path class="a" d="M150,108 H135"/>
   <rect class="stp" x="150" y="70" width="190" height="52" rx="8"/>
   <text class="t" x="245" y="92">Deploy one strategy</text><text class="r" x="245" y="110">fail → book unchanged</text>
-  <path class="a" d="M340,96 H410"/><text class="l" x="375" y="90" text-anchor="middle">book op</text>
-  <rect class="ext" x="10" y="150" width="125" height="30" rx="15"/><text class="x" x="72" y="170">Gateway</text>
+  <path class="a" d="M340,96 H410"/><text class="l" x="375" y="90" text-anchor="middle">event</text>
+  <rect class="ext" x="10" y="150" width="125" height="30" rx="15"/><text class="x" x="72" y="170">outbound</text>
   <path class="a" d="M190,122 V165 H135"/><text class="l" x="196" y="150">subscribe request</text>
 
   <rect class="stp" x="150" y="300" width="190" height="52" rx="8"/>
   <text class="t" x="245" y="322">Change the book</text><text class="r" x="245" y="340">only between events</text>
-  <path class="a" d="M410,316 H340"/><text class="l" x="375" y="310" text-anchor="middle">book op</text>
+  <path class="a" d="M410,316 H340"/><text class="l" x="375" y="310" text-anchor="middle">deploy step</text>
   <path class="a" d="M245,352 V390"/><text class="l" x="251" y="375">commit / release</text>
   <rect class="st" x="150" y="390" width="190" height="50" rx="6"/>
   <text class="r" x="245" y="412">[ runtime book:</text><text class="r" x="245" y="428">strategies, resamplers ]</text>
@@ -253,7 +256,7 @@
   <a href="#f11"><rect x="150" y="390" width="190" height="50" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 11</title></rect></a>
   <a href="#f7"><rect x="150" y="480" width="190" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 7</title></rect></a>
 </svg>
-<p class="caption">Main path in colour. A tick never reaches a strategy: it is bucketed, the closed bar goes back into the data lane, and a later drain pass dispatches it as a bar. Dashed boxes are shared data structures; dashed accent arrows are the clock.</p>
+<p class="caption">Main path in colour. A tick never reaches a strategy: it is bucketed, the closed bar goes back into the data lane, and a later drain pass dispatches it as a bar. Dashed boxes are shared data structures; dashed accent arrows are the watch time.</p>
 </div>
 
 <h3>Feature cards</h3>
@@ -266,14 +269,14 @@
 <li>For a <code>bar_update</code> at the slot's resolution: reject the bar if its ts is not later than the last bar's; otherwise hand the bar to <code>emit_bar</code> as a closed bar. The Resampler is not used for that instrument.</li>
 <li>For a <code>tick_update</code>, keep one open bucket per (instrument, resolution) in the runtime book.</li>
 <li>For each tick: reject it if its ts is older than the last tick's; drop it if its bucket was already emitted; otherwise update open, high, low, close and add its size to volume.</li>
-<li>Close the bucket when a tick for a later bucket arrives (rollover), when the clock passes bucket end + flush grace (close = last price), or on <code>end_of_data</code>.</li>
+<li>Close the bucket when a tick for a later bucket arrives (rollover), when the watch time reaches bucket end + flush grace (close = last price), or on <code>end_of_data</code>. The watch time is the event time of the last event plus the system time passed since that event arrived (<a href="system_map.html#d68">System map decision 68</a>); the loop checks it on every pass and on every wait timeout.</li>
 <li>Append the closed bar to the data lane (<a href="#f4">feature 4</a>). The closed bar reaches strategies through <a href="#f2">feature 2</a>.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Bar resolution</td><td>Fixed for v3 (<a href="system_map.html#d56">System map decision 56</a>)</td><td>1 s</td><td>1 s</td></tr>
-<tr><td>Flush grace</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>1.0 s</td><td>1.0 s</td></tr>
+<tr><td>Flush grace</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>); measured in watch time; stays 1.0 s until a live measurement sets it (<a href="system_map.html#d72">System map decision 72</a>)</td><td>any positive seconds</td><td>1.0 s</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>For every supported resolution r and both message types: at most one bar per bucket, and every bar goes through <code>emit_bar</code>. From ticks: a bar's OHLC covers every accepted tick in [t, t + r), and its volume is exactly the sum of their sizes; in a quiet period a bar is late by at most the flush grace. From bar updates: the bar equals the <code>bar_update</code>, field for field.</dd>
+<dt>Invariant</dt><dd>For every supported resolution r and both message types: at most one bar per bucket, and every bar goes through <code>emit_bar</code>. From ticks: a bar's OHLC covers every accepted tick in [t, t + r), and its volume is exactly the sum of their sizes; in a quiet period a bar is late by at most the flush grace, in watch time. From bar updates: the bar equals the <code>bar_update</code>, field for field.</dd>
 </dl></div>
 
 <div class="behaviour" id="f2"><h3><span class="num">2</span>Bars delivered in time order, exactly once<span class="added">settled · was behaviours 3, 13</span></h3><dl class="gmi">
@@ -281,7 +284,7 @@
 <dt>Upstream gives</dt><dd>Bar events from the data lane (<a href="#f1">feature 1</a>), Aux Data values per bar, and the runtime book's strategies per instrument (<a href="#f11">feature 11</a>).</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>Dispatch every event through one table keyed by event type. The main drain and the final drain after stop use the same table.</li>
-<li>For a bar: Aux Data adds its values, then the Gateway sees the bar, then the bar fans out to the instrument's strategies, one after another, in book order.</li>
+<li>For a bar: Aux Data adds its values, then the bar fans out to the instrument's strategies, one after another, in book order.</li>
 <li>One function makes every bar (rollover, flush, end of data); one helper does every fan-out (bars and updates).</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None of its own.</dd>
@@ -301,12 +304,12 @@
 
 <div class="behaviour" id="f4"><h3><span class="num">4</span>Fills never wait behind ticks<span class="added">settled · was behaviours 11, 12 · System map decisions 26, 27 · decision 8</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A fill must reach its strategy fast, within the processing latency budget (<a href="system_map.html#d25">System map R3</a>), even during a tick burst. The loop must use no CPU when idle. No event may be dropped (decision 3).</dd>
-<dt>Upstream gives</dt><dd>Producers on different threads: the Gateway feed (the broker's reader thread), the bar flush, Safety's repairs and book operations. The peak tick rate is not measured yet, so bursts have an unknown size.</dd>
+<dt>Upstream gives</dt><dd>Producers on different threads: the Gateway (the broker's reader thread), the bar flush, Safety's watcher thread and the deploy socket. The peak tick rate is not measured yet, so bursts have an unknown size.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Two lanes. Control: <code>order_update</code>, <code>balance_update</code>, <code>repaired_fill</code>, book operations, <code>end_of_data</code>. Data: <code>tick_update</code>, <code>bar_update</code>, <code>bar</code>.</li>
+<li>Two lanes. Control: <code>order_update</code>, <code>balance_update</code>, <code>repaired_fill</code>, <code>deploy_request</code>, replies, connection events, <code>end_of_data</code>. Data: <code>tick_update</code>, <code>bar_update</code>, <code>bar</code>, <code>heartbeat</code>.</li>
 <li>A producer appends to its lane, then raises the drain wake-up only if <code>wake_pending</code> is clear, and sets it. A producer on another thread wakes the loop only through the loop's thread-safe call.</li>
 <li>The drain clears the wake-up and <code>wake_pending</code> <em>before</em> each pass, never after; empties the control lane, then takes data events; and yields when the batch budget is spent. Leftovers go to the next pass without a new wake-up.</li>
-<li>With nothing to do, wait on the wake-up with the wait timeout, so the clock-driven flush (<a href="#f1">feature 1</a>) still runs.</li>
+<li>With nothing to do, wait on the wake-up with the wait timeout, so the watch-time flush (<a href="#f1">feature 1</a>) and the shutdown watch (<a href="#f8">feature 8</a>) still run.</li>
 <li>Each pass logs the size of each lane and the p99 queue wait. When the control lane is above the backlog threshold, raise an ERROR with an operator alert. The data lane raises no alert. Never drop.</li>
 <li>The buffer is idle when the drain finds both lanes empty, which is only after every event the drain took has been handled. A push clears the idle state. A producer can wait until the buffer is idle; the replay feed does this before each bar (<a href="gateway_map.html#f12">Gateway feature 12</a>).</li>
 </ol></dd>
@@ -414,7 +417,7 @@
 <dt>Need</dt><dd>R3 says each strategy's decision on a message must be made within the 5 ms processing latency budget of the message's arrival (System map decision 55). We need measured numbers to know when one process is no longer enough (decision 9).</dd>
 <dt>Upstream gives</dt><dd>The broker timestamp on each tick, the time each strategy step takes, and the reader thread's decode time.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Per message: record <strong>processing latency</strong>, from the message's <code>recv_ts</code> (or the flush time for a bar the clock closed) to each strategy's final decision on it (an order or cancel handed to the Gateway, or no action), with its parts: queue wait, dispatch latency and slot cost (<a href="system_map.html#d55">System map decision 55</a>).</li>
+<li>Per message: record <strong>processing latency</strong>, from the message's <code>recv_ts</code> (or the flush time for a bar the watch-time flush closed) to each strategy's final decision on it (an order or cancel handed to the Gateway, or no action), with its parts: queue wait, dispatch latency and slot cost (<a href="system_map.html#d55">System map decision 55</a>).</li>
 <li>Per message: record <strong>feed latency</strong>, <code>recv_ts</code> − broker timestamp, with the broker's timestamp precision.</li>
 <li>Per minute and instrument: p50 and p99 of processing latency and of feed latency.</li>
 <li>Per minute: p50 and p99 of the summed slot cost of each instrument's strategies, and of the reader thread's decode time.</li>
@@ -462,13 +465,13 @@
 
 <div class="behaviour" id="f8"><h3><span class="num">8</span>Session end and shutdown leave the book flat<span class="added">settled · was behaviours 7, 9</span></h3><dl class="gmi">
 <dt>Need</dt><dd>Positions must not stay open past a session's end. At exit every configured position must be flat or flagged, and no queued event may be lost.</dd>
-<dt>Upstream gives</dt><dd>The clock; each instrument's exchange profile (session calendar, early closes, time zone); shutdown signals; <code>end_of_data</code> in replay.</dd>
+<dt>Upstream gives</dt><dd>The watch time (<a href="system_map.html#d68">System map decision 68</a>); each instrument's exchange profile (session calendar, early closes, time zone); shutdown signals; <code>end_of_data</code> in replay.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>When a strategy joins the runtime book, compute its cutoff one time: its session's end on the run's trading date (<a href="system_map.html#d60">System map decision 60</a>), on that session's own clock with early closes included, minus the cutoff offset. If the run's trading date is not a trading day for the strategy's exchange, the strategy has no cutoff in this run.</li>
-<li>At each strategy's cutoff, ask the strategy to flatten. The loop only compares the clock with the stored cutoff; the loop never computes a session window on a loop pass.</li>
-<li>Repeat on every bar of the instrument until the strategy is flat and idle, a SIGINT/SIGTERM arrives, or the flatten timeout passes. A flattening slot gets no bars. Keep going when a flatten raises.</li>
+<li>The shutdown runs its own watch: on every loop pass and on every wait timeout, it compares the watch time with each stored cutoff. At a strategy's cutoff, it asks the strategy to flatten, whether bars arrive or not (<a href="system_map.html#d64">System map decision 64</a>). The watch never computes a session window on a loop pass.</li>
+<li>Repeat on every bar of the instrument until the strategy is flat and idle, a SIGINT/SIGTERM arrives, or the flatten timeout passes in watch time. A flattening slot gets no bars. Keep going when a flatten raises.</li>
 <li>When every slot has ended but an exchange's data session is still open, keep running and recording until it closes.</li>
-<li>At the run end, request shutdown, the same as a SIGINT/SIGTERM. The loop checks the run end on every pass, and an idle loop wakes at least once per drain timeout, so the process exits at the run end without an outside signal.</li>
+<li>When the watch time reaches the run end, the shutdown requests itself, the same as a SIGINT/SIGTERM. The watch checks the run end on every pass, and an idle loop wakes at least once per drain timeout, so the process exits at the run end without an outside signal.</li>
 <li>Before exit: cancel working orders on configured instruments and wait; force-flatten any leftover position that has no working order; otherwise page and exit non-zero. If open orders cannot be read, treat every configured instrument as blocked.</li>
 <li>Clean shutdown: flush buffered bars, drain the recorders, tell the strategies, leave the loop.</li>
 </ol></dd>
@@ -485,27 +488,28 @@
 <dt>Algorithm</dt><dd>The Event Loop does nothing for this feature. The Event Loop does not query the Gateway for executions and does not call Safety.</dd>
 </dl></div>
 
-<div class="behaviour" id="f10"><h3><span class="num">10</span>Bars and trades are recorded<span class="added">settled · was behaviour 10</span></h3><dl class="gmi">
-<dt>Need</dt><dd>A run must be auditable afterwards, and a mid-session restart needs today's bars (<a href="#f7">feature 7</a>).</dd>
-<dt>Upstream gives</dt><dd>Closed bars and fills, in live and paper mode.</dd>
+<div class="behaviour" id="f10"><h3><span class="num">10</span>Bars and trades are recorded<span class="added">changed 2026-11-11 · was behaviour 10 · System map decision 67</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A run must be auditable afterwards, a mid-session restart needs today's bars (<a href="#f7">feature 7</a>), and a replay's trades must be comparable with research.</dd>
+<dt>Upstream gives</dt><dd>Bar and fill events, in every mode. Each bar event carries its instrument and session; each fill event carries its strategy key.</dd>
 <dt>Algorithm</dt><dd><ol>
+<li>The recorders are sinks: the loop hands each closed bar and each fill event to them, and they hold no reference to the runtime book or the Gateway.</li>
 <li>Append every bar to the session day's file per instrument (an overnight session is not split at midnight); roll it up at day end or on finalize.</li>
-<li>Pair fills into per-strategy round trips (weighted average price for multi-fill legs), with currency; flush them, and repair a pending commission later.</li>
-<li>Replay passes do-nothing recorders (<a href="#f13">feature 13</a>).</li>
+<li>Pair fills into per-strategy round trips by strategy key (weighted average price for multi-fill legs), with currency; flush them, and repair a pending commission later.</li>
+<li>Write under the run's <code>log_path</code>. A replay run uses its own <code>log_path</code>, so it reads no recording of an earlier run.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
-<dt>Invariant</dt><dd>A recorded bar is durable before finalize. Recording never blocks or changes trading.</dd>
+<dt>Invariant</dt><dd>A recorded bar is durable before finalize. Recording never blocks or changes trading. The recorders are the same code in every mode.</dd>
 </dl></div>
 
 <div class="behaviour" id="f11"><h3><span class="num">11</span>One runtime book, changed only between events<span class="added">settled · was behaviours 15, 17 · System map decision 34</span></h3><dl class="gmi">
-<dt>Need</dt><dd>Dispatch, recorders, Aux Data, Safety and flatten must all agree which strategies exist, and a dispatch must not see the list change half-way.</dd>
+<dt>Need</dt><dd>Dispatch, Aux Data and flatten must all agree which strategies exist, and a dispatch must not see the list change half-way.</dd>
 <dt>Upstream gives</dt><dd>The strategies to run (from cold start or a deploy), with their instruments and sessions.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>One book holds the strategies (dispatch order), resamplers and bar buffers per signal instrument, contracts, fed instruments, session maps and retry tasks. Each container is made once and changed in place, so holders of a reference see additions.</li>
 <li>Reserve an instrument before any strategy on it is committed. Reserving is idempotent and keeps an existing recording partition.</li>
 <li>Commit is synchronous: it adds the strategy and its session maps in one call, or raises on a duplicate key and leaves the book unchanged.</li>
-<li>Only the drain loop changes the book. Another task enqueues a book operation and awaits its future. An operation after shutdown is refused; one still queued at stop fails with "book closed".</li>
-<li>A committed strategy is a full member from the next event; its session-end flatten uses its own calendar; Aux Data reads members from the book.</li>
+<li>Only the drain loop changes the book, between events. A change starts from an event (a <code>deploy_request</code>, or a reply to a deploy step); no other task changes the book (<a href="system_map.html#d67">System map decision 67</a>). A deploy request after shutdown begins is refused.</li>
+<li>A committed strategy is a full member from the next event; its session-end flatten uses its own calendar; the commit sends a member event to Aux Data (<a href="system_map.html#d71">System map decision 71</a>).</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>A dispatch sees one strategy list for its whole run. No consumer keeps its own copy.</dd>
@@ -513,46 +517,58 @@
 
 <div class="behaviour" id="f12"><h3><span class="num">12</span>Add a strategy while running<span class="added">settled · was behaviour 16 · System map decisions 35, 36</span></h3><dl class="gmi">
 <dt>Need</dt><dd>The operator adds a strategy in paper or live without a restart, and without touching the strategies already running.</dd>
-<dt>Upstream gives</dt><dd>A deploy request on the runner's local socket, the config file, and the broker's positions and open orders per account.</dd>
+<dt>Upstream gives</dt><dd>A <code>deploy_request</code> event from the deploy socket, the config file, and the Gateway's replies with positions and open orders per account.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li><strong>Pre-flight</strong> (nothing exists yet): refuse <code>stale_config</code>, <code>config_drift</code>, <code>unknown_key</code>, <code>conflict</code>, <code>import_error</code>, <code>params_invalid</code>, <code>session_open</code>, <code>after_process_exit</code>, <code>unknown_account_route</code> or <code>unmanaged_exposure</code>. <code>after_process_exit</code>: take the candidate's session on the run's trading date (<a href="system_map.html#d60">System map decision 60</a>); refuse unless that session starts after now and ends at or before the run end.</li>
-<li><strong>Reserve and subscribe</strong> each new instrument through a book operation; subscribe ticks only for a new signal instrument.</li>
-<li><strong>Prepare</strong>: warm up the candidate alone (<a href="#f7">feature 7</a>); a fetch miss is not a failure.</li>
-<li><strong>Commit</strong> through a book operation that re-checks shutdown and the session gate; reply <code>registered</code>.</li>
+<li><strong>Reserve and subscribe</strong> each new instrument on the loop; push a subscribe command only for a new signal instrument.</li>
+<li><strong>Prepare</strong>: warm up the candidate alone (<a href="#f7">feature 7</a>); history requests are commands, and each reply, matched by correlation id, resumes the deploy. A fetch miss is not a failure.</li>
+<li><strong>Commit</strong> on the loop between events, after a re-check of shutdown and the session gate; push a <code>deploy_result</code> command with <code>registered</code>. Every status line is a <code>deploy_result</code> command that the deploy socket writes to the operator.</li>
 <li>Another request in flight → <code>busy</code>; same revision → <code>noop</code>; after shutdown begins → <code>shutting_down</code>. On failure after pre-flight, release only instruments no running strategy uses.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>Every outcome other than <code>registered</code> leaves the book as it was. Running strategies keep their connection, positions, orders, indicators and partly built bars.</dd>
 </dl></div>
 
-<div class="behaviour" id="f13"><h3><span class="num">13</span>Replay and live run the same code<span class="added">settled · was behaviour 19 · System map decision 46</span></h3><dl class="gmi">
+<div class="behaviour" id="f13"><h3><span class="num">13</span>Replay and live run the same code<span class="added">changed 2026-11-11 · was behaviour 19 · System map decisions 46, 62, 68</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A replay result is evidence about live trading only if the same lines run in both.</dd>
-<dt>Upstream gives</dt><dd>A clock (wall or replay) and the collaborators (recorders, Safety, stores) as objects.</dd>
+<dt>Upstream gives</dt><dd>Events with their event time on the inbound buffer. The mode selects only the adapters at the edges: the live or simulated gateway, and whether the deploy socket and the OS signal handlers are on.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Every time read goes through the clock: bar flush, session-active flag, flatten, and the drain's wait.</li>
-<li><code>emit_bar</code> moves the <code>ReplayClock</code> forward to the bar's end time before the bar is dispatched. In replay, <code>wait(timeout)</code> returns at once.</li>
-<li>Replay passes do-nothing collaborators.</li>
+<li>All logic reads event time. The bar flush, the session-active flag, the reconcile and the shutdown watch read the watch time when no event arrives (<a href="system_map.html#d68">System map decision 68</a>).</li>
+<li>No shared <code>Clock</code> and no <code>clock_advance</code>: the watch time moves with the events in every mode.</li>
+<li>Recorders, Safety and stores are the same objects in every mode; there are no do-nothing stand-ins.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
-<dt>Invariant</dt><dd>No Event Loop code reads the run mode or checks a collaborator for <code>None</code>.</dd>
+<dt>Invariant</dt><dd>No Event Loop code reads the run mode or checks a collaborator for <code>None</code>. The Event Loop holds no reference to the Gateway.</dd>
+</dl></div>
+
+<div class="behaviour" id="f14"><h3><span class="num">14</span>One inbound and one outbound buffer, each with taps<span class="added">new 2026-11-11 · System map decisions 61, 63</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Components must exchange data without holding references to each other, in both directions. Safety must see every item without slowing the consumers.</dd>
+<dt>Upstream gives</dt><dd>Producers on several threads: the Gateway, Safety, the bar flush and the deploy socket push events; Strategy (through Order Manager), the Event Loop and Safety push commands.</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>The inbound buffer is the event buffer of <a href="#f4">feature 4</a>, with its control and data lanes; the Event Loop is its only consumer.</li>
+<li>The outbound buffer is one queue of commands, drained in push order by the Gateway's command consumer (<a href="gateway_map.html#f15">Gateway feature 15</a>). The outbound buffer is idle when the consumer has run every command it took.</li>
+<li>Each buffer keeps a list of taps. A push appends the item to its lane or queue and to every tap queue. A tap append is a thread-safe deque append and never waits.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>None.</dd>
+<dt>Invariant</dt><dd>A tap never changes what the consumer receives or its order. A push with taps costs the same as a push without taps, within 10 %.</dd>
 </dl></div>
 </section>
 
 <section id="tests">
 <div class="eyebrow">Event Loop · 3 · Tests</div>
 <h2>Tests</h2>
-<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value; when a value is added to a feature's Parameters, its cases grow with it. No Event Loop test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
+<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value; when a value is added to a feature's Parameters, its cases grow with it. Every row has a test under <code>tests/event_loop/</code> (streaming core built 2026-11-11).</p>
 
 <details open><summary>End to end · the sample<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>tests/event_loop/test_event_loop_sample.py::test_golden_bar_updates_fills_and_end_of_data</code></td></tr>
 <tr><th>Input</th><td>The golden session from a Gateway stub: 23,400 <code>bar_update</code> messages for MES on 2026-04-15 (NY_RTH), the daily history and seed bars of the 60 prior sessions, two fills (the BUY in phase B, the SELL at the target), then <code>end_of_data</code> (<a href="system_map.html#golden-sample-frozen">System map golden sample</a>).</td></tr>
 <tr><th>Parameter cases</th><td>message type ∈ {<code>bar_update</code>} × resolution ∈ {1 s}</td></tr>
-<tr><th>Passes when</th><td>The slot is seeded before the first replay bar; the strategy gets all 23,400 bars in sequence, with no duplicate or missing timestamp; the Resampler is never called; the <code>ReplayClock</code> equals each bar's end time when the bar is dispatched; the strategy gets both fills; no ERROR line is logged; and the loop ends with no unhandled exception.</td></tr>
+<tr><th>Passes when</th><td>The slot is seeded before the first replay bar; the strategy gets all 23,400 bars in sequence, with no duplicate or missing timestamp; the Resampler is never called; the watch time equals each bar's end time when the bar is dispatched; the strategy gets both fills; no ERROR line is logged; and the loop ends with no unhandled exception.</td></tr>
 <tr><th>Fails when</th><td>A bar is out of order, skipped or repeated; an order update is dropped; an exception in one strategy stops bars reaching the others; or the loop keeps running after <code>end_of_data</code>.</td></tr>
 </tbody></table></div></details>
 
 <h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
-<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/event_loop/test_event_loop_scenarios.py</code>. A Gateway stub plays scripted messages and records what the Event Loop asks of it; recording strategies stand in for Strategy slots and record every bar and update they get; an Aux Data stub adds nothing to bars; a controlled clock (a <code>ReplayClock</code> or a fake wall clock) moves time. Times are New York unless stated.</p>
+<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/event_loop/test_event_loop_scenarios.py</code>. A Gateway stub plays scripted messages and records what the Event Loop asks of it; recording strategies stand in for Strategy slots and record every bar and update they get; an Aux Data stub adds nothing to bars; a controlled system-time source moves the watch time. Times are New York unless stated.</p>
 <details><summary>S1. Ticks become 1-second bars<span class="count">features 1, 2</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_ticks_to_bars</code></td></tr>
 <tr><th>Given</th><td>The Gateway stub declares <code>tick_update</code> for MES; one recording strategy on MES.</td></tr>
@@ -561,21 +577,21 @@
 <tr><th>Passes when</th><td>The strategy gets exactly two bars, in order: 09:30:00 with O 5000.00, H 5001.00, L 4999.00, C 4999.00, V 4 (closed by the rollover), and 09:30:01 with O = H = L = C = 5000.50, V 3 (closed by <code>end_of_data</code>). The tick at 09:30:00.7 is rejected and changes no bar.</td></tr>
 <tr><th>Fails when</th><td>A wrong OHLCV value; the late tick changes a bar; a bar is missing or repeated.</td></tr>
 </tbody></table></div></details>
-<details><summary>S2. A quiet market closes the bar by the clock<span class="count">features 1, 4, 13</span></summary><div class="table-wrap"><table><tbody>
+<details><summary>S2. A quiet market closes the bar by the watch time<span class="count">features 1, 4, 13</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_quiet_market_flush</code></td></tr>
 <tr><th>Given</th><td>The Gateway stub declares <code>tick_update</code> for MES.</td></tr>
-<tr><th>When</th><td>Send one tick at 09:30:00.2 (5000.00, 1); send nothing more; move the clock forward.</td></tr>
+<tr><th>When</th><td>Send one tick at 09:30:00.2 (5000.00, 1); send nothing more; move system time forward.</td></tr>
 <tr><th>Parameter cases</th><td>flush grace ∈ {1.0 s}; wait timeout ∈ {20 ms}</td></tr>
-<tr><th>Passes when</th><td>The bar 09:30:00 (C 5000.00, V 1) reaches the strategy once, at a clock time ≥ 09:30:02.0 (bucket end + flush grace) and ≤ 09:30:02.0 + the wait timeout.</td></tr>
+<tr><th>Passes when</th><td>The bar 09:30:00 (C 5000.00, V 1) reaches the strategy once, at a watch time ≥ 09:30:02.0 (bucket end + flush grace) and ≤ 09:30:02.0 + the wait timeout.</td></tr>
 <tr><th>Fails when</th><td>The bar never closes; the bar closes before bucket end + grace; the bar arrives twice.</td></tr>
 </tbody></table></div></details>
 <details><summary>S3. Bar updates are taken as bars<span class="count">features 1, 2, 13</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_bar_updates</code></td></tr>
-<tr><th>Given</th><td>The Gateway stub declares <code>bar_update</code> at 1 s for MES; a <code>ReplayClock</code>.</td></tr>
+<tr><th>Given</th><td>The Gateway stub declares <code>bar_update</code> at 1 s for MES.</td></tr>
 <tr><th>When</th><td>Send <code>bar_update</code> for 09:30:00 to 09:30:09, then a second 09:30:05 and a 09:30:03, then <code>end_of_data</code>.</td></tr>
 <tr><th>Parameter cases</th><td>message type ∈ {<code>bar_update</code>} × resolution ∈ {1 s}</td></tr>
-<tr><th>Passes when</th><td>The strategy gets the 10 bars 09:30:00 to 09:30:09 once each, in order; the repeated and the older bar are rejected; the Resampler is never called; at each dispatch the <code>ReplayClock</code> equals the bar's end time; the loop stops after <code>end_of_data</code>.</td></tr>
-<tr><th>Fails when</th><td>A bar out of order, missing or repeated; the Resampler is called; the clock differs from the bar end time; the loop runs on after <code>end_of_data</code>.</td></tr>
+<tr><th>Passes when</th><td>The strategy gets the 10 bars 09:30:00 to 09:30:09 once each, in order; the repeated and the older bar are rejected; the Resampler is never called; at each dispatch the watch time equals the bar's end time; the loop stops after <code>end_of_data</code>.</td></tr>
+<tr><th>Fails when</th><td>A bar out of order, missing or repeated; the Resampler is called; the watch time differs from the bar end time; the loop runs on after <code>end_of_data</code>.</td></tr>
 </tbody></table></div></details>
 <details><summary>S4. A fill jumps a burst of ticks<span class="count">features 4</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_fill_jumps_tick_burst</code></td></tr>
@@ -612,7 +628,7 @@
 <details><summary>S8. Session end flattens the book<span class="count">features 8</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_session_end_flatten</code></td></tr>
 <tr><th>Given</th><td>One strategy on MES (NY_RTH) and one on FDAX, each in position; each recording strategy becomes flat only on its third flatten request (case normal); one never becomes flat (case timeout).</td></tr>
-<tr><th>When</th><td>Run the clock across each session's cutoff, with one bar per second.</td></tr>
+<tr><th>When</th><td>Run the watch time across each session's cutoff, with one bar per second.</td></tr>
 <tr><th>Parameter cases</th><td>exchange ∈ {CME, Eurex} × day ∈ {normal, early close} × case ∈ {flat on third request, never flat}; cutoff offset ∈ {1 min}; flatten timeout ∈ {10 s}</td></tr>
 <tr><th>Passes when</th><td>Each strategy gets its first flatten request at its session end less 1 min on its own clock (CME: 15:59:00 New York; Eurex: on the Frankfurt clock; early close: the early close less 1 min), then one request per bar until flat; a flattening strategy gets no bars. Never-flat case: requests stop 10 s after the first.</td></tr>
 <tr><th>Fails when</th><td>A flatten at the wrong clock time or at a session open; a flattening strategy gets a bar; requests go on after the strategy is flat or after the timeout.</td></tr>
@@ -644,8 +660,8 @@
 <details><summary>S12. Replay and live give the same dispatch<span class="count">features 13</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_replay_equals_live</code></td></tr>
 <tr><th>Given</th><td>One scripted session of 60 ticks and 2 order updates.</td></tr>
-<tr><th>When</th><td>Run it once with a <code>ReplayClock</code> and once with a fake wall clock.</td></tr>
-<tr><th>Parameter cases</th><td>clock ∈ {ReplayClock, fake wall clock}</td></tr>
+<tr><th>When</th><td>Run it once behind the simulated broker and once behind a fake live gateway that stamps the same event times.</td></tr>
+<tr><th>Parameter cases</th><td>gateway ∈ {simulated broker, fake live gateway}</td></tr>
 <tr><th>Passes when</th><td>The recording strategy gets the same sequence of bars and updates, with the same values, in both runs.</td></tr>
 <tr><th>Fails when</th><td>The two sequences differ in any event, value or order.</td></tr>
 </tbody></table></div></details>
@@ -658,28 +674,32 @@
 <tr><th>Fails when</th><td>p99 over 5 ms; a missing per-minute line.</td></tr>
 </tbody></table></div></details>
 
-<details><summary>1. Bars from ticks or from bar updates<span class="count">5 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>1. Bars from ticks or from bar updates<span class="count">6 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_bar_ohlcv_matches_ticks_in_bucket</code></td><td>resolution ∈ {1 s}</td><td>OHLC and volume vs. a hand count, over ticks spanning 3 buckets</td><td>exact match</td></tr>
 <tr><td><code>test_out_of_order_tick_rejected</code></td><td>resolution ∈ {1 s}</td><td>bar after a tick with ts &lt; last ts</td><td>unchanged by that tick</td></tr>
 <tr><td><code>test_late_tick_for_emitted_bucket_ignored</code></td><td>resolution ∈ {1 s}</td><td>bars emitted for that bucket</td><td>exactly 1</td></tr>
-<tr><td><code>test_quiet_bucket_flushed_after_grace</code></td><td>resolution ∈ {1 s} × grace ∈ {1.0 s}</td><td>replay-clock time from bucket end to bar emitted; close price</td><td>≤ grace; close = last price</td></tr>
+<tr><td><code>test_quiet_bucket_flushed_after_grace</code></td><td>resolution ∈ {1 s} × grace ∈ {1.0 s}</td><td>watch time from bucket end to bar emitted; close price</td><td>≤ grace; close = last price</td></tr>
 <tr><td><code>test_end_of_data_flushes_open_bucket</code></td><td>resolution ∈ {1 s}</td><td>bars emitted for the open bucket</td><td>exactly 1</td></tr>
+<tr><td><code>test_bar_update_feed_bypasses_resampler</code></td><td>—</td><td><code>harness.book.resamplers; strategy.bars</code></td><td><code>= {}; = [OPEN]</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>2. Bars delivered in time order, exactly once<span class="count">4 tests · 7 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>2. Bars delivered in time order, exactly once<span class="count">5 tests · 8 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_bars_in_order_exactly_once</code></td><td>strategies per instrument ∈ {1, 15}</td><td>each strategy's bar timestamps</td><td>strictly increasing, no gap, no repeat</td></tr>
 <tr><td><code>test_aux_then_strategies</code></td><td>—</td><td>call order on one bar</td><td>Aux Data, strategies; the Gateway is not called</td></tr>
 <tr><td><code>test_final_drain_uses_same_handlers</code></td><td>—</td><td>handler per event type after stop</td><td>same as main drain</td></tr>
 <tr><td><code>test_every_bar_close_passes_one_function</code></td><td>close cause ∈ {rollover, flush, end of data, <code>bar_update</code>}</td><td>bars made outside that function</td><td>0</td></tr>
 <tr><td><code>test_bar_update_feed_bypasses_resampler_and_finer_resolution_refused</code></td><td>slot resolution ∈ {1 s on a 1 s feed, finer than the feed}</td><td>Resampler calls; startup result</td><td>0, starts; refused, names the slot</td></tr>
+<tr><td><code>test_unknown_event_type_is_logged_and_skipped</code></td><td>—</td><td><code>any((getattr(r, &#x27;event_type&#x27;, None) == &#x27;mystery&#x27; for r in caplog.records))</code></td><td><code>true</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>3. Order and balance updates reach every strategy<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>3. Order and balance updates reach every strategy<span class="count">4 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_order_update_reaches_every_strategy</code></td><td>strategy state ∈ {in session, flattening, session ended}</td><td>strategies that received the update</td><td>all</td></tr>
 <tr><td><code>test_round_trip_close_flushes_trade_recorder</code></td><td>—</td><td>recorder flushes per closed round trip</td><td>exactly 1</td></tr>
+<tr><td><code>test_position_update_and_repaired_fill_reach_every_strategy</code></td><td>—</td><td><code>strategy.events == [(&#x27;order&#x27;, 9, &#x27;FILLED&#x27;), (&#x27;position&#x27;, 2)] or sorted(strategy.events) =…</code></td><td><code>true</code></td></tr>
+<tr><td><code>test_repair_event_reaches_only_its_strategy</code></td><td>—</td><td><code>owner.events; other.events</code></td><td><code>= [(&#x27;order&#x27;, 42, &#x27;FILLED&#x27;)]; = []</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>4. Fills never wait behind ticks<span class="count">7 tests · 8 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>4. Fills never wait behind ticks<span class="count">13 tests · 15 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_control_lane_drained_before_data_lane</code></td><td>ticks queued ahead ∈ {0, 2000}</td><td>dispatch position of a fill pushed after the ticks</td><td>first</td></tr>
 <tr><td><code>test_idle_only_after_every_popped_event_is_handled</code></td><td>—</td><td>idle state after push, after the last pop, after the empty pop</td><td>clear; clear; set</td></tr>
 <tr><td><code>test_burst_sends_one_wakeup_while_loop_awake</code></td><td>burst size ∈ {1000}</td><td>wake-up calls during one drain</td><td>1</td></tr>
@@ -687,65 +707,134 @@
 <tr><td><code>test_drain_pass_yields_after_batch_budget</code></td><td>budget ∈ {2 ms}</td><td>pass length; wake-ups for leftovers</td><td>≤ budget + one event; 0</td></tr>
 <tr><td><code>test_drain_starts_on_wake_without_timer</code></td><td>—</td><td>time from push to drain start</td><td>&lt; wait timeout</td></tr>
 <tr><td><code>test_backlog_over_threshold_raises_error_drops_nothing</code></td><td>threshold ∈ {5000} × lane ∈ {control, data}</td><td>ERROR raised; events dispatched</td><td>control: at threshold + 1, data: never; all</td></tr>
+<tr><td><code>test_each_lane_drains_in_arrival_order_and_nothing_is_dropped</code></td><td>—</td><td><code>[e[&#x27;data&#x27;][&#x27;broker_ts&#x27;] for e in events if e[&#x27;event_type&#x27;] == &#x27;tick_update&#x27;]; len(events)</code></td><td><code>= [100.0 + i for i in range(50)]; = 100</code></td></tr>
+<tr><td><code>test_end_of_data_waits_for_the_data_lane</code></td><td>—</td><td><code>[e[&#x27;event_type&#x27;] for e in drain_all(buffer)]</code></td><td><code>= [&#x27;tick_update&#x27;, &#x27;end_of_data&#x27;]</code></td></tr>
+<tr><td><code>test_fill_behind_a_held_end_of_data_still_jumps_the_data_lane</code></td><td>—</td><td><code>[e[&#x27;event_type&#x27;] for e in events][0]; [e[&#x27;event_type&#x27;] for e in events][-1]</code></td><td><code>= &#x27;order_update&#x27;; = &#x27;end_of_data&#x27;</code></td></tr>
+<tr><td><code>test_no_error_when_control_lane_is_at_threshold</code></td><td>—</td><td><code>buffer.control_backlog_exceeded(); buffer.control_backlog_exceeded()</code></td><td><code>is False; is True</code></td></tr>
+<tr><td><code>test_reader_thread_wakes_loop_through_thread_safe_call</code></td><td>2 cases</td><td><code>seen_threads; len(buffer.of_type(&#x27;tick_update&#x27;))</code></td><td><code>= [&#x27;reader&#x27;]; = 1</code></td></tr>
+<tr><td><code>test_safety_checked_in_every_pass</code></td><td>—</td><td><code>harness.safety.check_ins</code></td><td><code>≥ 1</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>5. Latency is measured against the budget<span class="count">3 tests · 7 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>5. Latency is measured against the budget<span class="count">8 tests · 12 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_processing_and_feed_latency_logged_per_message</code></td><td>message ∈ {<code>tick_update</code> closing a bar, <code>bar_update</code>, flushed bar, order update}</td><td>fields per record</td><td>processing latency (to each strategy's decision, also with no order), queue wait, dispatch latency, slot cost; feed latency with its precision (none for a flushed bar)</td></tr>
 <tr><td><code>test_slot_cost_sum_and_decode_time_logged_per_instrument</code></td><td>instruments ∈ {1, 3}</td><td>records per minute</td><td>p50 and p99 for each instrument</td></tr>
 <tr><td><code>test_rebuild_replay_yields_within_budget</code></td><td>yield budget ∈ {1 ms}</td><td>longest blocking slice during a rebuild</td><td>≤ yield budget</td></tr>
+<tr><td><code>test_maybe_flush_runs_once_a_minute</code></td><td>—</td><td><code>len(latency_rows(caplog))</code></td><td><code>= 1</code></td></tr>
+<tr><td><code>test_metrics_reset_after_a_flush</code></td><td>—</td><td><code>latency_rows(caplog)</code></td><td><code>= []</code></td></tr>
+<tr><td><code>test_percentiles_per_instrument_per_minute_are_logged</code></td><td>—</td><td><code>{&#x27;feed_p50&#x27;, &#x27;feed_p99&#x27;, &#x27;proc_p50&#x27;, &#x27;proc_p99&#x27;, &#x27;queue_wait_p99&#x27;, &#x27;dispatch_p99&#x27;, &#x27;slot_…</code></td><td><code>≤ set(row); = pytest.approx(0.05, abs=0.002); ≤ 0.0101</code></td></tr>
+<tr><td><code>test_sample_memory_and_flush_cost_stay_bounded_under_a_tick_flood</code></td><td>—</td><td><code>time_module.perf_counter() - started; row[&#x27;feed_p50&#x27;]; row[&#x27;feed_p99&#x27;]</code></td><td><code>&lt; 0.005; = pytest.approx(0.05, abs=0.01); = pytest.approx(0.099, abs=0.005)</code></td></tr>
+<tr><td><code>test_timestamp_precision_follows_the_broker_timestamps</code></td><td>—</td><td><code>metrics.precision(MES); metrics.precision(MES)</code></td><td><code>= 1.0; = 0.001</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>6. One broken strategy never stops the others<span class="count">2 tests · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>6. One broken strategy never stops the others<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_strategy_quarantined_at_threshold_others_continue</code></td><td>threshold ∈ {3}</td><td>errors before ERROR; bars reaching the others</td><td>exactly threshold; all</td></tr>
 <tr><td><code>test_fan_out_logs_and_counts_each_strategy_exception</code></td><td>failing strategies ∈ {1, all}</td><td>log lines and error counts</td><td>one per exception</td></tr>
+<tr><td><code>test_success_resets_the_consecutive_error_count</code></td><td>—</td><td><code>flaky.quarantined; len(flaky.bars)</code></td><td><code>false; = 3</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>7. Strategies are seeded before they trade<span class="count">5 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>7. Strategies are seeded before they trade<span class="count">12 tests · 13 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_one_seed_fetch_shared_between_slots</code></td><td>slots per key ∈ {1, 5}</td><td>broker fetches</td><td>1 per key</td></tr>
 <tr><td><code>test_failed_seed_quarantines_only_that_slot</code></td><td>—</td><td>other slots' seed state</td><td><code>READY</code></td></tr>
 <tr><td><code>test_startup_and_retry_run_the_same_attempt</code></td><td>—</td><td>function run at start and on retry</td><td>the same</td></tr>
 <tr><td><code>test_retry_backoff_jittered_and_capped</code></td><td>(base, max, jitter) ∈ {(5 s, 300 s, 0.2)}</td><td>retry delays</td><td>≥ base and ≤ max</td></tr>
 <tr><td><code>test_terminal_quarantine_never_overwritten_by_retry</code></td><td>—</td><td>state after a late retry lands</td><td><code>QUARANTINED_TERMINAL</code></td></tr>
+<tr><td><code>test_cache_serves_a_later_attempt_within_ttl_only_for_non_empty_results</code></td><td>—</td><td><code>gateway.daily_calls</code></td><td><code>= 1</code></td></tr>
+<tr><td><code>test_empty_needed_history_is_not_ready</code></td><td>—</td><td><code>seeder.state_of(&#x27;a&#x27;)</code></td><td><code>is SeedState.QUARANTINED_RECOVERABLE</code></td></tr>
+<tr><td><code>test_fatal_seed_failure_is_terminal</code></td><td>—</td><td><code>seeder.state_of(&#x27;a&#x27;)</code></td><td><code>is SeedState.QUARANTINED_TERMINAL</code></td></tr>
+<tr><td><code>test_history_handed_over_in_fixed_order_then_recorded_bars_replayed</code></td><td>—</td><td><code>order; strategy.histories[0][&#x27;daily&#x27;]; len(strategy.histories[0][&#x27;intraday&#x27;])</code></td><td><code>= [&#x27;warmup&#x27;, &#x27;replay3&#x27;, &#x27;replay1&#x27;, &#x27;ready&#x27;]; true; = 3</code></td></tr>
+<tr><td><code>test_shared_fetch_does_not_keep_empty_results</code></td><td>—</td><td><code>len(calls)</code></td><td><code>= 2</code></td></tr>
+<tr><td><code>test_slot_without_history_needs_still_gets_ready</code></td><td>—</td><td><code>seeder.state_of(&#x27;a&#x27;); gateway.daily_calls</code></td><td><code>is SeedState.READY; = 0</code></td></tr>
+<tr><td><code>test_two_attempts_never_seed_one_slot_at_once</code></td><td>—</td><td><code>len(strategy.histories)</code></td><td><code>= 1</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>8. Session end and shutdown leave the book flat<span class="count">8 tests · 15 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>8. Session end and shutdown leave the book flat<span class="count">12 tests · 19 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_cutoff_on_session_clock</code></td><td>exchange ∈ {CME, Eurex} × session ∈ {day, overnight}</td><td>time of first flatten request</td><td>session end − cutoff offset (1 min), on the session's clock</td></tr>
 <tr><td><code>test_early_close_cutoff_from_exchange_profile</code></td><td>—</td><td>time of first flatten request</td><td>early close − cutoff offset</td></tr>
 <tr><td><code>test_flatten_repeats_until_flat_signal_or_timeout</code></td><td>outcome ∈ {flat, signal, timeout}</td><td>when repeating stops</td><td>at flat; at signal; ≤ flatten timeout (10 s)</td></tr>
 <tr><td><code>test_run_exits_at_the_first_run_end_after_start</code></td><td>start ∈ {18:00, 10:00} New York</td><td>run end</td><td>17:00 New York on the next day; 17:00 New York on the same day</td></tr>
 <tr><td><code>test_process_due_does_not_recompute_session_windows_on_every_call</code></td><td>15 strategies × 500 loop passes</td><td>session window computations</td><td>≤ 3 per strategy</td></tr>
-<tr><td><code>test_loop_exits_by_itself_at_run_end</code></td><td>overnight strategy, clock runs past 17:00 New York, no signal, no <code>end_of_data</code></td><td>shutdown requested; loop ended</td><td>yes; yes</td></tr>
+<tr><td><code>test_loop_exits_by_itself_at_run_end</code></td><td>overnight strategy, watch time runs past 17:00 New York, no signal, no <code>end_of_data</code></td><td>shutdown requested; loop ended</td><td>yes; yes</td></tr>
 <tr><td><code>test_unreadable_open_orders_block_force_flatten</code></td><td>—</td><td>market orders sent at exit</td><td>0</td></tr>
 <tr><td><code>test_end_of_data_leaves_no_queued_event</code></td><td>—</td><td>events left; files left open</td><td>0; 0</td></tr>
+<tr><td><code>test_is_flat_reads_the_gateway_positions_of_configured_instruments</code></td><td>—</td><td><code>await rig.shutdown.is_flat(); await rig.shutdown.is_flat()</code></td><td><code>is False; is True</code></td></tr>
+<tr><td><code>test_leftover_position_with_working_order_is_flagged_not_forced</code></td><td>—</td><td><code>gateway.placed; rig.shutdown.not_flat_at_shutdown</code></td><td><code>= []; is True</code></td></tr>
+<tr><td><code>test_os_signal_event_requests_shutdown</code></td><td>—</td><td><code>harness.shutdown.shutdown_requested</code></td><td><code>true</code></td></tr>
+<tr><td><code>test_overnight_session_cutoff_on_its_own_clock</code></td><td>—</td><td><code>cutoff &lt;= strategy.request_times[0] &lt;= cutoff + 1.0</code></td><td><code>true</code></td></tr>
 </tbody></table></div></details>
 
 <details><summary>9. Stuck orders: moved to Safety<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_event_loop_never_calls_safety_repair</code></td><td>—</td><td>calls from Event Loop code to Safety's repair or to the Gateway's executions query</td><td>0</td></tr>
 </tbody></table></div></details>
 
-<details><summary>10. Bars and trades are recorded<span class="count">3 tests · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>10. Bars and trades are recorded<span class="count">10 tests · 11 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_overnight_session_bars_not_split_at_midnight</code></td><td>—</td><td>files per overnight session</td><td>1</td></tr>
 <tr><td><code>test_round_trip_weighted_average_for_multi_fill_leg</code></td><td>—</td><td>leg price</td><td>size-weighted mean, exact</td></tr>
 <tr><td><code>test_recorded_bar_durable_before_finalize</code></td><td>—</td><td>bars on disk after a crash before finalize</td><td>every bar emitted before the crash</td></tr>
+<tr><td><code>test_bars_are_recorded</code></td><td>—</td><td><code>harness.bar_recorder.bars</code></td><td><code>= [OPEN, OPEN + 1]</code></td></tr>
+<tr><td><code>test_next_overnight_session_gets_its_own_file</code></td><td>—</td><td><code>len(files(tmp_path))</code></td><td><code>= 2</code></td></tr>
+<tr><td><code>test_open_position_is_not_written_until_closed</code></td><td>—</td><td><code>list((tmp_path / &#x27;trades&#x27;).glob(&#x27;*.jsonl&#x27;))</code></td><td><code>= []</code></td></tr>
+<tr><td><code>test_recorded_bars_load_back_for_a_mid_session_start</code></td><td>—</td><td><code>[b[&#x27;close&#x27;] for b in loaded]; loaded[0][&#x27;instrument&#x27;]; load_recorded_bars(tmp_path / &#x27;mis…</code></td><td><code>= [100.0 + i for i in range(5)]; = MES; = []</code></td></tr>
+<tr><td><code>test_scenario_recording_bars</code></td><td>2 cases</td><td><code>len(files(tmp_path)); len(rows); rows[0][&#x27;instrument&#x27;]; rows[0][&#x27;close&#x27;]</code></td><td><code>= 1; = 180; = &#x27;MES&#x27;; = 100.0</code></td></tr>
+<tr><td><code>test_scenario_recording_round_trip_row_has_prices_and_currency</code></td><td>—</td><td><code>(row[&#x27;strategy&#x27;], row[&#x27;currency&#x27;], row[&#x27;entry_price&#x27;], row[&#x27;exit_price&#x27;], row[&#x27;qty&#x27;])</code></td><td><code>= (&#x27;slot&#x27;, &#x27;USD&#x27;, 5001.0, 5011.0, 1)</code></td></tr>
+<tr><td><code>test_unowned_updates_are_ignored</code></td><td>—</td><td><code>recorder.pending</code></td><td><code>= []</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>11. One runtime book, changed only between events<span class="count">4 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>11. One runtime book, changed only between events<span class="count">12 tests · 12 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_book_op_runs_between_events_and_resolves_its_future</code></td><td>—</td><td>events interleaved with the operation; future result</td><td>0; resolved</td></tr>
 <tr><td><code>test_duplicate_key_commit_leaves_book_unchanged</code></td><td>—</td><td>book contents after the raise</td><td>unchanged</td></tr>
 <tr><td><code>test_dispatch_sees_one_strategy_list</code></td><td>—</td><td>strategies called by a fan-out during which a commit is queued</td><td>the list from the fan-out's start</td></tr>
 <tr><td><code>test_day_strategy_added_in_evening_not_due_that_evening</code></td><td>—</td><td>first flatten request</td><td>at the next day-session cutoff</td></tr>
+<tr><td><code>test_admit_on_tick_feed_creates_a_resampler_and_subscribes_once</code></td><td>—</td><td><code>gateway.subscribed; len(book.strategies); MES</code></td><td><code>= [MES]; = 2; in book.sessions_by_instrument</code></td></tr>
+<tr><td><code>test_admit_subscribes_only_new_signal_instruments_and_reserves_execution_instrument</code></td><td>—</td><td><code>gateway.subscribed; NQ; NQ</code></td><td><code>= [MES]; in book.contracts; not in book.fed_instruments</code></td></tr>
+<tr><td><code>test_admit_with_a_fetch_miss_still_commits_and_retries</code></td><td>—</td><td><code>book.strategies; &#x27;slot&#x27;; book.retry_tasks[&#x27;slot&#x27;]</code></td><td><code>= [strategy]; in book.retry_tasks; true</code></td></tr>
+<tr><td><code>test_commit_records_session_maps</code></td><td>—</td><td><code>book.sessions_by_strategy[&#x27;a&#x27;]; book.sessions_by_execution_instrument[NQ]; book.strategie…</code></td><td><code>= &#x27;NY_RTH&#x27;; = &#x27;NY_RTH&#x27;; = book.strategies; = []</code></td></tr>
+<tr><td><code>test_commit_sends_a_member_event_to_each_listener</code></td><td>—</td><td><code>joined</code></td><td><code>= [&#x27;a&#x27;]</code></td></tr>
+<tr><td><code>test_failed_admit_releases_only_what_it_reserved</code></td><td>—</td><td><code>MES; NQ; len(book.strategies)</code></td><td><code>in book.contracts; not in book.contracts; = 1</code></td></tr>
+<tr><td><code>test_release_only_when_no_strategy_uses_the_instrument</code></td><td>—</td><td><code>MES; ES; ES</code></td><td><code>in book.contracts; not in book.contracts; not in book.fed_instruments</code></td></tr>
+<tr><td><code>test_reserve_is_idempotent_and_keeps_the_existing_partition</code></td><td>—</td><td><code>book.reserve_instrument(MES, {&#x27;c&#x27;: 2}, fed=True); list(book.bars[MES]); book.contracts[ME…</code></td><td><code>is False; = [{&#x27;start_ts&#x27;: 1}]; = {&#x27;c&#x27;: 1}</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>12. Add a strategy while running<span class="count">4 tests · 16 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>12. Add a strategy while running<span class="count">17 tests · 35 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_each_refusal_reason_touches_nothing</code></td><td>reason ∈ the 10 pre-flight refusals</td><td>book and subscriptions after the reply</td><td>unchanged</td></tr>
 <tr><td><code>test_failed_candidate_releases_only_its_own_instruments</code></td><td>—</td><td>instruments released</td><td>only those no running strategy uses</td></tr>
 <tr><td><code>test_overnight_deploy_needs_the_session_to_close_before_run_exit</code></td><td>deploy at 18:00 New York of an RTH strategy × run end ∈ {17:00, 15:00} New York next day</td><td>reply</td><td><code>registered</code>; <code>rejected</code> with <code>after_process_exit</code></td></tr>
 <tr><td><code>test_busy_noop_shutting_down_replies</code></td><td>case ∈ {request in flight, same revision, after shutdown}</td><td>reply</td><td><code>busy</code>; <code>noop</code> with the original ID; <code>shutting_down</code></td></tr>
+<tr><td><code>test_a_fetch_miss_while_preparing_is_not_a_failure</code></td><td>—</td><td><code>lines[-1][&#x27;status&#x27;]</code></td><td><code>= &#x27;registered&#x27;</code></td></tr>
+<tr><td><code>test_client_exit_code_follows_the_terminal_status</code></td><td>4 cases</td><td><code>await serve_deploy(folder, lines_for, lambda: send_deploy_request(folder / &#x27;deploy.sock&#x27;,…</code></td><td><code>= code</code></td></tr>
+<tr><td><code>test_client_without_a_server_exits_with_failure</code></td><td>—</td><td><code>await send_deploy_request(tmp_path / &#x27;missing.sock&#x27;, &#x27;b&#x27;, &#x27;abc&#x27;)</code></td><td><code>= 1</code></td></tr>
+<tr><td><code>test_commit_refused_when_shutdown_begins_during_preparation</code></td><td>—</td><td><code>lines[-1][&#x27;status&#x27;]; [s.name for s in rig.book.strategies]</code></td><td><code>= &#x27;shutting_down&#x27;; = [&#x27;a&#x27;]</code></td></tr>
+<tr><td><code>test_deploy_request_event_goes_to_the_deploy_service</code></td><td>—</td><td><code>harness.deploy.requests</code></td><td><code>= [request]</code></td></tr>
+<tr><td><code>test_every_deploy_status_line_is_a_deploy_result_command</code></td><td>—</td><td><code>[(data[&#x27;request_id&#x27;], data[&#x27;line&#x27;][&#x27;status&#x27;], data[&#x27;final&#x27;]) for data in results]</code></td><td><code>= [(9, DeployStatus.PREPARING, False), (9, DeployStatus.REGISTERED, True)]</code></td></tr>
+<tr><td><code>test_exposure_managed_by_a_running_strategy_on_the_same_account_is_allowed</code></td><td>—</td><td><code>statuses(await rig.deploy(&#x27;b&#x27;))[-1]</code></td><td><code>= (&#x27;registered&#x27;, None)</code></td></tr>
+<tr><td><code>test_scenario_deploy_strategy_busy</code></td><td>—</td><td><code>statuses(second); statuses(first_lines)[-1]</code></td><td><code>= [(&#x27;busy&#x27;, None)]; = (&#x27;registered&#x27;, None)</code></td></tr>
+<tr><td><code>test_scenario_deploy_strategy_refusals</code></td><td>4 cases</td><td><code>statuses(lines); rig.snapshot()</code></td><td><code>= [(&#x27;rejected&#x27;, reason)]; = before</code></td></tr>
+<tr><td><code>test_scenario_deploy_strategy_registered_then_noop</code></td><td>—</td><td><code>rig.gateway.subscribed.count(MES); rig.gateway.subscribed.count(ES); statuses(again); aga…</code></td><td><code>= 1; = 1; = [(&#x27;noop&#x27;, None)]; = rig.service.file_sha()</code></td></tr>
+<tr><td><code>test_socket_permissions</code></td><td>—</td><td><code>stat.S_IMODE(os.stat(folder).st_mode); stat.S_IMODE(os.stat(folder / &#x27;deploy.sock&#x27;).st_mo…</code></td><td><code>= 448; = 384</code></td></tr>
+<tr><td><code>test_socket_round_trip_streams_status_lines</code></td><td>—</td><td><code>code; [o[&#x27;status&#x27;] for o in out]</code></td><td><code>= 0; = [&#x27;preparing&#x27;, &#x27;registered&#x27;]</code></td></tr>
+<tr><td><code>test_unreadable_broker_refuses_with_unmanaged_exposure</code></td><td>—</td><td><code>statuses(await rig.deploy(&#x27;b&#x27;))</code></td><td><code>= [(&#x27;rejected&#x27;, &#x27;unmanaged_exposure&#x27;)]</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>13. Replay and live run the same code<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_replay_clock_drives_flatten_and_flush</code></td><td>—</td><td>flush and flatten times under the replay clock</td><td>equal to the replay times, not wall time</td></tr>
+<details><summary>13. Replay and live run the same code<span class="count">9 tests · 9 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_watch_time_drives_flatten_and_flush</code></td><td>—</td><td>flush and flatten times in replay</td><td>equal to the watch time from the tape, not wall time</td></tr>
+<tr><td><code>test_flatten_starts_with_no_bars</code></td><td>no bar after 15:58:30 New York</td><td>flatten requests at the cutoff</td><td>1, when the watch time reaches 15:59:00</td></tr>
+<tr><td><code>test_tap_never_changes_consumer_order</code></td><td>taps ∈ {0, 2}</td><td>events the consumer receives, in order</td><td>identical</td></tr>
 <tr><td><code>test_no_run_mode_read_in_event_loop</code></td><td>—</td><td>reads of the run mode in Event Loop code</td><td>0</td></tr>
+<tr><td><code>test_golden_bar_updates_fills_and_end_of_data</code></td><td>—</td><td><code>[r for r in caplog.records if r.levelno &gt;= logging.ERROR]; len(buffer); loop.end_of_data_…</code></td><td><code>false; = 0; true</code></td></tr>
+<tr><td><code>test_moment_is_the_watch_time_as_utc_datetime</code></td><td>—</td><td><code>watch.moment()</code></td><td><code>= datetime.fromtimestamp(1002.0, timezone.utc)</code></td></tr>
+<tr><td><code>test_new_event_resets_the_watch_to_its_event_time</code></td><td>—</td><td><code>watch.now(system_now=51.0)</code></td><td><code>= 1010.0</code></td></tr>
+<tr><td><code>test_older_event_never_moves_the_watch_back</code></td><td>—</td><td><code>watch.now(system_now=51.0)</code></td><td><code>= 1011.0</code></td></tr>
+<tr><td><code>test_ready_waits_for_the_first_event</code></td><td>—</td><td><code>waiter.done()</code></td><td><code>false</code></td></tr>
+<tr><td><code>test_watch_time_is_last_event_time_plus_system_time_since_arrival</code></td><td>—</td><td><code>watch.now(system_now=52.5)</code></td><td><code>= 1002.5</code></td></tr>
+<tr><td><code>test_watch_time_is_none_before_the_first_event</code></td><td>—</td><td><code>WatchTime().now(system_now=10.0)</code></td><td><code>is None</code></td></tr>
+</tbody></table></div></details>
+
+<details><summary>14. One inbound and one outbound buffer, each with taps<span class="count">6 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_connection_restored_raises_the_order_id_floor</code></td><td>—</td><td><code>harness.requests.next_order_id()</code></td><td><code>= 500</code></td></tr>
+<tr><td><code>test_consumer_gets_commands_in_push_order</code></td><td>—</td><td><code>taken</code></td><td><code>= pushed</code></td></tr>
+<tr><td><code>test_every_tap_sees_every_pushed_event_in_push_order</code></td><td>—</td><td><code>list(first); list(second)</code></td><td><code>= pushed + [front]; = pushed + [front]</code></td></tr>
+<tr><td><code>test_get_waits_for_a_push_from_another_thread</code></td><td>—</td><td><code>taken[&#x27;correlation_id&#x27;]</code></td><td><code>= 9</code></td></tr>
+<tr><td><code>test_idle_only_after_consumer_ran_every_command_it_took</code></td><td>—</td><td><code>buffer.idle.is_set(); buffer.idle.is_set()</code></td><td><code>false; true</code></td></tr>
+<tr><td><code>test_reply_event_resolves_the_waiting_request</code></td><td>—</td><td><code>await waiting</code></td><td><code>= [{&#x27;size&#x27;: 0}]</code></td></tr>
 </tbody></table></div></details>
 </section>
 
@@ -756,7 +845,7 @@
 <p>All decided on 2026-11-09.</p>
 <ol>
 <li><strong>Bar resolution (feature 1).</strong> 1 s only in v3. Other resolutions come later, chosen per strategy and built from 1-second bars (<a href="system_map.html#d56">System map decision 56</a>).</li>
-<li><strong>Flush grace (feature 1).</strong> Configurable per process; default 1.0 s; it does not depend on the resolution while only 1 s exists.</li>
+<li><strong>Flush grace (feature 1).</strong> Configurable per process; default 1.0 s; it does not depend on the resolution while only 1 s exists. Measured in watch time; the default stays until a live measurement sets it (decided 2026-11-11, <a href="system_map.html#d72">System map decision 72</a>).</li>
 <li><strong>Buffer numbers (feature 4).</strong> Batch budget 2 ms, wait timeout 20 ms, control-lane backlog threshold 5000 events: configurable per process, with these defaults.</li>
 <li><strong>Latency numbers (feature 5).</strong> Scale trigger 3 ms, GIL switch interval 0.5 ms and rebuild yield budget 1 ms: configurable per process.</li>
 <li><strong>Operational numbers (features 6, 8).</strong> Quarantine threshold 3, cutoff offset 1 min, flatten timeout 10 s: configurable per process, never per strategy (<a href="system_map.html#d58">System map decision 58</a>).</li>
@@ -775,23 +864,24 @@
 <h2>Reference</h2>
 <p>Implementation detail and history. The skeleton and decisions still cite the old behaviour numbers; each feature card lists the behaviours it replaces.</p>
 <h3>Step → code</h3>
-<p>Each box of the algorithm map and the code that carries it.</p>
+<p>Each box of the algorithm map and the code that carries it. The Event Loop is in <code>event_loop/</code>; the request client that turns calls into commands with a correlation id is <code>requests.py</code> · <code>Requests</code>.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Step</th><th>Code</th></tr></thead>
 <tbody>
-<tr><td>Route event to a lane</td><td><code>EventBuffer.push()</code> · Planned</td></tr>
-<tr><td>Drain one pass</td><td><code>EventBuffer.drain_pass()</code> · Planned; <code>event_loop/loop.py</code> · <code>EventLoop.run()</code></td></tr>
-<tr><td>Dispatch by event type</td><td><code>event_loop/loop.py</code> · <code>EventLoop.dispatch()</code>, <code>handles</code>, <code>on_*</code> handlers</td></tr>
+<tr><td>Route event to a lane</td><td><code>event_loop/buffer.py</code> · <code>EventBuffer.push()</code>, <code>lane_for()</code>, <code>push_front()</code></td></tr>
+<tr><td>Drain one pass</td><td><code>event_loop/buffer.py</code> · <code>EventBuffer.begin_pass()</code>, <code>pop()</code>, <code>wait()</code>; <code>event_loop/loop.py</code> · <code>EventLoop.run()</code>, <code>drain_pass()</code></td></tr>
+<tr><td>Dispatch by event type</td><td><code>event_loop/loop.py</code> · <code>EventLoop.dispatch()</code>, <code>handles</code>, <code>on_*</code> handlers; <code>on_reply</code> resolves a request by correlation id</td></tr>
 <tr><td>Bucket ticks by second</td><td><code>event_loop/resampler.py</code> · <code>Resampler</code></td></tr>
-<tr><td>Close the bar</td><td><code>event_loop/loop.py</code> · <code>EventLoop.emit_bar()</code>, <code>fire_due_bars()</code></td></tr>
-<tr><td>Annotate the bar</td><td><code>event_loop/loop.py</code> · <code>on_bar</code>, <code>EventLoop.dispatch_bar()</code></td></tr>
-<tr><td>Fan out to strategies</td><td><code>event_loop/loop.py</code> · <code>EventLoop.fan_out()</code></td></tr>
-<tr><td>Change the book</td><td><code>event_loop/book.py</code> · <code>RuntimeBook</code>, <code>enqueue_book_op()</code></td></tr>
-<tr><td>Seed a strategy</td><td><code>event_loop/seeder.py</code> · <code>Seeder</code>, <code>SharedFetch</code>, <code>Backoff</code>, <code>SeedState</code></td></tr>
-<tr><td>Deploy one strategy</td><td><code>event_loop/deploy.py</code> · <code>DeployService</code></td></tr>
-<tr><td>Flatten at cutoff</td><td><code>event_loop/shutdown.py</code> · <code>ShutdownCoordinator</code></td></tr>
-<tr><td>Record bars, trades</td><td><code>event_loop/recorders.py</code> · <code>BarRecorder</code>, <code>TradeRecorder</code></td></tr>
-<tr><td>[ clock ]</td><td><code>clock.py</code> · <code>Clock</code>, <code>WallClock</code>, <code>ReplayClock</code></td></tr>
+<tr><td>Close the bar</td><td><code>event_loop/loop.py</code> · <code>EventLoop.emit_bar()</code>, <code>fire_due_bars()</code> (reads the watch time)</td></tr>
+<tr><td>Annotate the bar</td><td><code>event_loop/loop.py</code> · <code>EventLoop.dispatch_bar()</code></td></tr>
+<tr><td>Fan out to strategies</td><td><code>event_loop/loop.py</code> · <code>EventLoop.fan_out()</code>; <code>on_order_update</code> gives an event with a strategy key to that strategy only</td></tr>
+<tr><td>Change the book</td><td><code>event_loop/book.py</code> · <code>RuntimeBook.admit()</code>, <code>commit()</code>, <code>release_instrument()</code>; <code>commit()</code> sends a member event to <code>RuntimeBook.member_listeners</code></td></tr>
+<tr><td>Seed a strategy</td><td><code>event_loop/seeder.py</code> · <code>Seeder</code>, <code>SharedFetch</code>, <code>Backoff</code>, <code>SeedState</code>; history requests through <code>Requests.request()</code></td></tr>
+<tr><td>Deploy one strategy</td><td><code>event_loop/deploy.py</code> · <code>DeployService.handle()</code>, <code>deploy()</code>; <code>on_deploy_request</code>; status lines as <code>deploy_result</code> commands; socket adapter <code>deploy_socket.py</code> · <code>DeploySocketServer</code></td></tr>
+<tr><td>Flatten at cutoff</td><td><code>event_loop/shutdown.py</code> · <code>ShutdownCoordinator.process_due()</code>, <code>flatten_on_bar()</code>, <code>finalize()</code> (reads the watch time); <code>on_os_signal</code></td></tr>
+<tr><td>Record bars, trades</td><td><code>event_loop/recorders.py</code> · <code>BarRecorder.record(instrument, bar, session)</code>, <code>TradeRecorder.record_update(update, strategy_key, order)</code></td></tr>
+<tr><td>[ watch time ]</td><td><code>event_loop/watch_time.py</code> · <code>WatchTime.observe()</code>, <code>now()</code>, <code>moment()</code>, <code>ready()</code></td></tr>
+<tr><td>[ two buffers ]</td><td><code>event_loop/buffer.py</code> · <code>EventBuffer</code> (inbound), <code>CommandBuffer</code> (outbound), <code>add_tap()</code></td></tr>
 </tbody></table></div>
 
 <div id="skeleton-code">
@@ -801,7 +891,7 @@
 <thead><tr><th>Piece</th><th>Role</th><th>Old behaviours</th></tr></thead>
 <tbody>
 <tr><td><code>EventBuffer</code></td><td>Two lanes (control, data), the <code>wake_pending</code> flag and the drain wake-up. <code>push()</code> appends and wakes the loop only when no wake-up is pending; <code>drain_pass()</code> clears the flag first, then yields control events before data events within the batch budget.</td><td>11, 12</td></tr>
-<tr><td><code>run_event_loop()</code></td><td>Drains the buffer until end of data. Holds the event buffer, the runtime book and the recorders. Reads time only from its <code>Clock</code>. Sets the GIL switch interval at start.</td><td>1, 3, 4, 7, 11, 13, 19</td></tr>
+<tr><td><code>run_event_loop()</code> · Planned (the code today is <code>EventLoop.run()</code>)</td><td>Drains the buffer until end of data. Holds the inbound buffer, the outbound buffer, the runtime book and the recorders. Reads event time and the watch time only. Sets the GIL switch interval at start.</td><td>1, 3, 4, 7, 11, 13, 19</td></tr>
 <tr><td><code>HANDLERS</code>, <code>dispatch()</code></td><td>One handler per event type; the main drain and the final drain both call <code>dispatch()</code>.</td><td>4, 13</td></tr>
 <tr><td><code>Resampler</code></td><td>Ticks → 1-second bars. Rejects out-of-order ticks and drops late ticks for an already-emitted bucket, so no duplicate bar is made. A pure module with no I/O.</td><td>1, 2</td></tr>
 <tr><td><code>emit_bar()</code>, <code>fire_due_bars()</code></td><td>The one place a bar is made: tick rollover, quiet-bucket flush and end-of-data flush.</td><td>2, 13</td></tr>
@@ -809,7 +899,7 @@
 <tr><td><code>ShutdownCoordinator</code></td><td>Per-slot session-end flatten, shutdown requests, the final flat check before exit.</td><td>7, 9</td></tr>
 <tr><td><code>Seeder</code>, <code>SharedFetch</code>, <code>Backoff</code>, <code>SeedState</code></td><td>One seed attempt and one retry per slot; one shared fetch per key; replay recorded bars mid-session.</td><td>8, 18</td></tr>
 <tr><td><code>BarRecorder</code>, <code>TradeRecorder</code></td><td>One file per instrument per session day; per-strategy round trips.</td><td>10</td></tr>
-<tr><td><code>RuntimeBook</code>, <code>enqueue_book_op()</code></td><td>The book and its commit boundary.</td><td>15, 17</td></tr>
+<tr><td><code>RuntimeBook</code></td><td>The book and its commit boundary; changed only between events.</td><td>15, 17</td></tr>
 <tr><td><code>DeployService</code></td><td>Socket server, staging, admission, commit, cleanup.</td><td>16</td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
@@ -822,7 +912,6 @@ import enum
 from collections import deque
 from typing import Any, Awaitable, Callable
 
-from alchemist.clock import Clock
 from alchemist.instruments import Instrument
 
 ON_BAR_ERROR_QUARANTINE = 3       # Behaviour 5
@@ -835,7 +924,14 @@ SCALE_TRIGGER_SLOT_SUM_P99_S = 0.003  # decision 9
 BACKLOG_ALERT = 5000              # decision 3, Behaviour 12
 
 CONTROL_EVENTS = frozenset({"order_update", "balance_update", "repaired_fill",
-                            "book_op", "end_of_data"})
+                            "deploy_request", "reply", "connection_lost",
+                            "connection_restored", "end_of_data"})
+
+
+class WatchTime:
+    """Feature 1, 8: event time of the last event + system time since it arrived."""
+    def observe(self, event_time: float, arrived_at: float) -&gt; None: ...
+    def now(self, system_now: float) -&gt; float: ...
 
 
 class SeedState(enum.Enum):
@@ -893,8 +989,10 @@ class RuntimeBook:
     def strategies_for(self, instrument: Instrument) -&gt; list: ...
 
 
-async def enqueue_book_op(fn: Callable[[RuntimeBook], Any]) -&gt; Any:
-    """Behaviour 15: run fn(book) on the drain loop between events."""
+class CommandBuffer:
+    """Feature 14: the outbound buffer; drained in push order by the Gateway."""
+    def push(self, command: dict) -&gt; None: ...
+    def add_tap(self, tap: deque) -&gt; None: ...
 
 
 class EventBuffer:
@@ -908,17 +1006,19 @@ class EventBuffer:
         """Append to its lane; wake the loop only if no wake-up is pending."""
     def push_front(self, event: dict) -&gt; None:
         """Replay: put a fill at the front of the control lane."""
-    async def wait(self, clock: Clock) -&gt; None:
+    def add_tap(self, tap: deque) -&gt; None:
+        """Feature 14: every push also appends to each tap; never waits."""
+    async def wait(self) -&gt; None:
         """Wait on drain_wakeup with timeout DRAIN_TIMEOUT_S."""
-    def drain_pass(self, clock: Clock) -&gt; list[dict]:
+    def drain_pass(self) -&gt; list[dict]:
         """Clear the wake-up and wake_pending first; control events, then data
         events, until both lanes are empty or DRAIN_BATCH_BUDGET_S is spent."""
     def __len__(self) -&gt; int: ...
 
 
-async def run_event_loop(event_buffer: EventBuffer,
-                         book: RuntimeBook, gateway, aux, safety,
-                         recorders, shutdown, clock: Clock) -&gt; None:
+async def run_event_loop(inbound: EventBuffer, outbound: CommandBuffer,  # Planned; today EventLoop.run()
+                         book: RuntimeBook, aux, recorders, shutdown,
+                         watch_time: WatchTime) -&gt; None:
     """Behaviours 1-7, 11, 13, 19: set GIL_SWITCH_INTERVAL_S, drain on wake-up,
     resample, dispatch in time order exactly once, quarantine,
     flatten, shut down cleanly."""
@@ -928,13 +1028,13 @@ async def run_event_loop(event_buffer: EventBuffer,
 <div id="decisions-already-made">
 <h3>Decisions already made</h3>
 <div class="decision"><h3><span class="num">1</span>Who gets order updates?</h3><p class="q">Every strategy. Each one filters by order-ID ownership, so a strategy that has just closed can still book its closing fill.</p></div>
-<div class="decision"><h3><span class="num">2</span>How long can a quiet bar wait?</h3><p class="q">A 1.0 s clock-driven grace flush bounds the delay in illiquid periods without waiting for the next tick.</p></div>
+<div class="decision"><h3><span class="num">2</span>How long can a quiet bar wait?</h3><p class="q">A 1.0 s grace flush on the watch time bounds the delay in illiquid periods without waiting for the next tick (<a href="system_map.html#d68">System map decision 68</a>).</p><p class="when">changed 2026-11-11 · was a clock-driven flush</p></div>
 <div class="decision"><h3><span class="num">3</span>Is the event queue bounded?</h3><p class="q">No — it is unbounded so order updates are never dropped. A backlog past 5000 items is reported (<a href="#f4">feature 4</a>).</p></div>
 <div class="decision"><h3><span class="num">4</span>When is a strategy quarantined?</h3><p class="q">After 3 consecutive <code>on_bar</code> exceptions it goes to the ERROR state, protecting the whole process.</p></div>
 <h3>Agreed at finalize · 2026-11-09</h3>
 <div class="decision"><h3><span class="num">5</span>How many seeding paths are there?</h3><p class="q">One: <code>Seeder.attempt()</code>, run once at start and again by <code>Seeder.retry()</code>. A failed daily fetch and a failed seed are the same retry, with one shared fetch and one backoff. The slot's seed state is one value with four states (<a href="#f7">feature 7</a>).</p><p class="rej">Rejected: a startup path plus separate warmup-retry and seed-retry loops (three copies of one sequence that drift apart); a cache that is used at start but not by retries.</p><p class="when">agreed 2026-11-09 · 2026-11-07</p></div>
 <div class="decision"><h3><span class="num">6</span>How is an event routed to its handler?</h3><p class="q">Through one table keyed by event type, used by the main drain and the final drain. Every fan-out to strategies goes through <code>fan_out()</code>, and every bar through <code>emit_bar()</code> (<a href="#f2">feature 2</a>).</p><p class="rej">Rejected: an if/elif chain per drain, and a gather-and-log block copied for each update type.</p><p class="when">agreed 2026-11-09 · 2026-11-07</p></div>
-<div class="decision"><h3><span class="num">7</span>Is the resampler its own component?</h3><p class="q">No. It is a small pure module (ticks in, bars out, no I/O) under <a href="#f1">feature 1</a>, tested alone. It stays out of the Gateway because the clock-driven flush needs the loop's clock and the broker's reader thread must stay thin (System map R3).</p><p class="rej">Rejected: a separate bar-building component (no outside input and no failure mode of its own); building bars in the Gateway.</p><p class="when">agreed 2026-11-09 · 2026-11-07</p></div>
+<div class="decision"><h3><span class="num">7</span>Is the resampler its own component?</h3><p class="q">No. It is a small pure module (ticks in, bars out, no I/O) under <a href="#f1">feature 1</a>, tested alone. It stays out of the Gateway because the watch-time flush needs the loop's watch time and the broker's reader thread must stay thin (System map R3).</p><p class="rej">Rejected: a separate bar-building component (no outside input and no failure mode of its own); building bars in the Gateway.</p><p class="when">agreed 2026-11-09 · 2026-11-07</p></div>
 <div class="decision" id="d8"><h3><span class="num">8</span>How does the event buffer wake the loop, and in what order does it drain?</h3><p class="q">One wake-up per burst: a producer raises the drain wake-up only when <code>wake_pending</code> is clear, and the drain loop clears the flag before each pass. The buffer has two deques: a control lane (fills, balance updates, repaired fills, book operations, end of data) drained first, and a data lane (ticks, bars). A pass yields after a 2 ms batch budget. The 20 ms timeout stays as a safety net and the bar-flush cadence (<a href="#f4">feature 4</a>).</p><p class="rej">Rejected: a wake-up on every append (a lock and a system call per tick, almost all wasted during a burst); clearing the flag after the drain (a fill appended at the end of a pass waits up to 20 ms); one lane in arrival order (a fill waits behind a tick burst); one ring per tick stream with a round-robin drain (more parts for a fold that is already cheap, and it does not move decode off the GIL); a lock-free or shared-memory ring of the Disruptor kind (Python has no atomic operations, so its pure-Python versions use locks).</p><p class="when">agreed 2026-11-09 · 2026-11-08</p></div>
 <div class="decision" id="d9"><h3><span class="num">9</span>What load must one process carry, and when do we scale?</h3><p class="q">One process carries 3 tick-by-tick streams and 10–15 strategies: one asyncio loop, the official IB reader thread, and the buffer of decision 8. Measure first (<a href="#f5">feature 5</a>). <strong>Scale trigger:</strong> when p99 of the summed slot cost on the busiest instrument is above 3 ms (room left for queue wait inside R3's 5 ms processing budget), move to one Gateway process (IB socket, decoding, resampler, order send; <a href="system_map.html#d7">System map decision 7</a> holds) plus strategy node processes of 5–8 strategies each, joined by a local socket or pipe. After resampling the bus carries only about 3 bars/s plus order updates. Shard by strategy group, not by instrument, because many strategies share each of the 3 instruments. Before that move, Safety and its repair need a design that covers every node (<a href="system_map.html#d28">System map decision 28</a>). <strong>Gateway trigger:</strong> if the reader thread's decode time or the GIL wait shows in p99 after decision 10, move the Gateway to an asyncio-native protocol with no reader thread.</p><p class="rej">Rejected for now: an asyncio-native Gateway with no reader thread (decoding then runs on the loop thread next to strategy work, and a reimplementation must follow IB's per-message move to protobuf); strategy node processes before the trigger fires (an extra hop for each bar and order, and Safety across nodes is not designed yet); free-threaded Python 3.14 (5–10% slower on one thread, and a C extension can turn the GIL back on).</p><p class="when">agreed 2026-11-09 · 2026-11-08</p></div>
 <div class="decision" id="d10"><h3><span class="num">10</span>What GIL switch interval does the process use?</h3><p class="q">0.5 ms, set once at start with <code>sys.setswitchinterval(0.0005)</code>. While the IB reader thread decodes a burst it holds the GIL, and at the default 5 ms the loop thread can wait that long (about 10 ms in the worst case), which is all of R3's budget. The cost is more thread switches; feature 5 measures whether it is enough (decision 9, Gateway trigger).</p><p class="rej">Rejected: keeping the 5 ms default (one GIL wait can use the whole latency budget); moving decoding off the GIL now (see decision 9).</p><p class="when">agreed 2026-11-09 · 2026-11-08</p></div>

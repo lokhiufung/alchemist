@@ -33,9 +33,12 @@
 <header>
 <div class="eyebrow">Component map · SAFETY_MAP · Alchemist v3</div>
 <h1>Safety</h1>
-<div class="lede"><p>The watchdog. Safety keeps checking that the broker connection and the price feed are alive, climbs a ladder of fixes when a check fails, and afterwards repairs every strategy left waiting on an order whose outcome the engine missed.</p></div>
-<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: the feed watchdog arms on every configured exchange's data session.</p>
+<div class="lede"><p>The watchdog. Safety watches both buffers through taps, asks the Gateway for a ladder of fixes when the socket or the feed looks dead, and repairs every strategy left waiting on an order whose outcome the engine missed.</p></div>
+<div class="meta"><p><strong>Streaming core agreed 2026-11-11.</strong> Safety reads both buffers through taps and acts only through requests and repair events (<a href="system_map.html#streaming-core">System map decisions 61–70</a>).</p>
+<p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: the feed watchdog arms on every configured exchange's data session.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-11</strong> — Compiled with /component-design: every existing Safety test now has a row under the feature it protects; <code>on_replies()</code> from the skeleton is now in the code.</li>
+<li><strong>2026-11-11</strong> — Streaming core agreed: features 1–3, 6, 7, 9–11 rewritten for events in and commands out; features 4 and 5 moved to the Gateway; feature 10 now describes the watch state from the buffers; new feature 12, the watcher thread on buffer taps; Safety runs in replay; tests and skeleton updated; new decision 5.</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
 <li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (9 scenarios, proposed, not agreed).</li>
 <li><strong>2026-11-09</strong> — v3 finalized: the human accepted every proposed feature and decision.</li>
@@ -48,36 +51,37 @@
 <section id="goal-and-scope">
 <div class="eyebrow">Safety · 1 · Goal and scope</div>
 <h2>Goal and scope</h2>
-<p><strong>What it is.</strong> Safety is the watchdog of the process. Safety runs its own heartbeat loop beside the Event Loop: Safety checks that the broker socket answers and that the price feed is fresh, climbs a ladder of fixes when a check fails, and after a reconnect repairs every strategy left waiting on an order whose outcome the engine missed.</p>
-<p><strong>Why it exists.</strong> A broker connection drops, a data farm goes quiet, and a fill can happen while the engine is disconnected. Without repair, a strategy waits forever on that order. This work has its own failure modes and its own recovery, independent of trading, so Safety is a separate component and not part of the Gateway (<a href="system_map.html#d4">System map decision 4</a>, <a href="system_map.html#d8">decision 8</a>).</p>
-<p><strong>Goal.</strong> Keep watching the broker socket and the market-data feed; run escalating recovery steps and reconnects that never stop when a check fails; and repair strategies stranded during a disconnection by attributing the fills they missed, from the broker's executions, by order id.</p>
+<p><strong>What it is.</strong> Safety is the watchdog of the process. Safety runs a concurrent watcher thread beside the Event Loop. The watcher reads the events and commands that pass through the inbound and the outbound buffer, and it never blocks their consumers. From what the watcher reads, Safety decides that the broker socket is dead, that the feed is stale, that an order is stuck or that a fill was missed. Safety acts only by sending requests to the Gateway on the outbound buffer, and repair events to the strategies on the inbound buffer (<a href="system_map.html#d61">System map decision 61</a>).</p>
+<p><strong>Why it exists.</strong> A broker connection drops, a data farm goes quiet, and a fill can happen while the engine is disconnected. Without repair, a strategy waits forever on that order. This work has its own failure modes and its own recovery, independent of trading, so Safety is a separate component (<a href="system_map.html#d4">System map decision 4</a>, <a href="system_map.html#d8">decision 8</a>). The Gateway does the connection work itself (<a href="system_map.html#d65">System map decision 65</a>); Safety decides when recovery is needed and checks the result.</p>
+<p><strong>Goal.</strong> Watch the broker socket and the market-data feed in system time; ask the Gateway for escalating recovery when a check fails; and repair strategies stranded during a disconnection or by a lost update, by attributing missed fills from the broker's executions, by order id.</p>
 
 <h3>Public interface</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
 <tbody>
-<tr><td rowspan="2">Other components call Safety</td><td>Runner</td><td>Start and stop the heartbeat loop and the freeze detector</td><td>safety config: reconnect base and cap, maintenance windows, positions poll</td></tr>
-<tr><td>Event Loop</td><td>Check in from the loop</td><td>check-in</td></tr>
-<tr><td rowspan="4">Safety calls other components</td><td>Gateway</td><td>Probe the socket; read the last tick time; resubscribe; reconnect; fetch executions, open orders and positions; take the resubscribe request</td><td>timeout, since-timestamp</td></tr>
-<tr><td>Strategy</td><td>Ask each strategy for its submitted, open and cancelling orders</td><td>pending order ids</td></tr>
-<tr><td>Event Loop</td><td>Push repaired fills, Rejected updates and position updates into the event buffer; read the runtime book's members</td><td>order update, position update</td></tr>
-<tr><td>Operating system</td><td>Restart the broker gateway process, only inside a maintenance window; write stack dumps</td><td>process restart, stack dump</td></tr>
+<tr><td rowspan="3">Safety reads</td><td>Inbound buffer (watcher tap)</td><td>Feed events, <code>heartbeat</code>, <code>connection_lost</code>, <code>connection_restored</code>, order updates, replies</td><td>event time, arrival system time, correlation id</td></tr>
+<tr><td>Outbound buffer (watcher tap)</td><td>Subscribe and unsubscribe commands, order and cancel commands</td><td>instrument, order id, strategy key</td></tr>
+<tr><td>Event Loop</td><td>Check-ins from the loop</td><td>check-in</td></tr>
+<tr><td rowspan="2">Safety writes</td><td>Outbound buffer</td><td>Requests to the Gateway: <code>resubscribe(instruments)</code>, <code>reconnect</code>, <code>restart_broker_process</code>, executions, open orders, <code>poll_positions</code>; alerts</td><td>correlation id</td></tr>
+<tr><td>Inbound buffer</td><td>Repaired Filled and Rejected order updates</td><td>order id, strategy key</td></tr>
+<tr><td>Runner starts Safety</td><td>Runner</td><td>Start and stop the watcher and the freeze detector</td><td>safety config</td></tr>
 </tbody></table></div>
 
 <h3>Scope</h3>
 <p>Owns, from the System map:</p>
-<blockquote><p>Detecting a lost broker connection or a frozen process, reconnecting, and un-sticking any strategy left waiting on an order whose fill happened during the outage.</p></blockquote>
+<blockquote><p>Detecting a lost broker connection, a stale feed or a frozen process, asking the Gateway to recover, un-sticking any strategy left waiting on an order whose fill happened during the outage, and the periodic stuck-order check.</p></blockquote>
 <div class="table-wrap"><table>
 <thead><tr><th>Not Safety's job</th><th>Owned by</th></tr></thead>
 <tbody>
-<tr><td>Talking to the broker directly</td><td><a href="gateway_map.html">Gateway</a></td></tr>
+<tr><td>Talking to the broker; the connection's own heartbeat, reconnect with backoff and resubscribe after reconnect</td><td><a href="gateway_map.html">Gateway</a></td></tr>
 <tr><td>Deciding what to trade</td><td><a href="strategy_map.html">Strategy</a>, <a href="strategy_execution_map.html">StrategyExecution</a></td></tr>
-<tr><td>Normal event delivery</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
+<tr><td>Normal event delivery; giving a repair event to its strategy</td><td><a href="event_loop_map.html">Event Loop</a></td></tr>
+<tr><td>The runtime book's members</td><td>Not needed by Safety (<a href="system_map.html#d69">System map decision 69</a>)</td></tr>
 </tbody></table></div>
 
 <h3>Place in the system</h3>
 <div class="diagram">
-<svg viewBox="0 0 900 230" role="img" aria-label="Safety between Strategy and the Event Loop on the left and the Gateway on the right." xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 900 250" role="img" aria-label="Safety reads both buffers through a tap and writes requests to the outbound buffer and repairs to the inbound buffer." xmlns="http://www.w3.org/2000/svg">
   <style>
     .ps-core { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
     .ps-ext { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.3; }
@@ -86,35 +90,35 @@
     .ps-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
     .ps-l { fill: var(--ink-2); font: 12px var(--mono); text-anchor: middle; }
     .ps-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#spsah); }
+    .ps-d { stroke: var(--ink-3); stroke-width: 1.3; fill: none; stroke-dasharray: 4 4; marker-end: url(#spsah); }
   </style>
   <defs><marker id="spsah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
-  <rect class="ps-core" x="390" y="30" width="180" height="180" rx="10"/>
-  <text class="ps-t" x="480" y="114">Safety</text><text class="ps-r" x="480" y="134">watch, recover,</text><text class="ps-r" x="480" y="150">repair</text>
-  <rect class="ps-ext" x="20" y="30" width="160" height="70" rx="24"/><text class="ps-x" x="100" y="70">Strategy</text>
-  <path class="ps-a" d="M180,64 H390"/><text class="ps-l" x="285" y="58">pending order ids</text>
-  <rect class="ps-ext" x="20" y="140" width="160" height="70" rx="24"/><text class="ps-x" x="100" y="180">Event Loop</text>
-  <path class="ps-a" d="M180,156 H390"/><text class="ps-l" x="285" y="150">check-ins, members</text>
-  <path class="ps-a" d="M390,192 H180"/><text class="ps-l" x="285" y="208">repaired fills, Rejected</text>
-  <rect class="ps-ext" x="740" y="60" width="140" height="120" rx="24"/><text class="ps-x" x="810" y="125">Gateway</text>
-  <path class="ps-a" d="M570,94 H740"/><text class="ps-l" x="655" y="88">probe, reconnect</text>
-  <path class="ps-a" d="M740,146 H570"/><text class="ps-l" x="655" y="162">health, executions</text>
+  <rect class="ps-ext" x="20" y="20" width="200" height="60" rx="10"/><text class="ps-x" x="120" y="46">inbound buffer</text><text class="ps-r" x="120" y="64">events</text>
+  <rect class="ps-ext" x="20" y="170" width="200" height="60" rx="10"/><text class="ps-x" x="120" y="196">outbound buffer</text><text class="ps-r" x="120" y="214">commands</text>
+  <rect class="ps-core" x="380" y="70" width="180" height="110" rx="10"/><text class="ps-t" x="470" y="116">Safety</text><text class="ps-r" x="470" y="136">watcher thread</text>
+  <path class="ps-d" d="M220,50 H470 V70"/><text class="ps-l" x="320" y="42">tap: feed, heartbeat, orders, replies</text>
+  <path class="ps-d" d="M220,200 H300 V160 H380"/><text class="ps-l" x="300" y="245">tap: subscribe, order commands</text>
+  <path class="ps-a" d="M420,180 V215 H222"/><text class="ps-l" x="330" y="230"></text>
+  <path class="ps-a" d="M380,100 H260 V82"/><text class="ps-l" x="320" y="118">repairs</text>
+  <text class="ps-l" x="470" y="200">requests, alerts</text>
+  <rect class="ps-ext" x="700" y="95" width="180" height="60" rx="24"/><text class="ps-x" x="790" y="130">Event Loop</text>
+  <path class="ps-a" d="M700,125 H560"/><text class="ps-l" x="630" y="118">check-ins</text>
 </svg>
-<p class="caption">Safety never sends an order. Safety changes strategy state only through order updates in the event buffer, which the Event Loop delivers like any other update.</p>
+<p class="caption">Dashed arrows are taps: the watcher sees each event and command, and the buffer's normal consumer still gets it without waiting. Safety never sends an order and never holds a reference to the Gateway or the runtime book.</p>
 </div>
 </section>
 
 <section id="features">
 <div class="eyebrow">Safety · 2 · Features</div>
 <h2>Features</h2>
-<p>Each feature says which component needs it and why, what the upstream can give, and how Safety closes the gap. Every number is a parameter with its supported values. Click a box in the map to jump to its feature.</p>
+<p>Each feature says which component needs it and why, what the upstream can give, and how Safety closes the gap. Every number is a parameter with its supported values; each default is a named value in the <code>alchemist/constants</code> package, and the config reads its default from there. Click a box in the map to jump to its feature.</p>
 
 <h3>Algorithm map</h3>
 <div class="diagram">
-<svg viewBox="0 0 1000 760" role="img" aria-label="Safety steps: probe the socket and check feed freshness on the heartbeat loop; a stale feed climbs the recovery ladder; a dead socket reconnects with backoff that never stops; after reconnect, restore subscriptions, repair pending orders by order id, and declare dead orders Rejected; detect a frozen loop; optionally poll positions." xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1000 560" role="img" aria-label="Safety steps: the watcher reads both buffers through taps; heartbeat gap and feed gap checks in system time; a stale feed climbs the request ladder; a connection restored event starts the repair by order id; dead orders become Rejected; a timer checks stuck orders; a frozen loop gives a stack dump; an optional positions poll." xmlns="http://www.w3.org/2000/svg">
   <style>
     .s-stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
     .s-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
-    .s-st { fill: none; stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 5 4; }
     .s-ext { fill: none; stroke: var(--ink-3); stroke-width: 1.2; }
     .s-t { fill: var(--ink); font: 600 13px var(--sans); text-anchor: middle; }
     .s-r { fill: var(--ink-3); font: 12px var(--mono); text-anchor: middle; }
@@ -123,172 +127,135 @@
     .s-a { stroke: var(--ink-3); stroke-width: 1.3; fill: none; marker-end: url(#sah); }
   </style>
   <defs><marker id="sah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
-  <rect class="s-ext" x="880" y="30" width="110" height="530" rx="24"/><text class="s-x" x="935" y="300">Gateway</text>
+  <rect class="s-ext" x="10" y="30" width="140" height="440" rx="24"/><text class="s-x" x="80" y="245">both buffers</text><text class="s-x" x="80" y="262">(tap)</text>
+  <rect class="s-ext" x="850" y="30" width="140" height="440" rx="24"/><text class="s-x" x="920" y="245">outbound buffer</text><text class="s-x" x="920" y="262">(requests)</text>
 
-  <rect class="s-main" x="390" y="40" width="230" height="52" rx="8"/><text class="s-t" x="505" y="62">Probe socket</text><text class="s-r" x="505" y="80">every heartbeat interval</text>
-  <path class="s-a" d="M620,56 H880"/><text class="s-l" x="750" y="50" text-anchor="middle">heartbeat (timeout)</text>
-  <path class="s-a" d="M880,78 H620"/><text class="s-l" x="750" y="94" text-anchor="middle">alive?</text>
+  <rect class="s-main" x="390" y="30" width="230" height="52" rx="8"/><text class="s-t" x="505" y="52">Watch state</text><text class="s-r" x="505" y="70">feed, heartbeat, orders</text>
+  <path class="s-a" d="M150,56 H390"/><text class="s-l" x="200" y="50">events, commands</text>
 
-  <rect class="s-main" x="390" y="120" width="230" height="52" rx="8"/><text class="s-t" x="505" y="142">Check feed freshness</text><text class="s-r" x="505" y="160">only while a session is open</text>
-  <path class="s-a" d="M880,146 H620"/><text class="s-l" x="750" y="140" text-anchor="middle">last tick time</text>
-  <path class="s-a" d="M505,172 V200"/><text class="s-l" x="513" y="190">stale</text>
+  <rect class="s-main" x="200" y="120" width="230" height="52" rx="8"/><text class="s-t" x="315" y="142">Heartbeat gap</text><text class="s-r" x="315" y="160">system time</text>
+  <rect class="s-main" x="580" y="120" width="230" height="52" rx="8"/><text class="s-t" x="695" y="142">Feed gap</text><text class="s-r" x="695" y="160">only while a session is open</text>
+  <path class="s-a" d="M450,82 L330,118"/><path class="s-a" d="M560,82 L680,118"/>
 
-  <rect class="s-stp" x="390" y="200" width="230" height="52" rx="8"/><text class="s-t" x="505" y="222">Climb recovery ladder</text><text class="s-r" x="505" y="240">resub → reconnect → restart</text>
-  <path class="s-a" d="M620,226 H880"/><text class="s-l" x="750" y="220" text-anchor="middle">resubscribe</text>
-  <path class="s-a" d="M505,252 V280"/><text class="s-l" x="513" y="270">rung 2</text>
+  <rect class="s-stp" x="580" y="210" width="230" height="52" rx="8"/><text class="s-t" x="695" y="232">Request ladder</text><text class="s-r" x="695" y="250">resub → reconnect → restart</text>
+  <path class="s-a" d="M695,172 V208"/><text class="s-l" x="703" y="194">stale</text>
+  <path class="s-a" d="M810,236 H850"/>
+  <path class="s-a" d="M315,172 V196 H850"/><text class="s-l" x="360" y="190">reconnect request, alert</text>
 
-  <path class="s-a" d="M390,66 H360 V306 H390"/><text class="s-l" x="355" y="190" text-anchor="middle" transform="rotate(-90 355 190)">socket dead</text>
+  <rect class="s-main" x="390" y="300" width="230" height="52" rx="8"/><text class="s-t" x="505" y="322">Repair by order id</text><text class="s-r" x="505" y="340">on connection_restored</text>
+  <path class="s-a" d="M620,316 H850"/><text class="s-l" x="660" y="310">executions, open orders?</text>
+  <path class="s-a" d="M150,330 H390"/><text class="s-l" x="170" y="324">replies</text>
+  <rect class="s-stp" x="390" y="380" width="230" height="52" rx="8"/><text class="s-t" x="505" y="402">Declare dead orders</text><text class="s-r" x="505" y="420">absent both, old enough</text>
+  <path class="s-a" d="M505,352 V378"/><text class="s-l" x="513" y="370">no match</text>
+  <rect class="s-stp" x="180" y="380" width="180" height="52" rx="8"/><text class="s-t" x="270" y="402">Stuck-order timer</text><text class="s-r" x="270" y="420">every check interval</text>
+  <path class="s-a" d="M270,380 V326 H388"/>
+  <path class="s-a" d="M390,416 H150"/><text class="s-l" x="160" y="450">repaired Filled / Rejected</text>
 
-  <rect class="s-main" x="390" y="280" width="230" height="52" rx="8"/><text class="s-t" x="505" y="302">Reconnect forever</text><text class="s-r" x="505" y="320">min(cap, base·2^(n−1))</text>
-  <path class="s-a" d="M620,306 H880"/><text class="s-l" x="750" y="300" text-anchor="middle">connect</text>
-  <path class="s-a" d="M505,332 V360"/><text class="s-l" x="513" y="350">connected</text>
+  <rect class="s-stp" x="580" y="480" width="230" height="52" rx="8"/><text class="s-t" x="695" y="502">Detect frozen loop</text><text class="s-r" x="695" y="520">missed check-ins</text>
+  <rect class="s-stp" x="200" y="480" width="230" height="52" rx="8"/><text class="s-t" x="315" y="502">Poll positions</text><text class="s-r" x="315" y="520">off by default</text>
+  <path class="s-a" d="M430,506 H520 V470 H850"/><text class="s-l" x="530" y="464">poll_positions</text>
 
-  <rect class="s-main" x="390" y="360" width="230" height="52" rx="8"/><text class="s-t" x="505" y="382">Restore subscriptions</text><text class="s-r" x="505" y="400">each fed instrument once</text>
-  <path class="s-a" d="M620,386 H880"/><text class="s-l" x="750" y="380" text-anchor="middle">resubscribe</text>
-  <rect class="s-st" x="150" y="364" width="180" height="44" rx="6"/><text class="s-r" x="240" y="391">[ runtime book ]</text>
-  <path class="s-a" d="M330,386 H390"/>
-  <path class="s-a" d="M505,412 V440"/><text class="s-l" x="513" y="430">streams back</text>
-
-  <rect class="s-main" x="390" y="440" width="230" height="52" rx="8"/><text class="s-t" x="505" y="462">Repair by order id</text><text class="s-r" x="505" y="480">match order id only</text>
-  <path class="s-a" d="M620,456 H880"/><text class="s-l" x="750" y="450" text-anchor="middle">executions, open orders?</text>
-  <path class="s-a" d="M880,478 H620"/><text class="s-l" x="750" y="494" text-anchor="middle">rows</text>
-  <path class="s-a" d="M240,408 V452 H390"/>
-  <rect class="s-ext" x="10" y="440" width="120" height="40" rx="18"/><text class="s-x" x="70" y="465">Strategy</text>
-  <path class="s-a" d="M130,466 H390"/><text class="s-l" x="180" y="460">pending ids</text>
-  <path class="s-a" d="M390,488 H70 V520"/><text class="s-l" x="150" y="504">Filled update</text>
-  <path class="s-a" d="M505,492 V520"/><text class="s-l" x="513" y="510">no match</text>
-
-  <rect class="s-stp" x="390" y="520" width="230" height="52" rx="8"/><text class="s-t" x="505" y="542">Declare dead orders</text><text class="s-r" x="505" y="560">absent both, old enough</text>
-  <rect class="s-ext" x="10" y="520" width="120" height="52" rx="20"/><text class="s-x" x="70" y="550">Event Loop</text>
-  <path class="s-a" d="M390,546 H130"/><text class="s-l" x="260" y="540" text-anchor="middle">Rejected update</text>
-
-  <rect class="s-ext" x="10" y="610" width="120" height="52" rx="20"/><text class="s-x" x="70" y="640">Event Loop</text>
-  <rect class="s-stp" x="390" y="610" width="230" height="52" rx="8"/><text class="s-t" x="505" y="632">Detect frozen loop</text><text class="s-r" x="505" y="650">missed check-ins</text>
-  <path class="s-a" d="M130,636 H390"/><text class="s-l" x="260" y="630" text-anchor="middle">check-ins</text>
-  <rect class="s-ext" x="880" y="610" width="110" height="52" rx="20"/><text class="s-x" x="935" y="640">log</text>
-  <path class="s-a" d="M620,636 H880"/><text class="s-l" x="750" y="630" text-anchor="middle">stack dump</text>
-
-  <rect class="s-ext" x="10" y="690" width="120" height="52" rx="20"/><text class="s-x" x="70" y="720">Event Loop</text>
-  <rect class="s-stp" x="390" y="690" width="230" height="52" rx="8"/><text class="s-t" x="505" y="712">Poll positions</text><text class="s-r" x="505" y="730">off by default</text>
-  <path class="s-a" d="M390,716 H130"/><text class="s-l" x="260" y="710" text-anchor="middle">position updates</text>
-  <rect class="s-ext" x="880" y="690" width="110" height="52" rx="20"/><text class="s-x" x="935" y="720">Gateway</text>
-  <path class="s-a" d="M620,706 H880"/><text class="s-l" x="750" y="700" text-anchor="middle">positions?</text>
-  <path class="s-a" d="M880,728 H620"/>
-
-  <a href="#f1"><rect x="390" y="40" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
-  <a href="#f2"><rect x="390" y="120" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
-  <a href="#f3"><rect x="390" y="200" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
-  <a href="#f4"><rect x="390" y="280" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 4</title></rect></a>
-  <a href="#f5"><rect x="390" y="360" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 5</title></rect></a>
-  <a href="#f10"><rect x="150" y="364" width="180" height="44" rx="6" fill="transparent" style="cursor:pointer"><title>Feature 10</title></rect></a>
-  <a href="#f6"><rect x="390" y="440" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 6</title></rect></a>
-  <a href="#f7"><rect x="390" y="520" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 7</title></rect></a>
-  <a href="#f8"><rect x="390" y="610" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 8</title></rect></a>
-  <a href="#f9"><rect x="390" y="690" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 9</title></rect></a>
+  <a href="#f12"><rect x="390" y="30" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 12</title></rect></a>
+  <a href="#f1"><rect x="200" y="120" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 1</title></rect></a>
+  <a href="#f2"><rect x="580" y="120" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 2</title></rect></a>
+  <a href="#f3"><rect x="580" y="210" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 3</title></rect></a>
+  <a href="#f6"><rect x="390" y="300" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 6</title></rect></a>
+  <a href="#f7"><rect x="390" y="380" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 7</title></rect></a>
+  <a href="#f11"><rect x="180" y="380" width="180" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 11</title></rect></a>
+  <a href="#f8"><rect x="580" y="480" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 8</title></rect></a>
+  <a href="#f9"><rect x="200" y="480" width="230" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 9</title></rect></a>
 </svg>
-<p class="caption">Main path in colour: probe and feed check on the heartbeat loop → reconnect → restore → repair. A dead socket skips the ladder and reconnects at once. The dashed box is the Event Loop's runtime book, read by restore, repair, the feed check and the poll.</p>
+<p class="caption">Main path in colour: watch state → gap checks → repair. Every action is a request on the outbound buffer or a repair event on the inbound buffer. Features 4 and 5 moved to the Gateway; feature 10 now describes where the watch state comes from.</p>
 </div>
 
 <h3>Feature cards</h3>
 
-<div class="behaviour" id="f1"><h3><span class="num">1</span>A dead socket is caught within one interval<span class="added">settled · was behaviour 1 · decision 1</span></h3><dl class="gmi">
-<dt>Need</dt><dd>The engine must learn fast that the broker socket is dead, because every order and fill goes through that socket.</dd>
-<dt>Upstream gives</dt><dd>The Gateway's heartbeat returns True only when the broker answers within the timeout (<a href="gateway_map.html#f11">Gateway feature 11</a>).</dd>
+<div class="behaviour" id="f1"><h3><span class="num">1</span>A dead socket is caught within one interval<span class="added">changed 2026-11-11 · decision 1 · System map decision 65</span></h3><dl class="gmi">
+<dt>Need</dt><dd>The engine must learn fast that the broker socket is dead, because every order and fill goes through that socket. The Gateway's own heartbeat loop can also stop, so Safety must not trust the Gateway alone.</dd>
+<dt>Upstream gives</dt><dd>The Gateway runs its own heartbeat every heartbeat interval and emits a <code>heartbeat</code> event on success, or a <code>connection_lost</code> event (<a href="gateway_map.html#f11">Gateway feature 11</a>). The watcher records the system time at which each one arrives.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Every heartbeat interval, call the Gateway heartbeat.</li>
-<li>On False, count the failure and start the reconnect loop at once (<a href="#f4">feature 4</a>).</li>
+<li>On <code>connection_lost</code>: log an alert. The Gateway is already reconnecting (<a href="gateway_map.html#f1">Gateway feature 1</a>).</li>
+<li>Every watcher check interval: when the system-time gap since the last <code>heartbeat</code> event is over the heartbeat interval plus the heartbeat timeout, send a <code>reconnect</code> request and an alert. Send the request again only after the next gap of the same length.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Heartbeat interval</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>5 s</td><td>5 s</td></tr>
-<tr><td>Heartbeat timeout</td><td>Configurable per call (<a href="gateway_map.html#f11">Gateway feature 11</a>)</td><td>any positive seconds</td><td>3.0 s</td></tr>
+<tr><td>Heartbeat interval</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any positive seconds below the stale threshold</td><td>5 s</td></tr>
+<tr><td>Heartbeat timeout</td><td>Configurable per process</td><td>any positive seconds below the heartbeat interval</td><td>3 s</td></tr>
+<tr><td>Watcher check interval</td><td>Configurable per process</td><td>any positive seconds below the stale threshold</td><td>1 s</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>For every interval and timeout: a socket failure is caught within one interval plus the timeout. The failure counter only goes up until the connection is restored.</dd>
+<dt>Invariant</dt><dd>For every interval, timeout and check interval: a dead socket, or a stopped Gateway heartbeat loop, is noticed within the heartbeat interval plus the timeout plus one check interval, in system time.</dd>
 </dl></div>
 
-<div class="behaviour" id="f2"><h3><span class="num">2</span>A stale feed is caught only while a session is open<span class="added">settled · was behaviour 2 · decision 1</span></h3><dl class="gmi">
-<dt>Need</dt><dd>A live socket can still deliver no prices (a data farm down). The engine must learn that the feed is stale, without false alarms during breaks and weekends.</dd>
-<dt>Upstream gives</dt><dd>The Gateway's last tick time, which counts only instruments whose exchange data session is open (<a href="gateway_map.html#f2">Gateway feature 2</a>), and each configured exchange's continuous data session from its exchange profile.</dd>
+<div class="behaviour" id="f2"><h3><span class="num">2</span>A stale feed is caught only while a session is open<span class="added">changed 2026-11-11 · decision 1 · System map decision 63</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A live socket can still deliver no prices (a data farm down). The engine must learn that the feed is stale, without false alarms during breaks and weekends. A dead feed sends no next event, so the check must run on its own schedule.</dd>
+<dt>Upstream gives</dt><dd>Feed events (<code>tick_update</code>, <code>bar_update</code>) on the inbound buffer, each with its event time; the subscribe and unsubscribe commands on the outbound buffer (<a href="#f10">feature 10</a>); each exchange's continuous data session from its exchange profile.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Check staleness only while the continuous data session of at least one configured exchange is open: for CME, Sunday 18:00 to Friday 17:00 New York less the daily break and early closes; for Eurex, its own hours on the Frankfurt clock.</li>
-<li>When now minus the last tick time is over the stale threshold, start the recovery ladder (<a href="#f3">feature 3</a>).</li>
+<li>Per exchange with a subscribed instrument, keep the system time at which the last feed event arrived and that event's event time.</li>
+<li>The exchange is armed while the event time of its last feed event lies inside the exchange's data session (for CME, Sunday 18:00 to Friday 17:00 New York less the daily break and early closes; for Eurex, its own hours on the Frankfurt clock).</li>
+<li>Every watcher check interval: for each armed exchange, when the system-time gap since the last feed event is over the stale threshold, start the request ladder (<a href="#f3">feature 3</a>).</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Stale-tick threshold</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>), with an optional override per exchange</td><td>any positive seconds</td><td>45 s</td></tr>
+<tr><td>Stale threshold</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>), with an optional override per exchange</td><td>any positive seconds above the heartbeat interval</td><td>45 s</td></tr>
+<tr><td>Watcher check interval</td><td>Configurable per process</td><td>any positive seconds below the stale threshold</td><td>1 s</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>A day-session-only book is still watched overnight, and no alarm fires while every configured exchange is in its break or weekend.</dd>
+<dt>Invariant</dt><dd>The rule is the same in every mode; only the system-time gap matters. A day-session-only book is still watched overnight, and no alarm fires while every subscribed exchange is in its break or weekend. In replay, a stale alarm means that the engine stalled.</dd>
 </dl></div>
 
-<div class="behaviour" id="f3"><h3><span class="num">3</span>Recovery climbs from cheap to expensive<span class="added">settled · was behaviour 3 · decision 3</span></h3><dl class="gmi">
+<div class="behaviour" id="f3"><h3><span class="num">3</span>Recovery climbs from cheap to expensive<span class="added">changed 2026-11-11 · decision 3</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A stale feed often recovers with a resubscribe. A socket reconnect costs more, and a broker process restart costs most and is allowed only at night.</dd>
-<dt>Upstream gives</dt><dd>The Gateway resubscribes and reconnects on request; the broker sends "connectivity restored" signals (at IBKR, 1101 and 1102) that can repeat without any tick arriving.</dd>
+<dt>Upstream gives</dt><dd>The Gateway resubscribes, reconnects and restarts the broker process on request (<a href="gateway_map.html#f15">Gateway feature 15</a>). The broker's "connectivity restored" signals (at IBKR, 1101 and 1102) reach Safety as <code>connection_restored</code> events and can repeat without any feed event arriving.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Rung 1: resubscribe with exponential backoff, up to the resubscribe attempt limit. Cap consecutive resubscribes without a tick, then fall through.</li>
-<li>Rung 2: full socket reconnect (<a href="#f4">feature 4</a>).</li>
-<li>Rung 3: restart the broker gateway process, only inside a configured maintenance window.</li>
+<li>Rung 1: send <code>resubscribe(instruments)</code> for the stale exchange's instruments, with exponential backoff, up to the resubscribe attempt limit. Cap consecutive resubscribes without a feed event, then fall through.</li>
+<li>Rung 2: send <code>reconnect</code>.</li>
+<li>Rung 3: send <code>restart_broker_process</code>, only inside a configured maintenance window.</li>
+<li>A feed event for the exchange ends the ladder.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Resubscribe attempts</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>4</td><td>4</td></tr>
-<tr><td>Resubscribes without a tick before rung 2</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>3</td><td>3</td></tr>
+<tr><td>Resubscribe attempts</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any count ≥ 1</td><td>4</td></tr>
+<tr><td>Resubscribes without a feed event before rung 2</td><td>Configurable per process</td><td>any count ≥ 1</td><td>3</td></tr>
 <tr><td>Maintenance windows</td><td>Configurable (safety config)</td><td>list of start–end times</td><td>none</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>Cheaper in-process rungs always come before an external process action. A process restart happens only inside a configured maintenance window.</dd>
+<dt>Invariant</dt><dd>Cheaper rungs always come before an external process action. A restart request is sent only inside a configured maintenance window.</dd>
 </dl></div>
 
-<div class="behaviour" id="f4"><h3><span class="num">4</span>Reconnect never gives up<span class="added">settled · was behaviour 4</span></h3><dl class="gmi">
-<dt>Need</dt><dd>The engine must come back after any outage length without a human restart, and must not flood the broker with connects.</dd>
-<dt>Upstream gives</dt><dd>The Gateway's reconnect, which can fail many times in a row (<a href="gateway_map.html#f1">Gateway feature 1</a>).</dd>
-<dt>Algorithm</dt><dd><ol>
-<li>Loop: reconnect; on failure wait delay(n) = min(cap, base · 2^(n−1)) and try again.</li>
-<li>Log CRITICAL on persistent failure; never abort.</li>
-</ol></dd>
-<dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Backoff base</td><td>Configurable (safety config)</td><td>any positive seconds</td><td>15 s</td></tr>
-<tr><td>Backoff cap</td><td>Configurable (safety config)</td><td>any positive seconds</td><td>120 s</td></tr>
-</tbody></table></div></dd>
-<dt>Invariant</dt><dd>For every base and cap: the loop ends only when the connection is back, and no wait is longer than the cap.</dd>
+<div class="behaviour" id="f4"><h3><span class="num">4</span>Reconnect never gives up<span class="added">moved 2026-11-11 · System map decision 65</span></h3><dl class="gmi">
+<dt>Moved</dt><dd>The reconnect loop with backoff belongs to the Gateway (<a href="gateway_map.html#f1">Gateway feature 1</a>). Safety only requests a reconnect (<a href="#f1">feature 1</a>, <a href="#f3">feature 3</a>).</dd>
 </dl></div>
 
-<div class="behaviour" id="f5"><h3><span class="num">5</span>Every stream comes back after a reconnect<span class="added">settled · was behaviour 5</span></h3><dl class="gmi">
-<dt>Need</dt><dd>After a reconnect the engine needs ticks for every instrument, order updates and account updates again, before monitoring resumes.</dd>
-<dt>Upstream gives</dt><dd>The Gateway's subscribe operations, and the runtime book's fed instruments (<a href="#f10">feature 10</a>).</dd>
-<dt>Algorithm</dt><dd><ol>
-<li>Call the reconnect callbacks: resubscribe ticks once per fed instrument, order updates and account updates.</li>
-<li>Resume normal monitoring after the streams are confirmed.</li>
-</ol></dd>
-<dt>Parameters</dt><dd>None.</dd>
-<dt>Invariant</dt><dd>Every data and order stream the engine needs is restored before normal monitoring resumes.</dd>
+<div class="behaviour" id="f5"><h3><span class="num">5</span>Every stream comes back after a reconnect<span class="added">moved 2026-11-11 · System map decision 65</span></h3><dl class="gmi">
+<dt>Moved</dt><dd>The Gateway knows its own subscriptions and restores every stream after a reconnect (<a href="gateway_map.html#f1">Gateway feature 1</a>). The Gateway then emits <code>connection_restored</code>, which starts the repair (<a href="#f6">feature 6</a>).</dd>
 </dl></div>
 
-<div class="behaviour" id="f6"><h3><span class="num">6</span>Missed fills are repaired by order id<span class="added">settled · was behaviour 6 · decision 2</span></h3><dl class="gmi">
+<div class="behaviour" id="f6"><h3><span class="num">6</span>Missed fills are repaired by order id<span class="added">changed 2026-11-11 · decision 2 · System map decision 69</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A fill that happened while the engine was disconnected never reached its strategy. The strategy waits on that order, or holds an unbooked position.</dd>
-<dt>Upstream gives</dt><dd>Strategy reports each slot's submitted, open and cancelling orders (Order Manager's answer). The Gateway returns the broker's execution rows, each with its order id (<a href="gateway_map.html#f7">Gateway feature 7</a>).</dd>
+<dt>Upstream gives</dt><dd>Safety's own order view (<a href="#f10">feature 10</a>): every pending order id with its strategy key and the system time it was sent. The Gateway's reply to an executions request: the broker's execution rows, each with its order id (<a href="gateway_map.html#f7">Gateway feature 7</a>).</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>After a reconnect, collect pending order ids from every strategy in the runtime book, in every execution phase, so a resting stop that filled while in position is repaired too.</li>
-<li>Match each pending order id against the execution rows; on a match, create a Filled order update and append the update to the event buffer.</li>
-<li>Repair each order on its own. The periodic stuck-order check (<a href="#f11">feature 11</a>) calls the same repair with only the strategies processing an order.</li>
+<li>On <code>connection_restored</code>, send an executions request and an open-orders request, each with a correlation id.</li>
+<li>When both replies with those ids have arrived, match each pending order id, in every execution phase, against the execution rows. A resting stop that filled while in position is repaired too.</li>
+<li>On a match, push a Filled order update with the order's strategy key to the inbound buffer. The Event Loop gives the update to that strategy.</li>
+<li>The stuck-order timer (<a href="#f11">feature 11</a>) runs the same steps for the orders it picks.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
 <dt>Invariant</dt><dd>Attribution is strictly by order id. A fill is never inferred from net position, so the assignment stays correct when several strategies trade one instrument.</dd>
 </dl></div>
 
-<div class="behaviour" id="f7"><h3><span class="num">7</span>Dead orders become Rejected<span class="added">settled · was behaviour 7 · decision 4</span></h3><dl class="gmi">
+<div class="behaviour" id="f7"><h3><span class="num">7</span>Dead orders become Rejected<span class="added">changed 2026-11-11 · decision 4</span></h3><dl class="gmi">
 <dt>Need</dt><dd>An order can vanish at the broker with no status (for example, a reject the broker never reported). The waiting strategy must be freed, but a slow order must not be killed.</dd>
-<dt>Upstream gives</dt><dd>The broker's executions and open orders, and each pending order's age.</dd>
+<dt>Upstream gives</dt><dd>The executions and open-orders replies of a repair (<a href="#f6">feature 6</a>), and each pending order's age in system time from Safety's order view.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>For a pending order older than the minimum age, check both the executions and the open orders.</li>
-<li>When the order is absent from both, append a terminal Rejected order update to the event buffer.</li>
+<li>For a pending order older than the minimum age, check both replies.</li>
+<li>When the order is absent from both, push a terminal Rejected order update with the order's strategy key to the inbound buffer.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Minimum order age before Rejected</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>120 s</td><td>120 s</td></tr>
+<tr><td>Minimum order age before Rejected</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any positive seconds</td><td>120 s</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>An order is declared dead only when the order is absent from both the executed and the open sets after the minimum age.</dd>
 </dl></div>
 
-<div class="behaviour" id="f8"><h3><span class="num">8</span>A frozen loop is detected<span class="added">settled · was behaviour 8</span></h3><dl class="gmi">
+<div class="behaviour" id="f8"><h3><span class="num">8</span>A frozen loop is detected<span class="added">settled · System map decision 70</span></h3><dl class="gmi">
 <dt>Need</dt><dd>When the Event Loop blocks, nothing trades and nothing logs. The operator needs evidence of where the process is stuck.</dd>
 <dt>Upstream gives</dt><dd>Check-ins from the Event Loop while the loop is healthy.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Count missed check-ins; a healthy check-in resets the counter.</li>
+<li>A separate thread counts missed check-ins in system time; a healthy check-in resets the counter.</li>
 <li>When the count reaches the freeze threshold, dump every thread's stack once.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
@@ -297,105 +264,118 @@
 <dt>Invariant</dt><dd>A healthy loop never triggers a dump.</dd>
 </dl></div>
 
-<div class="behaviour" id="f9"><h3><span class="num">9</span>Positions poll, off by default<span class="added">settled · was behaviour 9</span></h3><dl class="gmi">
+<div class="behaviour" id="f9"><h3><span class="num">9</span>Positions poll, off by default<span class="added">changed 2026-11-11</span></h3><dl class="gmi">
 <dt>Need</dt><dd>An operator can want broker positions in the logs for monitoring. Strategy positions must not change from this poll.</dd>
-<dt>Upstream gives</dt><dd>The Gateway's position snapshot (<a href="gateway_map.html#f9">Gateway feature 9</a>), which can fail.</dd>
+<dt>Upstream gives</dt><dd>The Gateway answers a <code>poll_positions</code> request with a <code>positions</code> event that carries the same correlation id (<a href="gateway_map.html#f9">Gateway feature 9</a>), or with an error reply.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>When enabled, on the heartbeat loop at most once per poll interval, fetch broker positions and push them as position updates.</li>
-<li>Log, swallow and throttle a failing fetch.</li>
+<li>When enabled, send <code>poll_positions</code> at most once per poll interval, in system time.</li>
+<li>The <code>positions</code> reply goes through the inbound buffer like any event; the Event Loop logs it.</li>
+<li>Log and throttle an error reply.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Poll interval</td><td>Configurable (safety config)</td><td>off, or any positive seconds</td><td>off</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>When disabled, the heartbeat loop never polls. The poll never changes a strategy's position.</dd>
+<dt>Invariant</dt><dd>When disabled, Safety never sends <code>poll_positions</code>. The poll never changes a strategy's position.</dd>
 </dl></div>
 
-<div class="behaviour" id="f10"><h3><span class="num">10</span>Members come from the runtime book<span class="added">settled · was behaviour 10 · System map decision 34</span></h3><dl class="gmi">
-<dt>Need</dt><dd>A strategy added while the process runs must be repaired like a strategy present at start (<a href="event_loop_map.html#f11">Event Loop feature 11</a>).</dd>
-<dt>Upstream gives</dt><dd>The Event Loop's runtime book: strategies and fed instruments.</dd>
+<div class="behaviour" id="f10"><h3><span class="num">10</span>The watch state comes from the buffers<span class="added">changed 2026-11-11 · was "Members come from the runtime book" · System map decision 69</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Safety must know which feeds to watch and which orders are pending, also for a strategy added while the process runs. Safety must not read the runtime book or ask Strategy.</dd>
+<dt>Upstream gives</dt><dd>The outbound buffer carries every subscribe, unsubscribe, order and cancel command; each order command carries its order id and strategy key. The inbound buffer carries every order update.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Hold the runtime book, not a copy of the strategy list.</li>
-<li>Repair, the feed watchdog and the positions poll read the book's strategies when they run.</li>
-<li>A reconnect resubscribes the book's fed instruments, once per instrument.</li>
+<li>Subscribe and unsubscribe commands add and remove an instrument from the watched set (<a href="#f2">feature 2</a>).</li>
+<li>An order command adds a pending order: order id, strategy key, system time sent.</li>
+<li>An order update with a terminal status removes the order. Any order update marks the order as acknowledged.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
-<dt>Invariant</dt><dd>Safety keeps no copy of the strategy list.</dd>
+<dt>Invariant</dt><dd>Safety holds no reference to the runtime book, to Strategy or to the Gateway. A strategy added while the process runs is watched and repaired like a strategy present at start, because its commands pass through the same buffer.</dd>
 </dl></div>
 
-<div class="behaviour" id="f11"><h3><span class="num">11</span>Stuck orders are found on a timer<span class="added">settled · was Event Loop behaviour 6 · System map decision 50</span></h3><dl class="gmi">
+<div class="behaviour" id="f11"><h3><span class="num">11</span>Stuck orders are found on a timer<span class="added">changed 2026-11-11 · System map decision 50</span></h3><dl class="gmi">
 <dt>Need</dt><dd>An order update can be lost without any outage. A strategy then waits forever on an order the strategy thinks is in flight.</dd>
-<dt>Upstream gives</dt><dd>The runtime book's strategies (<a href="#f10">feature 10</a>), each slot's answer to "processing an order?" through Strategy, and the Gateway's executions and open orders (<a href="gateway_map.html#f7">Gateway feature 7</a>).</dd>
+<dt>Upstream gives</dt><dd>Safety's order view (<a href="#f10">feature 10</a>): pending orders that were sent but never acknowledged.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Every check interval, on the heartbeat loop and off the bar path: pick the slots that report they are processing an order.</li>
-<li>When at least one slot is picked, ask the Gateway for executions and open orders.</li>
-<li>Run the repair (<a href="#f6">feature 6</a>, <a href="#f7">feature 7</a>) for the picked slots only.</li>
+<li>Every check interval, in system time, on the watcher thread: pick the pending orders that are not acknowledged.</li>
+<li>When at least one order is picked, run the repair (<a href="#f6">feature 6</a>, <a href="#f7">feature 7</a>) for the picked orders only.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
-<tr><td>Check interval</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>60 s</td><td>60 s</td></tr>
+<tr><td>Check interval</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any positive seconds</td><td>60 s</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>The check never blocks or slows bar processing. The Event Loop never calls the repair.</dd>
+<dt>Invariant</dt><dd>The check never blocks or slows bar processing. When no order is picked, Safety sends no request.</dd>
+</dl></div>
+
+<div class="behaviour" id="f12"><h3><span class="num">12</span>The watcher never blocks the consumers<span class="added">new 2026-11-11 · System map decisions 61, 63</span></h3><dl class="gmi">
+<dt>Need</dt><dd>Safety must see every event and command in time, also while the Event Loop is busy or blocked, without slowing the Event Loop or the Gateway.</dd>
+<dt>Upstream gives</dt><dd>Each buffer gives every pushed item to a tap as well as to its normal consumer (<a href="event_loop_map.html#f14">Event Loop feature 14</a>).</dd>
+<dt>Algorithm</dt><dd><ol>
+<li>The watcher runs on its own thread and drains its tap.</li>
+<li>For each item, the watcher updates its watch state (<a href="#f10">feature 10</a>) and records the arrival system time.</li>
+<li>Every watcher check interval, the watcher runs the gap checks (<a href="#f1">feature 1</a>, <a href="#f2">feature 2</a>) and the timers (<a href="#f9">feature 9</a>, <a href="#f11">feature 11</a>).</li>
+<li>The watcher pushes its requests to the outbound buffer and its repairs to the inbound buffer; both pushes are thread-safe.</li>
+</ol></dd>
+<dt>Parameters</dt><dd>Watcher check interval (<a href="#f1">feature 1</a>).</dd>
+<dt>Invariant</dt><dd>A push into a tap never waits. The watcher keeps running while the Event Loop is blocked.</dd>
 </dl></div>
 </section>
 
 <section id="tests">
 <div class="eyebrow">Safety · 3 · Tests</div>
 <h2>Tests</h2>
-<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. No Safety test exists in v3 yet; every row is <span class="not-written">not written yet</span>.</p>
+<p>The goal and features as measurable cases. A test with parameter cases runs once per supported value. Every row has a test under <code>tests/safety/</code> (streaming core built 2026-11-11).</p>
 
-<details open><summary>End to end · the samples<span class="count">1 test</span></summary><div class="table-wrap"><table><tbody>
-<tr><th>Golden sample</th><td>Replay uses the do-nothing stand-in (<a href="system_map.html#d46">System map decision 46</a>), so the <a href="system_map.html#golden-sample-frozen">golden sample</a> has nothing to check for Safety. Safety is proved by the outage sample below and the feature tests.</td></tr>
+<details open><summary>End to end · the samples<span class="count">2 tests</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Golden sample</th><td>Safety runs in replay like in live (<a href="system_map.html#d46">System map decision 46</a>). In the <a href="system_map.html#golden-sample-frozen">golden sample</a>, Safety sends no reconnect, resubscribe or restart request, pushes no repair event and logs no alert.</td></tr>
 <tr><th>Test</th><td><code>test_outage_fill_repaired_by_order_id</code> (component-level outage)</td></tr>
-<tr><th>Input</th><td>The socket drops for 10 s while a strategy waits on order id 42; the broker fills order 42 at 5000.0; the socket reconnects.</td></tr>
-<tr><th>Parameter cases</th><td>reconnect base, cap ∈ {15 s, 120 s}</td></tr>
-<tr><th>Passes when</th><td>The failure is caught within one heartbeat interval plus the timeout; the reconnect loop backs off without crashing; repair matches order 42 and pushes one Filled update with average price 5000.0; the strategy moves to IN_POSITION_ACTIVITY.</td></tr>
-<tr><th>Fails when</th><td>The drop is not noticed within that time; the reconnect loop stops after repeated failures; the strategy stays waiting; or the fill is attributed to another strategy.</td></tr>
+<tr><th>Input</th><td>Order command 42 for strategy A passes the outbound tap; a <code>connection_lost</code> event arrives; 10 s later a <code>connection_restored</code> event arrives; the executions reply holds order 42 filled at 5000.0.</td></tr>
+<tr><th>Parameter cases</th><td>heartbeat interval ∈ {5 s}</td></tr>
+<tr><th>Passes when</th><td>An alert is logged on <code>connection_lost</code>; after <code>connection_restored</code>, Safety sends one executions request and one open-orders request with correlation ids; on both replies, Safety pushes one Filled update for order 42 with strategy key A and average price 5000.0.</td></tr>
+<tr><th>Fails when</th><td>No requests after <code>connection_restored</code>; no Filled update; the fill is attributed to another strategy.</td></tr>
 </tbody></table></div></details>
 
-<h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
-<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/safety/test_safety_scenarios.py</code>. A Gateway fake has a controllable heartbeat, last tick time, executions, open orders and positions; a fake runtime book holds strategy stubs with pending order ids and phases; a recording event buffer stands in for the Event Loop; a controlled clock steps time.</p>
-<details><summary>S1. A dead socket starts the reconnect loop<span class="count">features 1, 4</span></summary><div class="table-wrap"><table><tbody>
-<tr><th>Test</th><td><code>test_scenario_dead_socket</code></td></tr>
-<tr><th>Given</th><td>Connected; the heartbeat starts returning False at t0; the next three reconnects fail, the fourth succeeds.</td></tr>
-<tr><th>When</th><td>Step the clock.</td></tr>
-<tr><th>Parameter cases</th><td>heartbeat interval ∈ {5 s}; timeout ∈ {3.0 s}; backoff ∈ {base 15 s, cap 120 s}</td></tr>
-<tr><th>Passes when</th><td>The reconnect loop starts by t0 + 8 s; waits between attempts are 15 s, 30 s and 60 s; CRITICAL is logged on the persistent failure; the loop never aborts; monitoring resumes after the fourth attempt.</td></tr>
-<tr><th>Fails when</th><td>A start after t0 + 8 s; other waits; the loop gives up.</td></tr>
+<h3 id="scenarios">End-to-end scenarios <span class="added">changed 2026-11-11</span></h3>
+<p>Each scenario drives Safety only through its taps and check-ins, from a known start state, and checks the commands and events Safety pushes. File: <code>tests/safety/test_safety_scenarios.py</code>. A recording outbound buffer and a recording inbound buffer capture Safety's output; a controlled system-time source steps time.</p>
+<details><summary>S1. A stopped heartbeat requests a reconnect<span class="count">features 1, 12</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_heartbeat_gap</code></td></tr>
+<tr><th>Given</th><td>A <code>heartbeat</code> event every 5 s until t0, then none.</td></tr>
+<tr><th>When</th><td>Step system time by 1 s steps to t0 + 20 s.</td></tr>
+<tr><th>Parameter cases</th><td>heartbeat interval ∈ {5 s}; timeout ∈ {3 s}; check interval ∈ {1 s}</td></tr>
+<tr><th>Passes when</th><td>The first <code>reconnect</code> request and alert are pushed by t0 + 9 s; the next one only after another 8 s gap.</td></tr>
+<tr><th>Fails when</th><td>No request by t0 + 9 s; a request on every check.</td></tr>
 </tbody></table></div></details>
-<details><summary>S2. Missed fill during an outage (golden outage sample)<span class="count">features 5, 6</span></summary><div class="table-wrap"><table><tbody>
+<details><summary>S2. Missed fill during an outage (golden outage sample)<span class="count">features 6, 10</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_outage_fill_repaired_by_order_id</code></td></tr>
-<tr><th>Given</th><td>See the end-to-end outage sample above; add a second strategy in position whose resting stop (order 43) filled during the outage.</td></tr>
+<tr><th>Given</th><td>See the outage sample above; add strategy B in position whose resting stop (order 43) filled during the outage.</td></tr>
 <tr><th>When</th><td>As the outage sample.</td></tr>
-<tr><th>Parameter cases</th><td>reconnect base, cap ∈ {15 s, 120 s}</td></tr>
-<tr><th>Passes when</th><td>As the outage sample; order 43 is also repaired with one Filled update.</td></tr>
+<tr><th>Parameter cases</th><td>—</td></tr>
+<tr><th>Passes when</th><td>As the outage sample; order 43 is also repaired with one Filled update with strategy key B.</td></tr>
 <tr><th>Fails when</th><td>As the outage sample; order 43 not repaired.</td></tr>
 </tbody></table></div></details>
-<details><summary>S3. A stale feed climbs the ladder<span class="count">features 2, 3</span></summary><div class="table-wrap"><table><tbody>
+<details><summary>S3. A stale feed climbs the request ladder<span class="count">features 2, 3</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_stale_feed_ladder</code></td></tr>
-<tr><th>Given</th><td>CME session open; the last MES tick is 46 s old.</td></tr>
-<tr><th>When</th><td>Case a: ticks resume after the first resubscribe. Case b: no tick after any resubscribe. Case c: as b, inside a maintenance window.</td></tr>
-<tr><th>Parameter cases</th><td>stale threshold ∈ {45 s}; resubscribe attempts ∈ {4}; resubscribes without a tick ∈ {3}</td></tr>
-<tr><th>Passes when</th><td>a: one resubscribe, then normal monitoring. b: 3 resubscribes, then one reconnect; no restart. c: after the reconnect fails, a broker gateway restart.</td></tr>
+<tr><th>Given</th><td>MES subscribed; the last MES feed event has an event time inside the CME data session and arrived 46 s ago in system time.</td></tr>
+<tr><th>When</th><td>Case a: a feed event arrives after the first resubscribe. Case b: no feed event after any resubscribe. Case c: as b, inside a maintenance window.</td></tr>
+<tr><th>Parameter cases</th><td>stale threshold ∈ {45 s}; resubscribe attempts ∈ {4}; resubscribes without a feed event ∈ {3}</td></tr>
+<tr><th>Passes when</th><td>a: one <code>resubscribe</code> request, then nothing. b: 3 <code>resubscribe</code> requests, then one <code>reconnect</code>; no restart. c: after the reconnect, one <code>restart_broker_process</code>.</td></tr>
 <tr><th>Fails when</th><td>A reconnect before the resubscribes; a restart outside a maintenance window.</td></tr>
 </tbody></table></div></details>
 <details><summary>S4. A closed session is never stale<span class="count">features 2</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_closed_session_quiet</code></td></tr>
-<tr><th>Given</th><td>Saturday (CME and Eurex closed), last tick from Friday. Second case: CME open, Eurex closed, last FDAX tick old.</td></tr>
-<tr><th>When</th><td>Step the clock 10 minutes.</td></tr>
+<tr><th>Given</th><td>The last feed event's event time is Friday 17:00 New York (CME and Eurex closed). Second case: CME armed, the last FDAX event time outside the Eurex data session.</td></tr>
+<tr><th>When</th><td>Step system time 10 minutes with no feed event.</td></tr>
 <tr><th>Parameter cases</th><td>—</td></tr>
-<tr><th>Passes when</th><td>No resubscribe, reconnect or restart in either case.</td></tr>
-<tr><th>Fails when</th><td>Any recovery action.</td></tr>
+<tr><th>Passes when</th><td>No request for the closed exchange in either case.</td></tr>
+<tr><th>Fails when</th><td>Any request for a closed exchange.</td></tr>
 </tbody></table></div></details>
-<details><summary>S5. Every stream comes back once<span class="count">features 5, 10</span></summary><div class="table-wrap"><table><tbody>
-<tr><th>Test</th><td><code>test_scenario_streams_restored</code></td></tr>
-<tr><th>Given</th><td>Fed instruments MES (two strategies), ES and FDAX.</td></tr>
-<tr><th>When</th><td>Reconnect.</td></tr>
+<details><summary>S5. Watch state follows the buffers<span class="count">features 10, 12</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_watch_state_from_buffers</code></td></tr>
+<tr><th>Given</th><td>Subscribe commands for MES and FDAX; an order command 70 for strategy C sent after start (a hot-added strategy); then an unsubscribe for FDAX.</td></tr>
+<tr><th>When</th><td>No feed event for 60 s on either instrument; then a <code>connection_restored</code> with order 70 in the executions reply.</td></tr>
 <tr><th>Parameter cases</th><td>—</td></tr>
-<tr><th>Passes when</th><td>MES, ES and FDAX are resubscribed once each; order and account updates are resubscribed; monitoring resumes after the streams are confirmed.</td></tr>
-<tr><th>Fails when</th><td>An instrument resubscribed twice or not at all.</td></tr>
+<tr><th>Passes when</th><td>A ladder starts for CME only; order 70 is repaired with strategy key C.</td></tr>
+<tr><th>Fails when</th><td>A ladder for Eurex after the unsubscribe; order 70 not repaired.</td></tr>
 </tbody></table></div></details>
 <details><summary>S6. Dead orders become Rejected<span class="count">features 7</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_dead_orders</code></td></tr>
-<tr><th>Given</th><td>Pending order 50 is 150 s old; order 51 is 100 s old; order 52 is 150 s old and in the open orders.</td></tr>
+<tr><th>Given</th><td>Pending order 50 is 150 s old; order 51 is 100 s old; order 52 is 150 s old and in the open-orders reply.</td></tr>
 <tr><th>When</th><td>Run the repair.</td></tr>
 <tr><th>Parameter cases</th><td>minimum age ∈ {120 s}</td></tr>
 <tr><th>Passes when</th><td>One Rejected update for order 50; nothing for 51 or 52.</td></tr>
@@ -403,57 +383,50 @@
 </tbody></table></div></details>
 <details><summary>S7. Stuck orders are found on the timer<span class="count">features 6, 11</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_stuck_order_timer</code></td></tr>
-<tr><th>Given</th><td>No outage. Slot A is processing order 60, whose fill the broker has but the engine missed; slot B is idle.</td></tr>
-<tr><th>When</th><td>Step the clock 61 s; then a second case where no slot is processing.</td></tr>
+<tr><th>Given</th><td>No outage. Order 60 was sent and never acknowledged; the broker has its fill. Order 61 is acknowledged.</td></tr>
+<tr><th>When</th><td>Step system time 61 s; then a second case where every order is acknowledged.</td></tr>
 <tr><th>Parameter cases</th><td>check interval ∈ {60 s}</td></tr>
-<tr><th>Passes when</th><td>Within 60 s one Filled update for order 60; only slot A is checked. No-slot case: no executions or open-orders query.</td></tr>
-<tr><th>Fails when</th><td>No repair within 60 s; slot B queried; a query when no slot is processing.</td></tr>
+<tr><th>Passes when</th><td>Within 60 s one Filled update for order 60; order 61 is not checked. Second case: no request.</td></tr>
+<tr><th>Fails when</th><td>No repair within 60 s; a request when every order is acknowledged.</td></tr>
 </tbody></table></div></details>
-<details><summary>S8. A frozen loop is dumped once<span class="count">features 8</span></summary><div class="table-wrap"><table><tbody>
+<details><summary>S8. A frozen loop is dumped once<span class="count">features 8, 12</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_frozen_loop</code></td></tr>
 <tr><th>Given</th><td>Check-ins every 1 s.</td></tr>
 <tr><th>When</th><td>Stop check-ins for 12 s; resume; stop again for 10 s.</td></tr>
 <tr><th>Parameter cases</th><td>freeze threshold ∈ {10 missed at 1 s}</td></tr>
-<tr><th>Passes when</th><td>One stack dump in the first freeze, none while healthy, and one in the second freeze.</td></tr>
-<tr><th>Fails when</th><td>Two dumps in one freeze; no dump; a dump while healthy.</td></tr>
+<tr><th>Passes when</th><td>One stack dump in the first freeze, none while healthy, and one in the second freeze; the watcher keeps running its gap checks during both freezes.</td></tr>
+<tr><th>Fails when</th><td>Two dumps in one freeze; no dump; a dump while healthy; the watcher stops during a freeze.</td></tr>
 </tbody></table></div></details>
 <details><summary>S9. Positions poll only when enabled<span class="count">features 9</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_positions_poll</code></td></tr>
-<tr><th>Given</th><td>The broker holds +1 MES.</td></tr>
-<tr><th>When</th><td>Run 90 s; in the failing case every fetch raises.</td></tr>
-<tr><th>Parameter cases</th><td>poll interval ∈ {off, 30 s} × case ∈ {answers, fetch fails}</td></tr>
-<tr><th>Passes when</th><td>off: no fetch. 30 s: at most 3 fetches, each pushing a position update of +1 MES. Fetch fails: errors logged and throttled, no crash.</td></tr>
-<tr><th>Fails when</th><td>A fetch when off; more than one fetch per interval; a crash.</td></tr>
+<tr><th>Given</th><td>The Gateway fake answers <code>poll_positions</code> with +1 MES, or with an error reply.</td></tr>
+<tr><th>When</th><td>Run 90 s of system time.</td></tr>
+<tr><th>Parameter cases</th><td>poll interval ∈ {off, 30 s} × reply ∈ {positions, error}</td></tr>
+<tr><th>Passes when</th><td>off: no request. 30 s: at most 3 requests. Error: logged and throttled, no crash.</td></tr>
+<tr><th>Fails when</th><td>A request when off; more than one request per interval; a crash.</td></tr>
 </tbody></table></div></details>
 
-<details><summary>1. A dead socket is caught within one interval<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_socket_failure_caught_within_interval</code></td><td>interval ∈ {5 s} × timeout ∈ {3.0 s}</td><td>time from drop to reconnect start</td><td>≤ interval + timeout</td></tr>
+<details><summary>1. A dead socket is caught within one interval<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_heartbeat_gap_requests_reconnect</code></td><td>interval ∈ {5 s} × timeout ∈ {3 s} × check ∈ {1 s}</td><td>system time from the last heartbeat to the reconnect request</td><td>≤ interval + timeout + check</td></tr>
+<tr><td><code>test_connection_lost_alerts</code></td><td>—</td><td>alerts on <code>connection_lost</code></td><td>1</td></tr>
 </tbody></table></div></details>
 
 <details><summary>2. A stale feed is caught only while a session is open<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_stale_feed_starts_ladder</code></td><td>threshold ∈ {45 s}</td><td>time from last tick to ladder start, session open</td><td>≤ threshold + one interval</td></tr>
-<tr><td><code>test_no_stale_alarm_when_every_exchange_in_break</code></td><td>exchanges ∈ {CME, CME + Eurex}</td><td>alarms during breaks and weekend</td><td>0</td></tr>
-<tr><td><code>test_day_only_book_still_watched_overnight</code></td><td>—</td><td>alarm for a stale overnight feed</td><td>1</td></tr>
+<tr><td><code>test_stale_feed_starts_ladder</code></td><td>threshold ∈ {45 s}</td><td>system time from the last feed event to the first resubscribe request, exchange armed</td><td>≤ threshold + one check interval</td></tr>
+<tr><td><code>test_no_stale_alarm_when_every_exchange_in_break</code></td><td>exchanges ∈ {CME, CME + Eurex}</td><td>requests during breaks and weekend</td><td>0</td></tr>
+<tr><td><code>test_day_only_book_still_watched_overnight</code></td><td>—</td><td>ladder starts for a stale overnight feed</td><td>1</td></tr>
 </tbody></table></div></details>
 
-<details><summary>3. Recovery climbs from cheap to expensive<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_ladder_order</code></td><td>attempts ∈ {4}</td><td>rungs tried, in order</td><td>4 resubscribes, then reconnect</td></tr>
-<tr><td><code>test_resubscribe_without_tick_capped</code></td><td>cap ∈ {3}</td><td>resubscribes before reconnect when no tick arrives</td><td>3</td></tr>
-<tr><td><code>test_process_restart_only_in_maintenance_window</code></td><td>time ∈ {inside window, outside window}</td><td>process restarts</td><td>1; 0</td></tr>
-</tbody></table></div></details>
-
-<details><summary>4. Reconnect never gives up<span class="count">2 tests · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_reconnect_never_gives_up</code></td><td>failures before success ∈ {1, 50}</td><td>loop result</td><td>connected; no exit before</td></tr>
-<tr><td><code>test_backoff_delays</code></td><td>base, cap ∈ {15 s, 120 s}</td><td>delay(n) for n = 1…8</td><td>min(cap, base · 2^(n−1)), exact</td></tr>
-</tbody></table></div></details>
-
-<details><summary>5. Every stream comes back after a reconnect<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_restore_subscribes_each_fed_instrument_once</code></td><td>—</td><td>tick subscriptions per instrument; order and account streams</td><td>1 each; both active</td></tr>
+<details><summary>3. Recovery climbs from cheap to expensive<span class="count">4 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_ladder_order</code></td><td>attempts ∈ {4}</td><td>requests sent, in order</td><td>resubscribes, then reconnect</td></tr>
+<tr><td><code>test_resubscribe_without_feed_event_capped</code></td><td>cap ∈ {3}</td><td>resubscribe requests before the reconnect request when no feed event arrives</td><td>3</td></tr>
+<tr><td><code>test_restart_only_in_maintenance_window</code></td><td>time ∈ {inside window, outside window}</td><td><code>restart_broker_process</code> requests</td><td>1; 0</td></tr>
+<tr><td><code>test_connection_restored_without_feed_capped_then_reconnect</code></td><td>—</td><td><code>rig.kinds()</code></td><td><code>= [&#x27;resubscribe&#x27;] * cap + [&#x27;reconnect&#x27;]</code></td></tr>
 </tbody></table></div></details>
 
 <details><summary>6. Missed fills are repaired by order id<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_resting_stop_filled_while_in_position_repaired</code></td><td>—</td><td>Filled updates pushed</td><td>1, for the stop's order id</td></tr>
-<tr><td><code>test_two_strategies_same_instrument_attributed_by_id</code></td><td>—</td><td>fills assigned to the wrong strategy</td><td>0</td></tr>
+<tr><td><code>test_two_strategies_same_instrument_attributed_by_id</code></td><td>—</td><td>fills assigned to the wrong strategy key</td><td>0</td></tr>
 </tbody></table></div></details>
 
 <details><summary>7. Dead orders become Rejected<span class="count">1 test · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -465,26 +438,32 @@
 </tbody></table></div></details>
 
 <details><summary>9. Positions poll, off by default<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_positions_poll_respects_config</code></td><td>poll ∈ {off, 60 s}</td><td>polls in 10 minutes; strategy position changes</td><td>0 and 0; ≤ 10 and 0</td></tr>
+<tr><td><code>test_positions_poll_respects_config</code></td><td>poll ∈ {off, 60 s}</td><td><code>poll_positions</code> requests in 10 minutes</td><td>0; ≤ 10</td></tr>
 </tbody></table></div></details>
 
-<details><summary>10. Members come from the runtime book<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_strategy_committed_after_start_is_repaired</code></td><td>—</td><td>Filled updates for the late strategy's missed fill</td><td>1</td></tr>
+<details><summary>10. The watch state comes from the buffers<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_order_from_hot_added_strategy_is_repaired</code></td><td>—</td><td>Filled updates for the late strategy's missed fill</td><td>1</td></tr>
+<tr><td><code>test_safety_holds_no_book_or_gateway_reference</code></td><td>—</td><td>constructor arguments that are the Gateway, the runtime book or Strategy</td><td>0</td></tr>
 </tbody></table></div></details>
 
 <details><summary>11. Stuck orders are found on a timer<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_stuck_check_runs_every_interval</code></td><td>interval ∈ {60 s}</td><td>checks in a 10-minute replay-clock run</td><td>10</td></tr>
-<tr><td><code>test_stuck_check_does_not_block_bar_dispatch</code></td><td>—</td><td>bar dispatch latency while a check takes 5 s</td><td>no bar waits for the check</td></tr>
+<tr><td><code>test_stuck_check_runs_every_interval</code></td><td>interval ∈ {60 s}</td><td>checks in 10 minutes of system time</td><td>10</td></tr>
+<tr><td><code>test_stuck_check_does_not_block_bar_dispatch</code></td><td>—</td><td>bar dispatch latency while a check waits 5 s for its replies</td><td>no bar waits for the check</td></tr>
+</tbody></table></div></details>
+
+<details><summary>12. The watcher never blocks the consumers<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_tap_push_never_waits</code></td><td>watcher ∈ {running, blocked}</td><td>push time into a buffer with a tap</td><td>same as without a tap, within 10 %</td></tr>
+<tr><td><code>test_watcher_runs_while_loop_blocked</code></td><td>—</td><td>gap checks while the Event Loop is blocked for 10 s</td><td>≥ 9</td></tr>
 </tbody></table></div></details>
 </section>
 
 <section id="open-questions">
 <div class="eyebrow">Safety · Open questions</div>
 <h2>Open questions</h2>
-<p>All decided on 2026-11-09.</p>
+<p>None open. Decided on 2026-11-09 and 2026-11-11:</p>
 <ol>
-<li><strong>Watch numbers (features 1, 2).</strong> Heartbeat interval 5 s and stale-tick threshold 45 s, in the safety config; the stale threshold may be overridden per exchange.</li>
-<li><strong>Ladder numbers (feature 3).</strong> 4 resubscribe attempts and a cap of 3 resubscribes without a tick; configurable per process.</li>
+<li><strong>Watch numbers (features 1, 2, 12).</strong> Heartbeat interval 5 s, heartbeat timeout 3 s, stale threshold 45 s (overridable per exchange), watcher check interval 1 s; defaults in the constants package, configurable per process (<a href="system_map.html#d63">System map decision 63</a>).</li>
+<li><strong>Ladder numbers (feature 3).</strong> 4 resubscribe attempts and a cap of 3 resubscribes without a feed event; configurable per process.</li>
 <li><strong>Dead-order age (feature 7).</strong> 120 s; configurable per process.</li>
 <li><strong>Freeze threshold (feature 8).</strong> The Event Loop checks in every 1 s; 10 missed check-ins (10 s) trigger the stack dump; both configurable per process.</li>
 <li><strong>Stuck-order check interval (feature 11).</strong> 60 s, in the safety config.</li>
@@ -496,26 +475,29 @@
 <h2>Reference</h2>
 <p>Implementation detail and history. Feature numbers equal the old behaviour numbers.</p>
 <h3>Step → code</h3>
-<p>The heartbeat loop and freeze detector are in <code>safety/monitor.py</code>; the repair is in <code>safety/fsm_repair.py</code>.</p>
+<p>The watcher and the watch state are in <code>safety/monitor.py</code>; the repair is in <code>safety/fsm_repair.py</code>; the freeze detector is in <code>safety/freeze.py</code>; the defaults are in <code>constants/safety.py</code>.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Step</th><th>Code</th></tr></thead>
 <tbody>
-<tr><td>Probe socket, Check feed freshness, Climb recovery ladder, Poll positions</td><td><code>SafetyMonitor.run()</code>, <code>feed_expected()</code>; constants <code>HEARTBEAT_INTERVAL_S</code>, <code>STALE_TICK_S</code>, <code>RESUBSCRIBE_MAX_ATTEMPTS</code>, <code>RESUBSCRIBE_WITHOUT_TICK_CAP</code></td></tr>
-<tr><td>Reconnect forever</td><td><code>SafetyMonitor.reconnect_forever()</code>; <code>SafetyConfig.reconnect_base_s</code>, <code>reconnect_cap_s</code></td></tr>
-<tr><td>Restore subscriptions</td><td><code>SafetyMonitor.restore_subscriptions()</code></td></tr>
-<tr><td>Repair by order id, Declare dead orders</td><td><code>repair_stuck_strategies()</code>; <code>REJECT_SYNTHESIS_MIN_AGE_S</code></td></tr>
-<tr><td>Detect frozen loop</td><td><code>FreezeDetector.check_in()</code>, <code>start()</code>, <code>stop()</code></td></tr>
-<tr><td>Replay</td><td><code>NullSafety</code> (does nothing)</td></tr>
+<tr><td>Watch state</td><td><code>WatchState.observe_event()</code>, <code>observe_command()</code>; <code>SafetyMonitor.drain()</code> reads <code>inbound_tap</code> and <code>outbound_tap</code></td></tr>
+<tr><td>Heartbeat gap</td><td><code>SafetyMonitor.check_heartbeat()</code>, <code>on_connection_events()</code>; constants <code>HEARTBEAT_INTERVAL_S</code>, <code>HEARTBEAT_TIMEOUT_S</code>, <code>WATCH_CHECK_INTERVAL_S</code></td></tr>
+<tr><td>Feed gap</td><td><code>SafetyMonitor.armed()</code>, <code>check_feeds()</code>; constant <code>STALE_FEED_S</code></td></tr>
+<tr><td>Request ladder</td><td><code>SafetyMonitor.climb_ladder()</code>, <code>on_restored()</code>, <code>in_maintenance_window()</code>; constants <code>RESUBSCRIBE_MAX_ATTEMPTS</code>, <code>RESUBSCRIBE_WITHOUT_FEED_CAP</code>, <code>RESUBSCRIBE_BACKOFF_BASE_S</code></td></tr>
+<tr><td>Repair by order id, Declare dead orders</td><td><code>SafetyMonitor.start_repair()</code>, <code>finish_repairs()</code>; <code>repair_orders()</code>; constant <code>REJECT_SYNTHESIS_MIN_AGE_S</code></td></tr>
+<tr><td>Stuck-order timer</td><td><code>SafetyMonitor.check_stuck_orders()</code>; constant <code>STUCK_CHECK_INTERVAL_S</code></td></tr>
+<tr><td>Poll positions</td><td><code>SafetyMonitor.check_positions_poll()</code></td></tr>
+<tr><td>Watcher thread</td><td><code>SafetyMonitor.start()</code>, <code>run()</code>, <code>step()</code>, <code>stop()</code></td></tr>
+<tr><td>Detect frozen loop</td><td><code>FreezeDetector.check_in()</code>, <code>tick()</code>, <code>start()</code>, <code>stop()</code>; the Event Loop calls <code>SafetyMonitor.check_in()</code></td></tr>
 </tbody></table></div>
-
 
 <div id="skeleton-code">
 <h3>Skeleton code</h3>
 <div class="table-wrap"><table>
-<thead><tr><th>Piece</th><th>Role</th><th>Old behaviours</th></tr></thead>
+<thead><tr><th>Piece</th><th>Role</th><th>Features</th></tr></thead>
 <tbody>
-<tr><td><code>SafetyMonitor</code></td><td>The heartbeat loop: socket probe, feed liveness, recovery ladder, reconnect, resubscribe, positions poll.</td><td>1–5, 9, 10</td></tr>
-<tr><td><code>repair_stuck_strategies()</code></td><td>Attribute broker executions to pending orders by id; synthesise Filled or Rejected updates.</td><td>6, 7</td></tr>
+<tr><td><code>SafetyMonitor</code></td><td>The watcher thread: drains its tap, keeps the watch state, runs the gap checks and timers, pushes requests and repairs.</td><td>1–3, 9–12</td></tr>
+<tr><td><code>WatchState</code></td><td>Last feed time per exchange, last heartbeat time, pending orders.</td><td>10</td></tr>
+<tr><td><code>repair_orders()</code></td><td>Attribute broker executions to pending orders by id; build Filled or Rejected updates with the strategy key.</td><td>6, 7</td></tr>
 <tr><td><code>FreezeDetector</code></td><td>Loop check-ins and the stack dump.</td><td>8</td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
@@ -523,29 +505,33 @@
 
 from __future__ import annotations
 
-HEARTBEAT_INTERVAL_S = 5.0
-STALE_TICK_S = 45.0
-RESUBSCRIBE_MAX_ATTEMPTS = 4
-RESUBSCRIBE_WITHOUT_TICK_CAP = 3        # decision 3
-REJECT_SYNTHESIS_MIN_AGE_S = 120.0      # decision 4
+from alchemist.constants.safety import (
+    HEARTBEAT_INTERVAL_S, HEARTBEAT_TIMEOUT_S, STALE_FEED_S, WATCH_CHECK_INTERVAL_S,
+    RESUBSCRIBE_MAX_ATTEMPTS, RESUBSCRIBE_WITHOUT_FEED_CAP, REJECT_SYNTHESIS_MIN_AGE_S,
+)
+
+
+class WatchState:
+    def observe_event(self, event, arrived_at: float) -&gt; None:
+        """Feature 10: feed times per exchange, heartbeat time, order acks."""
+    def observe_command(self, command, sent_at: float) -&gt; None:
+        """Feature 10: subscriptions and pending orders."""
 
 
 class SafetyMonitor:
-    def __init__(self, gateway, book, event_buffer, exchange_profiles,
-                 maintenance_windows, positions_poll_s: float | None = None): ...
+    def __init__(self, inbound_tap, outbound_tap, inbound, outbound,
+                 exchange_profiles, config, system_time) -&gt; None: ...
 
-    async def run(self) -&gt; None:
-        """Behaviours 1-3, 9: heartbeat loop."""
-    async def reconnect_forever(self) -&gt; None:
-        """Behaviour 4: min(cap, base * 2**(n-1)), never gives up."""
-    async def restore_subscriptions(self) -&gt; None:
-        """Behaviour 5."""
-    def feed_expected(self, now: float) -&gt; bool:
-        """Behaviour 2: any configured exchange's data session open."""
+    def run(self) -&gt; None:
+        """Feature 12: watcher thread; drain taps, check every WATCH_CHECK_INTERVAL_S."""
+    def check(self, now: float) -&gt; None:
+        """Features 1-3, 9, 11: gap checks, ladder, timers."""
+    def on_replies(self, executions, open_orders, picked) -&gt; None:
+        """Features 6-7."""
 
 
-async def repair_stuck_strategies(strategies, gateway, event_buffer, now: float) -&gt; int:
-    """Behaviours 6-7: by order id only; returns the number of repaired orders."""
+def repair_orders(pending, executions, open_orders, now: float) -&gt; list:
+    """Features 6-7: by order id only; returns Filled / Rejected updates with strategy keys."""
 
 
 class FreezeDetector:
@@ -555,10 +541,11 @@ class FreezeDetector:
 
 <div id="decisions-already-made">
 <h3>Decisions already made</h3>
-<div class="decision"><h3><span class="num">1</span>Why two layers of watching?</h3><p class="q">Layer 0 watches socket responsiveness; Layer 1 watches tick-feed freshness — because the socket can stay alive while the feed is dead.</p></div>
+<div class="decision"><h3><span class="num">1</span>Why two layers of watching?</h3><p class="q">Layer 0 watches socket responsiveness (the heartbeat gap); Layer 1 watches feed freshness (the feed gap) — because the socket can stay alive while the feed is dead.</p><p class="when">changed 2026-11-11 · the Gateway runs the heartbeat; Safety watches the gap</p></div>
 <div class="decision"><h3><span class="num">2</span>How are repaired fills attributed?</h3><p class="q">Strictly by order id, never by net position, so attribution stays correct even when several strategies trade the same instrument.</p></div>
-<div class="decision"><h3><span class="num">3</span>How is a resubscribe livelock avoided?</h3><p class="q">The broker's "connectivity restored" signals (at IBKR, 1101/1102) are capped at 3 consecutive resubscribes without a tick, then Safety falls through to a socket reconnect.</p></div>
+<div class="decision"><h3><span class="num">3</span>How is a resubscribe livelock avoided?</h3><p class="q">The broker's "connectivity restored" signals (at IBKR, 1101/1102) are capped at 3 consecutive resubscribes without a feed event, then Safety requests a socket reconnect.</p></div>
 <div class="decision"><h3><span class="num">4</span>When is a missing order safely declared dead?</h3><p class="q">Only when it is older than 120 seconds and confirmed absent from both the execution history and the open-order snapshot — preventing races with orders still in flight.</p></div>
+<div class="decision"><h3><span class="num">5</span>How does Safety see the system?</h3><p class="q">Through taps on the inbound and the outbound buffer, on its own thread. Safety holds no reference to the Gateway, the runtime book or Strategy (<a href="system_map.html#d61">System map decisions 61</a>, <a href="system_map.html#d69">69</a>).</p><p class="rej">Rejected: reading the runtime book and calling Gateway methods (each mode needed its own wiring, and replay needed a do-nothing stand-in).</p><p class="when">agreed 2026-11-11</p></div>
 </div>
 </section>
 </div>

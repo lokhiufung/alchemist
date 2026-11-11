@@ -34,8 +34,11 @@
 <div class="eyebrow">Component map · AUX_DATA_MAP · Alchemist v3</div>
 <h1>Aux Data</h1>
 <div class="lede"><p>The engine's second input. Aux Data reads daily auxiliary series from outside data sources, decides when a value is settled for the next session, and tells each strategy that reads a series whether the strategy may trade.</p></div>
-<div class="meta"><p><strong>v3 final, 2026-11-09 — agreed (<a href="system_map.html#d44">System map decision 44</a>).</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. Features 1–6 carry over the auxiliary and arming rules that the Event Loop map held before; features 7–9 are new interface rules.</p>
+<div class="meta"><p><strong>Last agreed: 2026-11-11.</strong> Aux Data reads the watch time and gets its members from member events (<a href="system_map.html#d71">System map decision 71</a>). <strong>v3 final, 2026-11-09 — agreed (<a href="system_map.html#d44">System map decision 44</a>).</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. Features 1–6 carry over the auxiliary and arming rules that the Event Loop map held before; features 7–9 are new interface rules.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-11</strong> — Compiled with /component-design: every existing Aux Data test now has a row under the feature it protects.</li>
+<li><strong>2026-11-11</strong> — Aux Data reads the watch time and gets its members from member events (<a href="system_map.html#d71">System map decision 71</a>). <a href="#f6">Feature 6</a> changed: a replay arms on the tape time like live, and no replay date is passed in. <a href="#f9">Feature 9</a> changed: the members come from member events, not from reads of the runtime book.</li>
+<li><strong>2026-11-11</strong> — The streaming core removed the shared clock (System map decision 62) and Safety's use of the runtime book (decision 69).</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
 <li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (9 scenarios, proposed, not agreed).</li>
 <li><strong>2026-11-09</strong> — v3 finalized: the human accepted every proposed feature and decision.</li>
@@ -59,10 +62,11 @@
 <tbody>
 <tr><td rowspan="3">Other components call Aux Data</td><td>Event Loop</td><td>Annotate a completed bar before dispatch</td><td>bar → bar + auxiliary values</td></tr>
 <tr><td>Strategy</td><td>Ask for the history frames of an instrument during a cold rebuild</td><td>instrument → frames</td></tr>
-<tr><td>Runner</td><td>Start and stop the resident task</td><td>mode, replay date</td></tr>
+<tr><td>Runner</td><td>Start and stop the resident task</td><td>aux config</td></tr>
 <tr><td rowspan="3">Aux Data calls other components</td><td>Outside data sources</td><td>Fetch a series</td><td>name, target date → rows</td></tr>
 <tr><td>Strategy</td><td>Give a member its frames to seed; tell the member it is ready or not ready</td><td>frames, ready flag</td></tr>
-<tr><td>Event Loop (runtime book)</td><td>Read the current members on each step</td><td>strategies and the names they read</td></tr>
+<tr><td>Event Loop (runtime book)</td><td>Send a member event when a strategy joins or leaves the book</td><td>the strategy and the names it reads</td></tr>
+<tr><td>Event Loop (watch time)</td><td>Read the watch time on each step</td><td>event time of the last event + system time since it arrived</td></tr>
 </tbody></table></div>
 
 <h3>Scope</h3>
@@ -102,7 +106,7 @@
   <path class="ps-a" d="M730,156 H545"/><text class="ps-l" x="637" y="150">frame request</text>
   <path class="ps-a" d="M545,192 H730"/><text class="ps-l" x="637" y="208">frames, ready</text>
 </svg>
-<p class="caption">Aux Data reads the runtime book's members on each step; the Event Loop owns the runtime book (<a href="event_loop_map.html#f11">Event Loop feature 11</a>).</p>
+<p class="caption">Aux Data keeps the members that the runtime book announces in member events; the Event Loop owns the runtime book (<a href="event_loop_map.html#f11">Event Loop feature 11</a>). Aux Data steps on the watch time (<a href="system_map.html#d68">System map decision 68</a>).</p>
 </div>
 </section>
 
@@ -113,7 +117,7 @@
 
 <h3>Algorithm map</h3>
 <div class="diagram">
-<svg viewBox="0 0 1000 620" role="img" aria-label="Aux Data steps: members from the runtime book are grouped by arm session; each group fetches a value, judges whether the value is settled for its target, arms by seeding members through Strategy, rechecks hourly until the open, and disarms when the target date rolls. Bars get the bound values; a cold rebuild gets the current frames." xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1000 620" role="img" aria-label="Aux Data steps: members from member events are grouped by arm session; each group fetches a value, judges whether the value is settled for its target, arms by seeding members through Strategy, rechecks hourly until the open, and disarms when the target date rolls. Bars get the bound values; a cold rebuild gets the current frames." xmlns="http://www.w3.org/2000/svg">
   <style>
     .x-stp { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
     .x-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
@@ -131,8 +135,8 @@
     <marker id="xah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
   </defs>
   <rect class="x-ext" x="420" y="8" width="140" height="30" rx="15"/><text class="x-x" x="490" y="28">Event Loop</text>
-  <path class="x-a" d="M490,38 V70"/><text class="x-l" x="498" y="58">members (runtime book)</text>
-  <rect class="x-st" x="20" y="76" width="170" height="40" rx="6"/><text class="x-r" x="105" y="100">[ clock: every step ]</text>
+  <path class="x-a" d="M490,38 V70"/><text class="x-l" x="498" y="58">members (member events)</text>
+  <rect class="x-st" x="20" y="76" width="170" height="40" rx="6"/><text class="x-r" x="105" y="100">[ watch time: every step ]</text>
   <path class="x-c" d="M190,96 H380"/>
 
   <rect class="x-main" x="380" y="70" width="220" height="52" rx="8"/><text class="x-t" x="490" y="92">Group by arm session</text><text class="x-r" x="490" y="110">session from profile</text>
@@ -185,7 +189,7 @@
   <a href="#f7"><rect x="720" y="220" width="170" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 7</title></rect></a>
   <a href="#f8"><rect x="720" y="380" width="170" height="52" rx="8" fill="transparent" style="cursor:pointer"><title>Feature 8</title></rect></a>
 </svg>
-<p class="caption">Main path in colour: members → groups → fetch → judge → arm. In replay, every group resolves at start in one pass (<a href="#f6">feature 6</a>). Dashed boxes are shared data structures; the dashed accent arrow is the step clock.</p>
+<p class="caption">Main path in colour: members → groups → fetch → judge → arm. A replay runs the same steps on the tape time (<a href="#f6">feature 6</a>). Dashed boxes are shared data structures; the dashed accent arrow is the watch time that paces the steps.</p>
 </div>
 
 <h3>Feature cards</h3>
@@ -218,11 +222,11 @@
 
 <div class="behaviour" id="f3"><h3><span class="num">3</span>Arm groups are independent<span class="added">settled · was behaviour 3 · decision 3</span></h3><dl class="gmi">
 <dt>Need</dt><dd>Strategies on CME and on Eurex arm for different sessions on different clocks. A Eurex outage must not stop a CME strategy from trading.</dd>
-<dt>Upstream gives</dt><dd>The members from the runtime book, and each instrument's exchange profile with its sessions.</dd>
+<dt>Upstream gives</dt><dd>The members from member events (<a href="#f9">feature 9</a>), the watch time, and each instrument's exchange profile with its sessions.</dd>
 <dt>Algorithm</dt><dd><ol>
 <li>Group the members by the session they arm for, taken from the exchange profile.</li>
 <li>Give each group its own target date, its deadline (that session's open) and its column scope (pairs of instrument and name).</li>
-<li>Step every group concurrently, at the step interval.</li>
+<li>Step every group concurrently, every step interval of watch time.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Step interval</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>60 s</td><td>60 s</td></tr>
@@ -257,16 +261,17 @@
 <dt>Invariant</dt><dd>A member never trades on frames built from a value that was replaced.</dd>
 </dl></div>
 
-<div class="behaviour" id="f6"><h3><span class="num">6</span>Replay resolves at once<span class="added">settled · was behaviour 6</span></h3><dl class="gmi">
-<dt>Need</dt><dd>A replay must start with every auxiliary value it needs, and must fail loudly when one is missing.</dd>
-<dt>Upstream gives</dt><dd>Files that hold the whole history, and a replay date.</dd>
+<div class="behaviour" id="f6"><h3><span class="num">6</span>Replay arms on the tape time<span class="added">changed 2026-11-11 · was "Replay resolves at once" · System map decision 71</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A replay must arm each group by the same rules as live, so a replay result is evidence about live trading (<a href="system_map.html#d46">System map decision 46</a>).</dd>
+<dt>Upstream gives</dt><dd>File sources that hold the whole history, and the watch time, which moves with the tape (<a href="system_map.html#d68">System map decision 68</a>).</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Load the files at start.</li>
-<li>Resolve every bound name for the replay date, seed and arm the members.</li>
-<li>Raise when a value is missing.</li>
+<li>Step on the watch time, like live (<a href="#f3">feature 3</a>).</li>
+<li>When the cold start has added every member, run one step at once, so that a group whose value is present arms before the first bar.</li>
+<li>Run no step before the first event sets the watch time.</li>
+<li>A missing value leaves the group unarmed; its members sit the session out with the same warning as live (<a href="#f4">feature 4</a>).</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
-<dt>Invariant</dt><dd>A replay never runs a day with an auxiliary value silently missing.</dd>
+<dt>Invariant</dt><dd>Replay and live run the same steps. No replay date is passed to Aux Data.</dd>
 </dl></div>
 
 <div class="behaviour" id="f7"><h3><span class="num">7</span>Values on the bar<span class="added">settled · was behaviour 7</span></h3><dl class="gmi">
@@ -290,16 +295,16 @@
 <dt>Invariant</dt><dd>A rebuild never leaves an armed slot on an unseeded calculation.</dd>
 </dl></div>
 
-<div class="behaviour" id="f9"><h3><span class="num">9</span>Members come from the runtime book<span class="added">settled · was behaviour 9 · System map decision 34</span></h3><dl class="gmi">
-<dt>Need</dt><dd>A strategy added while the process runs must get its auxiliary values like any other strategy (<a href="event_loop_map.html#f11">Event Loop feature 11</a>).</dd>
-<dt>Upstream gives</dt><dd>The runtime book, which the Event Loop changes only between events.</dd>
+<div class="behaviour" id="f9"><h3><span class="num">9</span>Members come from member events<span class="added">changed 2026-11-11 · was "Members come from the runtime book" · System map decision 71</span></h3><dl class="gmi">
+<dt>Need</dt><dd>A strategy added while the process runs must get its auxiliary values like any other strategy (<a href="event_loop_map.html#f11">Event Loop feature 11</a>). Aux Data must not read the runtime book (<a href="system_map.html#d61">System map decision 61</a>).</dd>
+<dt>Upstream gives</dt><dd>A member event from the runtime book each time a strategy joins it (at commit) or leaves it.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Read the members from the runtime book again on each step.</li>
+<li>Keep the members from the member events: add a strategy when it joins, remove it when it leaves.</li>
 <li>A strategy committed later joins its arm session's group only if that group already covers what the strategy reads; otherwise the strategy gets its own group.</li>
 <li>A crash of the resident task logs CRITICAL.</li>
 </ol></dd>
 <dt>Parameters</dt><dd>None.</dd>
-<dt>Invariant</dt><dd>Aux Data keeps no copy of the strategy list.</dd>
+<dt>Invariant</dt><dd>Aux Data holds no reference to the runtime book and no clock. A strategy committed later is a member from its member event.</dd>
 </dl></div>
 </section>
 
@@ -317,11 +322,11 @@
 </tbody></table></div></details>
 
 <h3 id="scenarios">End-to-end scenarios <span class="added">agreed 2026-11-09</span></h3>
-<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/aux_data/test_aux_data_scenarios.py</code>. A fake outside source serves scripted rows; a fake runtime book holds the members; recording Strategy stubs record frames, ready calls and seed errors; a controlled clock steps time. Times are New York for CME and Frankfurt for Eurex.</p>
+<p>Each scenario drives the component only through its public interface, from a known start state, and checks one exact, observable output. A scenario tells one story across several features; the feature tables below keep the single rules. File: <code>tests/aux_data/test_aux_data_scenarios.py</code>. A fake outside source serves scripted rows; member events add the members; recording Strategy stubs record frames, ready calls and seed errors; a controlled watch time steps time. Times are New York for CME and Frankfurt for Eurex.</p>
 <details><summary>S1. Arm before the open<span class="count">features 2, 3, 4, 7</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_arm_before_open</code></td></tr>
 <tr><th>Given</th><td>One member on MES (NY_RTH) reads the auxiliary name X. The source serves a settled row for the target date from 08:00.</td></tr>
-<tr><th>When</th><td>Step the clock from 07:00 to 09:31.</td></tr>
+<tr><th>When</th><td>Step the watch time from 07:00 to 09:31.</td></tr>
 <tr><th>Parameter cases</th><td>step interval ∈ {60 s}</td></tr>
 <tr><th>Passes when</th><td>The group arms by 08:01; the member gets its frames, then ready, in that order, once; every bar on the target date carries X with that value.</td></tr>
 <tr><th>Fails when</th><td>Ready before frames; an arm after 08:01 or after the open; a bar without X.</td></tr>
@@ -329,7 +334,7 @@
 <details><summary>S2. A value that is not settled is not used<span class="count">features 2, 4</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_unsettled_value_waits</code></td></tr>
 <tr><th>Given</th><td>As above, but until 08:30 the source serves only the row of an earlier date.</td></tr>
-<tr><th>When</th><td>Step the clock from 07:00 to 09:31.</td></tr>
+<tr><th>When</th><td>Step the watch time from 07:00 to 09:31.</td></tr>
 <tr><th>Parameter cases</th><td>step interval ∈ {60 s}</td></tr>
 <tr><th>Passes when</th><td>Until 08:30 the group is not armed and the member gets no ready; while no frame is loaded the source is fetched at most once per target; one warning per change in what the source serves. The group arms by 08:31.</td></tr>
 <tr><th>Fails when</th><td>The earlier row is accepted; repeated fetches for one target while no frame is loaded; a warning on every step.</td></tr>
@@ -337,7 +342,7 @@
 <details><summary>S3. Missed open sits the session out<span class="count">features 4</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_missed_open</code></td></tr>
 <tr><th>Given</th><td>The settled row never appears before 09:30; it appears at 10:00.</td></tr>
-<tr><th>When</th><td>Step the clock to 16:00, then into the next target date with a row present before its open. Second case: start the process at 10:00 with the row present since 08:00.</td></tr>
+<tr><th>When</th><td>Step the watch time to 16:00, then into the next target date with a row present before its open. Second case: start the process at 10:00 with the row present since 08:00.</td></tr>
 <tr><th>Parameter cases</th><td>case ∈ {row after the open; process started after the open}</td></tr>
 <tr><th>Passes when</th><td>Row after the open: the group stays unarmed for the session, no fetch is made for that target after 09:30, the member gets no ready; the next target date arms before its open. Late process start: the group arms at start.</td></tr>
 <tr><th>Fails when</th><td>A late arm in the missed session; a fetch after the open for that target; the next date fails to arm; the late-start process does not arm.</td></tr>
@@ -353,7 +358,7 @@
 <details><summary>S5. Groups arm on their own clocks<span class="count">features 3, 4</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_independent_groups</code></td></tr>
 <tr><th>Given</th><td>One member on MES (NY_RTH) and one on FDAX, each reading its own name; the Eurex source is down.</td></tr>
-<tr><th>When</th><td>Step the clock across both opens.</td></tr>
+<tr><th>When</th><td>Step the watch time across both opens.</td></tr>
 <tr><th>Parameter cases</th><td>—</td></tr>
 <tr><th>Passes when</th><td>The MES group arms before the NY open; the FDAX group stays unarmed and sits its session out; the MES group is not affected.</td></tr>
 <tr><th>Fails when</th><td>One group's failure delays or blocks the other; a group arms on the other exchange's clock.</td></tr>
@@ -361,23 +366,23 @@
 <details><summary>S6. A backup value needs a confirmation<span class="count">features 1</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_backup_needs_confirmation</code></td></tr>
 <tr><th>Given</th><td>The primary source has no row for the target; a backup source has value v.</td></tr>
-<tr><th>When</th><td>Step the clock to the open.</td></tr>
+<tr><th>When</th><td>Step the watch time to the open.</td></tr>
 <tr><th>Parameter cases</th><td>case ∈ {second source confirms v; second source differs; second source absent}; confirmations ∈ {1}</td></tr>
 <tr><th>Passes when</th><td>Confirmed: the group arms with v. Differs or absent: v is not used and the group does not arm.</td></tr>
 <tr><th>Fails when</th><td>An unconfirmed backup value is used.</td></tr>
 </tbody></table></div></details>
-<details><summary>S7. Replay resolves at once<span class="count">features 6</span></summary><div class="table-wrap"><table><tbody>
-<tr><th>Test</th><td><code>test_scenario_replay_resolves_at_start</code></td></tr>
-<tr><th>Given</th><td>Replay of 2026-04-15 with file sources.</td></tr>
-<tr><th>When</th><td>Start the replay.</td></tr>
+<details><summary>S7. Replay arms on the tape time<span class="count">features 6</span></summary><div class="table-wrap"><table><tbody>
+<tr><th>Test</th><td><code>test_scenario_replay_arms_on_the_tape_time_at_the_open</code></td></tr>
+<tr><th>Given</th><td>Replay of 2026-04-15 with file sources; the watch time is the tape time at the 09:30 open.</td></tr>
+<tr><th>When</th><td>The cold start adds the member and runs the first step.</td></tr>
 <tr><th>Parameter cases</th><td>case ∈ {every value present; one value missing}</td></tr>
-<tr><th>Passes when</th><td>Present: every member is seeded and armed before the first bar. Missing: start raises and names the missing value.</td></tr>
-<tr><th>Fails when</th><td>A member armed after the first bar; start passes with a missing value.</td></tr>
+<tr><th>Passes when</th><td>Present: the member is seeded and armed before the first bar, and the bar carries the value. Missing: the group stays unarmed and the member gets no ready call.</td></tr>
+<tr><th>Fails when</th><td>A member armed after the first bar; a member armed with a missing value.</td></tr>
 </tbody></table></div></details>
 <details><summary>S8. A strategy added later joins a group<span class="count">features 9</span></summary><div class="table-wrap"><table><tbody>
 <tr><th>Test</th><td><code>test_scenario_late_member</code></td></tr>
 <tr><th>Given</th><td>The MES group is armed for name X.</td></tr>
-<tr><th>When</th><td>Commit strategy C reading X, and strategy D reading a new name Y, to the runtime book.</td></tr>
+<tr><th>When</th><td>Commit strategy C reading X, and strategy D reading a new name Y, to the runtime book; each commit sends a member event.</td></tr>
 <tr><th>Parameter cases</th><td>—</td></tr>
 <tr><th>Passes when</th><td>C joins the armed group on the next step; D gets its own group, which arms on its own when Y settles.</td></tr>
 <tr><th>Fails when</th><td>C waits for a new arm; D joins the X group.</td></tr>
@@ -391,8 +396,9 @@
 <tr><th>Fails when</th><td>Stale or empty frames for an armed group.</td></tr>
 </tbody></table></div></details>
 
-<details><summary>1. One interface per outside source<span class="count">1 test · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>1. One interface per outside source<span class="count">2 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_backup_value_used_only_when_confirmed</code></td><td>second source ∈ {confirms, disagrees, missing}</td><td>value used</td><td>backup; none; none</td></tr>
+<tr><td><code>test_primary_value_wins_over_backup</code></td><td>—</td><td><code>[r[&#x27;value&#x27;] for r in rows]</code></td><td><code>= [1.0]</code></td></tr>
 </tbody></table></div></details>
 
 <details><summary>2. A value counts only when settled for its target<span class="count">2 tests · 3 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -402,7 +408,7 @@
 
 <details><summary>3. Arm groups are independent<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_arm_groups_per_exchange_are_independent</code></td><td>—</td><td>CME group state during a Eurex source outage</td><td>unchanged</td></tr>
-<tr><td><code>test_groups_stepped_every_interval</code></td><td>interval ∈ {60 s}</td><td>steps in a 10-minute replay clock run</td><td>10 per group</td></tr>
+<tr><td><code>test_groups_stepped_every_interval</code></td><td>interval ∈ {60 s}</td><td>steps in a 10-minute run of watch time</td><td>10 per group</td></tr>
 </tbody></table></div></details>
 
 <details><summary>4. Arm before the open, or sit the session out<span class="count">4 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -417,20 +423,25 @@
 <tr><td><code>test_recheck_outcomes</code></td><td>outcome ∈ {fetch fails, target gone, re-seed raises}</td><td>group state</td><td>armed; armed; unarmed</td></tr>
 </tbody></table></div></details>
 
-<details><summary>6. Replay resolves at once<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
-<tr><td><code>test_replay_resolves_or_raises</code></td><td>value ∈ {present, missing}</td><td>start result</td><td>armed before the first bar; raises</td></tr>
+<details><summary>6. Replay arms on the tape time<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<tr><td><code>test_members_changed_waits_for_the_first_event</code></td><td>—</td><td>steps before the first event</td><td>0</td></tr>
 </tbody></table></div></details>
 
-<details><summary>7. Values on the bar<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>7. Values on the bar<span class="count">3 tests · 4 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_annotate_adds_bound_values_before_dispatch</code></td><td>instrument ∈ {with bound name, without}</td><td>fields added to the bar</td><td>bound values only; none</td></tr>
+<tr><td><code>test_annotate_leaves_other_trading_dates_alone</code></td><td>—</td><td><code>&#x27;aux_X&#x27;</code></td><td><code>not in other_day</code></td></tr>
+<tr><td><code>test_golden_no_aux_names_is_inert</code></td><td>—</td><td><code>bar; source.fetches; strategy.calls; provider.groups</code></td><td><code>= before; = 0; = []; = []</code></td></tr>
 </tbody></table></div></details>
 
 <details><summary>8. Frames for a cold rebuild<span class="count">1 test · 1 case</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_rebuild_while_armed_gets_current_frames</code></td><td>—</td><td>frames returned vs. armed frames</td><td>equal</td></tr>
 </tbody></table></div></details>
 
-<details><summary>9. Members come from the runtime book<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>9. Members come from member events<span class="count">4 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_late_joiner_gets_own_group_unless_covered</code></td><td>joiner reads ∈ {covered names, a new name}</td><td>group joined</td><td>existing group; own group</td></tr>
+<tr><td><code>test_departed_member_is_dropped</code></td><td>—</td><td>group members after a leave event</td><td>none</td></tr>
+<tr><td><code>test_aux_holds_no_runtime_book_and_no_clock</code></td><td>—</td><td>constructor arguments that are the runtime book or a clock</td><td>0</td></tr>
+<tr><td><code>test_resident_task_crash_logs_critical</code></td><td>—</td><td><code>any((r.levelno == logging.CRITICAL for r in caplog.records))</code></td><td><code>true</code></td></tr>
 </tbody></table></div></details>
 </section>
 
@@ -450,18 +461,19 @@
 <h2>Reference</h2>
 <p>Implementation detail and history. Feature numbers equal the old behaviour numbers.</p>
 <h3>Step → code</h3>
-<p>Sources are in <code>external_data/sources.py</code>; the provider and groups are in <code>external_data/data_providers..py</code> (the file name has a double dot).</p>
+<p>Sources are in <code>external_data/sources.py</code>; the provider and groups are in <code>external_data/provider.py</code>; the poll period of the resident task is in <code>constants/aux_data.py</code>.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Step</th><th>Code</th></tr></thead>
 <tbody>
-<tr><td>Group by arm session</td><td><code>AuxProvider</code> · Planned grouping; <code>AuxArmGroup.covers()</code></td></tr>
+<tr><td>Group by arm session</td><td><code>AuxProvider.sync_groups()</code>; <code>AuxArmGroup.covers()</code></td></tr>
 <tr><td>[ arm groups ]</td><td><code>AuxArmGroup</code></td></tr>
 <tr><td>Fetch value</td><td><code>AuxSource.fetch()</code>, <code>FileAuxSource</code>, <code>ConfirmedBackupAuxSource</code>, <code>register_aux_source()</code></td></tr>
 <tr><td>Judge settled, Arm group, Recheck until open, Roll target date</td><td><code>AuxArmGroup.step()</code></td></tr>
-<tr><td>Replay resolve</td><td><code>AuxProvider.start()</code></td></tr>
+<tr><td>Members</td><td><code>AuxProvider.member_joined()</code>, <code>member_left()</code>; sent by <code>RuntimeBook.commit()</code> through <code>RuntimeBook.member_listeners</code></td></tr>
+<tr><td>First step at cold start</td><td><code>AuxProvider.members_changed()</code>; called by the runner's <code>SlotsService</code></td></tr>
 <tr><td>Annotate bar</td><td><code>AuxProvider.annotate()</code></td></tr>
 <tr><td>Serve frames</td><td><code>AuxProvider.frames_for()</code></td></tr>
-<tr><td>Resident task</td><td><code>AuxProvider.start()</code>, <code>stop()</code></td></tr>
+<tr><td>Resident task, step on the watch time</td><td><code>AuxProvider.start()</code>, <code>run()</code>, <code>stop()</code>; <code>WatchTime.ready()</code>, <code>now()</code>, <code>moment()</code>; constant <code>AUX_POLL_S</code></td></tr>
 </tbody></table></div>
 
 
@@ -473,7 +485,8 @@
 <tbody>
 <tr><td><code>AuxSource</code>, <code>AUX_SOURCES</code></td><td>One outside source; picked by name from a registry.</td><td>1</td></tr>
 <tr><td><code>AuxArmGroup</code></td><td>Target date, deadline, columns, armed state and warnings for one arm session.</td><td>2, 3, 4, 5</td></tr>
-<tr><td><code>AuxProvider.start()</code>, <code>stop()</code></td><td>Replay: resolve or raise. Live: start and cancel the resident task.</td><td>3, 6, 9</td></tr>
+<tr><td><code>AuxProvider.start()</code>, <code>stop()</code></td><td>Start and cancel the resident task; the task steps every step interval of watch time.</td><td>3, 6</td></tr>
+<tr><td><code>AuxProvider.member_joined()</code>, <code>member_left()</code></td><td>Keep the members from member events.</td><td>9</td></tr>
 <tr><td><code>AuxProvider.annotate()</code></td><td>Values on the bar.</td><td>7</td></tr>
 <tr><td><code>AuxProvider.frames_for()</code></td><td>Frames for a cold rebuild.</td><td>8</td></tr>
 </tbody></table></div>
@@ -486,7 +499,6 @@ from abc import ABC, abstractmethod
 from datetime import date
 from typing import Any
 
-from alchemist.clock import Clock
 from alchemist.instruments import Instrument
 
 AUX_STEP_INTERVAL_S = 60.0        # Behaviour 3
@@ -512,7 +524,10 @@ class AuxArmGroup:
 
 class AuxProvider:
     """Behaviours 1-9."""
-    def __init__(self, sources: list[AuxSource], book, clock: Clock) -&gt; None: ...
+    def __init__(self, sources: dict[str, AuxSource], watch_time, config) -&gt; None: ...
+    def member_joined(self, strategy) -&gt; None: ...
+    def member_left(self, name: str) -&gt; None: ...
+    async def members_changed(self) -&gt; None: ...
     async def start(self) -&gt; None: ...
     async def stop(self) -&gt; None: ...
     def annotate(self, instrument: Instrument, bar: dict) -&gt; None: ...
@@ -525,6 +540,7 @@ class AuxProvider:
 <div class="decision"><h3><span class="num">1</span>Why is Aux Data its own component?</h3><p class="q">It has its own outside input (not the broker), its own failure modes (source down, value not settled, provisional value changed, backup not confirmed) and its own clock (arming by each session's open). It touches the rest of the engine at three points only: values on a bar, frames for a rebuild, and ready / not ready. Taking it out narrows the Event Loop to bars, dispatch and broker history.</p><p class="rej">Rejected: keeping it inside the Event Loop (the widest boundary in the system); moving it behind the Gateway (the Gateway is the broker only, System map decision 7).</p><p class="when">decided 2026-11-09 · proposed 2026-11-07</p></div>
 <div class="decision"><h3><span class="num">2</span>Who tells a strategy it is ready?</h3><p class="q">Aux Data tells Strategy, with the frames. Strategy seeds the signal and then tells StrategyExecution (<a href="strategy_map.html#f3">Strategy feature 3</a>). Aux Data never reaches into the signal or the execution state machine.</p><p class="when">decided 2026-11-09 · proposed 2026-11-07</p></div>
 <div class="decision"><h3><span class="num">3</span>Where does a group's arm session come from?</h3><p class="q">From the exchange profile of the strategy's instrument (System map decision 31). No code branches on a session or exchange name.</p><p class="when">decided 2026-11-09 · proposed 2026-11-07</p></div>
+<div class="decision"><h3><span class="num">4</span>Which time does Aux Data read, and where do its members come from?</h3><p class="q">The watch time, and member events from the runtime book (<a href="system_map.html#d71">System map decision 71</a>). In replay the watch time is the tape time, so no replay date is passed in.</p><p class="rej">Rejected: the watch time with reads of the runtime book (a reach across the boundary, decision 61); keeping the replay date and the one-pass resolve (a replay-only path, decision 46).</p><p class="when">decided 2026-11-11</p></div>
 </div>
 </section>
 </div>

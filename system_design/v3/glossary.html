@@ -34,8 +34,10 @@
 <div class="eyebrow">Glossary · GLOSSARY · Alchemist v3</div>
 <h1>Glossary</h1>
 <div class="lede"><p>The words this design uses, each with what it means, its name in code and one example. Reuse these words when you write a page, a map or code; add a new one only when no term below already covers the idea.</p></div>
-<div class="meta"><p>v3 final, 2026-11-09.</p>
+<div class="meta"><p>v3 final, 2026-11-09. Streaming-core terms agreed 2026-11-11.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-11</strong> — Streaming core agreed: the terms below are agreed; Clock removed; RunMode used only by the runner; Clock-driven bar flush renamed Bar flush.</li>
+<li><strong>2026-11-11</strong> — Proposed terms: event time, system time, watch time, inbound buffer, outbound buffer, correlation id, stale-feed watcher. Clock and RunMode proposed for removal.</li>
 <li><strong>2026-11-09</strong> — Latency is two measures: processing latency (the 5 ms budget) and feed latency. Aux Data is no longer proposed.</li>
 <li><strong>2026-11-09</strong> — New terms: tick update, bar update, quote update (reserved), market-data message type, runner, operator, broker journal. Bar now covers bar updates. Examples no longer use the L-cross run.</li>
 <li><strong>2026-11-07</strong> — New Code column: each term names its symbol in the skeleton code. Shared runtime terms added (configuration, strategy key, strat, account, warmup, intraday seed, readiness flags, recorded and deferring bars, fill engine, reserve, staging, deploy fingerprint, recorders, stores, order state). Renamed: Trading day → Trading date, Flush grace → Bar flush grace, Repair → FSM repair.</li>
@@ -87,10 +89,17 @@
 <tr><td><strong>Market-data message type</strong></td><td>The message type a gateway declares per instrument: <code>tick_update</code>, or <code>bar_update</code> with its resolution.</td><td><code>Gateway.market_data_type</code></td><td>MES on the simulated broker: <code>bar_update</code>, 1 s.</td></tr>
 <tr><td><strong>Bar (OHLCV bar)</strong></td><td>A completed 1-second OHLCV bucket of one instrument, built from ticks by the Resampler or taken from a bar update. Every bar enters dispatch through <code>emit_bar</code>.</td><td><code>event_loop.resampler.Resampler</code></td><td>—</td></tr>
 <tr><td><strong>Resampler</strong></td><td>The tick-to-bar builder; drops late and out-of-order ticks.</td><td><code>Resampler</code></td><td>—</td></tr>
-<tr><td><strong>Clock-driven bar flush</strong></td><td>A quiet bar forced out by the clock when no tick rolls it over.</td><td><code>EventLoop.fire_due_bars</code>, <code>Resampler.flush_due</code></td><td>—</td></tr>
+<tr><td><strong>Bar flush</strong></td><td>A quiet bar forced out when the watch time reaches its end plus the flush grace and no tick rolls it over.</td><td><code>EventLoop.fire_due_bars</code>, <code>Resampler.flush_due</code></td><td>—</td></tr>
 <tr><td><strong>Bar flush grace</strong></td><td>How long a quiet bar may wait before the clock-driven bar flush (1.0 s).</td><td><code>SystemConfig.bar_flush_grace_s</code></td><td>—</td></tr>
-<tr><td><strong>Clock</strong></td><td>Shared code giving the time: WallClock live, ReplayClock in replay, which moves forward on each bar close.</td><td><code>clock.Clock</code>, <code>WallClock</code>, <code>ReplayClock</code></td><td>Session-end flatten reads <code>clock.now()</code>.</td></tr>
-<tr><td><strong>RunMode</strong></td><td>The run mode (replay, paper, live), built once by the runner to choose components and stand-ins. No component reads it.</td><td><code>run_mode.RunMode</code></td><td>—</td></tr>
+<tr><td><strong>Clock</strong> <em>(removed 2026-11-11)</em></td><td>Removed by System map decision 62. Use event time, watch time or system time.</td><td>—</td><td>—</td></tr>
+<tr><td><strong>RunMode</strong></td><td>The run mode (replay, paper, live). Only the runner reads it, to select the adapters (System map decision 46).</td><td><code>run_mode.RunMode</code></td><td>—</td></tr>
+<tr><td><strong>Event time</strong></td><td>The timestamp on a message. All logic reads event time only (System map decision 62).</td><td>not built yet</td><td>The end time of a tape bar.</td></tr>
+<tr><td><strong>System time</strong></td><td>The wall clock of the machine. Used only for logs, latency and the stale-feed gap.</td><td>not built yet</td><td><code>recv_ts</code> on a tick.</td></tr>
+<tr><td><strong>Inbound buffer</strong></td><td>The buffer that carries events to the Event Loop and the components (System map decision 61).</td><td>not built yet</td><td>A <code>bar_update</code>, a <code>heartbeat</code>, a <code>deploy_request</code>.</td></tr>
+<tr><td><strong>Outbound buffer</strong></td><td>The buffer that carries commands from the components to the Gateway, the alert sink and the operator socket.</td><td>not built yet</td><td>An order, a <code>poll_positions</code> request, a <code>deploy_result</code>.</td></tr>
+<tr><td><strong>Correlation id</strong></td><td>The id on a request command that its reply event carries back (System map decision 65).</td><td>not built yet</td><td><code>poll_positions(id=7)</code> → <code>positions(id=7)</code>.</td></tr>
+<tr><td><strong>Watch time</strong></td><td>The event time of the last event plus the system time passed since that event arrived. The bar flush and the shutdown read the watch time (System map decision 68).</td><td>not built yet</td><td>Last bar at 15:59:59, arrived 2 s ago → watch time 16:00:01.</td></tr>
+<tr><td><strong>Stale-feed watcher</strong></td><td>Safety's concurrent background reader of feed events. It compares the system-time gap since the last feed event with the stale threshold (System map decision 63).</td><td>not built yet</td><td>No feed event for 45 s while CME is open → stale.</td></tr>
 <tr><td><strong>Warmup</strong></td><td>Seeding a slot's signal from history before it trades: daily bars, prior-session bars, auxiliary frames.</td><td><code>Strategy.warmup</code>, <code>event_loop.seeder.Seeder</code></td><td>—</td></tr>
 <tr><td><strong>Intraday seed</strong></td><td>The prior session's trailing 1-second bars, for calculations with a rolling intraday window.</td><td><code>Gateway.get_intraday_seed_bars</code></td><td>—</td></tr>
 <tr><td><strong>Seed state</strong></td><td>One value per slot: pending, ready, quarantined (recoverable) or quarantined (terminal).</td><td><code>seeder.SeedState</code></td><td>A failed prior-session fetch leaves the slot pending until the retry lands.</td></tr>

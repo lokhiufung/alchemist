@@ -4,7 +4,7 @@ The engine's only line to the broker. Prices come in through the Gateway, orders
 
 Frozen contract for the Gateway component. Agents implement against this file and must not edit it: it changes only by re-running `/component-design` with the human, compiled from the HTML design page `gateway_map.html` in this folder (the human-readable source). System boundary: [SYSTEM_MAP.md](SYSTEM_MAP.md).
 
-**Last agreed: 2026-11-10.** **v3 final, 2026-11-09 — agreed.** The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3). Change history: see `gateway_map.html`.
+**Last agreed: 2026-11-11.** **Streaming core agreed 2026-11-11.** Commands arrive on the outbound buffer, events and replies leave on the inbound buffer, and the Gateway does its own connection work (System map decisions 61–70). **v3 final, 2026-11-09 — agreed.** The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3). Change history: see `gateway_map.html`.
 
 ## Goal and scope
 
@@ -12,16 +12,16 @@ Frozen contract for the Gateway component. Agents implement against this file an
 
 **Why it exists.** Every broker has its own API, its own contract names, its own error codes and its own threads. The Event Loop, Order Manager and Safety must not know which broker sits behind the engine, so that replay, paper and live place the same orders ([System map decision 6](SYSTEM_MAP.md)). The Gateway hides the broker's API behind one set of operations, and each subclass translates those operations into one broker's API.
 
-**Goal.** Give the engine one asynchronous interface to the broker: market data and order updates come in, orders and cancels go out, and the broker's executions, history and connection health are available on request, for every instrument the process trades.
+**Goal.** Give the engine one interface to the broker: the Gateway consumes commands from the outbound buffer (orders, cancels, subscriptions and requests) and produces events on the inbound buffer (market data, order updates, replies and connection health), for every instrument the process trades. The Gateway keeps its own connection alive ([System map decisions 61](SYSTEM_MAP.md), [65](SYSTEM_MAP.md)).
 
 ### Public interface
 
 | Direction | Who | Operation | Carries |
 |----|----|----|----|
-| Other components call the Gateway | Order Manager | Place an order; cancel an order | order: instrument, action, size, type (MKT, STP, LMT), price, OCA group and type; order id |
+| Commands to the Gateway, on the outbound buffer | Order Manager | Place an order; cancel an order | order: instrument, action, size, type (MKT, STP, LMT), price, OCA group and type; order id |
 |  | Event Loop | Resolve a contract; subscribe and unsubscribe ticks; declare instrument sessions; request daily history and intraday seed bars | instrument, history window (months or dates) and session |
-|  | Safety | Probe the socket; reconnect; read the last tick time; fetch executions, open orders and positions; take the resubscribe request | timeout, since-timestamp |
-| The Gateway calls other components | Event Loop | Push events into the event buffer and raise the drain wake-up | `tick_update` or `bar_update`, order update, position update, balance update, `end_of_data` |
+|  | Safety | Resubscribe instruments; reconnect; restart the broker process; fetch executions, open orders and positions (feature 15) | correlation id, since-timestamp |
+| The Gateway produces | Inbound buffer | Push events and raise the drain wake-up | `tick_update` or `bar_update`, order update, position update, balance update, `heartbeat`, `connection_lost`, `connection_restored`, replies with their correlation id, `end_of_data` |
 |  | Broker (outside the system) | Send orders, cancels, subscriptions and requests through the broker's API | broker messages |
 
 ### Scope
@@ -35,7 +35,7 @@ Owns, from the System map:
 | Building bars from ticks; deciding which strategy receives an event | [Event Loop](EVENT_LOOP_MAP.md) |
 | Deciding what to trade | [Strategy](STRATEGY_MAP.md), [StrategyExecution](STRATEGY_EXECUTION_MAP.md) |
 | Tracking an order's life | [Order Manager](ORDER_MANAGER_MAP.md) |
-| Noticing a dead connection; repairing strategies after an outage | [Safety](SAFETY_MAP.md) |
+| Deciding that a feed is stale; repairing strategies after an outage | [Safety](SAFETY_MAP.md) |
 
 ### Place in the system
 
@@ -45,7 +45,7 @@ The System map's Gateway *Receives* and *Produces* lines list every operation on
 
 ## Features
 
-Each feature says which component needs it and why, what the broker can give, and how the Gateway closes the gap. Every number is a parameter with its supported values.
+Each feature says which component needs it and why, what the broker can give, and how the Gateway closes the gap. Every number is a parameter with its supported values. Click a box in the map to jump to its feature.
 
 ### Algorithm map
 
@@ -171,38 +171,38 @@ Each feature says which component needs it and why, what the broker can give, an
         ▼
   ( Event Loop )
 
-  ( Safety )
+  ( every heartbeat interval, system time )
         │
-        │ heartbeat (timeout)
         ▼
   ┌─────────────────────────┐
-  │ Probe socket            │
+  │ Heartbeat loop          │
   │ rule: answer in timeout │
   └─────────────────────────┘
         │
         ├── time request ──▶ ( broker )
         │   ◀── time answer
         │
-        │ alive?
+        │ heartbeat event, or start the reconnect loop
         ▼
-  ( Safety )
+  ( inbound buffer )
 
-  ( Safety )
+  ( heartbeat failed, or reconnect command from the outbound buffer )
         │
-        │ reconnect
         ▼
   ┌─────────────────────────┐
   │ Reconnect               │
-  │ rule: every stream back │
+  │ rule: backoff, never    │
+  │ stop, every stream back │
   └─────────────────────────┘
         │
-        │ connect, resubscribe
-        ▼
-  ( broker )
-
-  ( Safety )
+        ├── connect, resubscribe ──▶ ( broker )
         │
-        │ query (since-timestamp)
+        │ connection_lost, connection_restored
+        ▼
+  ( inbound buffer )
+
+  ( outbound buffer ): executions / open-orders command + correlation id
+        │
         ▼
   ┌─────────────────────────┐
   │ Fetch executions        │
@@ -212,20 +212,20 @@ Each feature says which component needs it and why, what the broker can give, an
         ├── execution request ──▶ ( broker )
         │   ◀── executions
         │
-        │ executions
+        │ reply + same correlation id
         ▼
-  ( Safety )
+  ( inbound buffer )
 ```
 
 Main path in colour: orders out, ticks and order updates in. The right edge is one broker: the IBKR gateway talks to IBKR, and the simulated broker plays a tape and fills orders itself (feature 12). Dashed boxes are shared data structures.
 
 ### Feature cards
 
-### 1. Connect and reconnect with every stream back *(was behaviour 1)*
+### 1. Connect and reconnect with every stream back *(changed 2026-11-11 · was behaviour 1 · reconnect loop moved from Safety · System map decision 65)*
 
 #### Need
 
-The engine needs order-status, account and market-data streams for every instrument from start to exit. Safety needs a way to bring the connection back after an outage.
+The engine needs order-status, account and market-data streams for every instrument from start to exit, and must come back after any outage length without a human restart. Only the Gateway knows its connection and its subscriptions.
 
 #### Upstream gives
 
@@ -233,23 +233,27 @@ The broker API accepts a connect and a disconnect, and drops the connection with
 
 #### Algorithm
 
-1.  Connect with the Gateway's configuration; on success subscribe order status, account updates and the tick stream of every resolved contract.
-2.  On a reconnect request from Safety: disconnect, connect, increase the connection generation, and subscribe every stream again. Callbacks that carry an older generation are dropped.
-3.  Keep the next order id across a reconnect; never let the next order id fall back to a lower value.
+1.  Connect with the Gateway's configuration; on success subscribe order status, account updates and the tick stream of every subscribed contract. Keep the set of subscribed contracts.
+2.  When the heartbeat fails (feature 11) or a `reconnect` command arrives: emit `connection_lost`, then loop: disconnect, connect; on failure wait delay(n) = min(cap, base · 2^(n−1)) and try again. Log CRITICAL on persistent failure; never stop.
+3.  On success: increase the connection generation, subscribe every stream in the kept set again, then emit `connection_restored`. Callbacks that carry an older generation are dropped.
+4.  Keep the next order id across a reconnect; never let the next order id fall back to a lower value.
 
 #### Parameters
 
-None.
+| Parameter | Configurable? | Supported | Default |
+|----|----|----|----|
+| Reconnect backoff base | Configurable per process ([System map decision 58](SYSTEM_MAP.md)) | any positive seconds | 15 s |
+| Reconnect backoff cap | Configurable per process | any positive seconds | 120 s |
 
 #### Invariant
 
-After every successful connect or reconnect, the order-status, account and market-data streams are active for every instrument the process trades.
+For every base and cap: the reconnect loop ends only when the connection is back, and no wait is longer than the cap. After every successful connect or reconnect, the order-status, account and market-data streams are active for every subscribed instrument before `connection_restored` is emitted.
 
-### 2. Market data reaches the event buffer in time order *(was behaviours 2, 12 · System map decisions 26, 49)*
+### 2. Market data reaches the event buffer in time order *(settled · was behaviours 2, 12 · System map decisions 26, 49)*
 
 #### Need
 
-The Event Loop needs every market-data message, in time order, as soon as the broker sends it: trades to build bars from, or completed bars. Safety needs the time of the last market-data message to judge whether the feed is alive.
+The Event Loop needs every market-data message, in time order, as soon as the broker sends it: trades to build bars from, or completed bars. Safety reads the same messages through its tap to judge whether the feed is alive.
 
 #### Upstream gives
 
@@ -259,9 +263,8 @@ A broker gives one of two kinds of market data per contract: tick-by-tick trades
 
 1.  Declare, per instrument, which message type the gateway gives: `tick_update`, or `bar_update` with its resolution (feature 14).
 2.  For each trade: build a `tick_update` with instrument, time, price and size. For each completed bar: build a `bar_update` with instrument, resolution, open, high, low, close, volume and the bar's broker timestamp. Append the message to the event buffer.
-3.  Stamp `recv_ts` (monotonic clock) on each message on the reader thread, when the message arrives; the 5 ms budget starts there ([System map decision 55](SYSTEM_MAP.md)).
+3.  Stamp `recv_ts` (system time, the wall clock, so that `recv_ts` − broker timestamp is the feed latency) on each message on the reader thread, when the message arrives; the 5 ms budget starts there ([System map decision 55](SYSTEM_MAP.md)).
 4.  Raise the Event Loop's drain wake-up through the loop's thread-safe call. A reader thread changes no loop state directly.
-5.  Update the last tick time, from either message type, only for instruments whose exchange data session is open, so a closed Eurex feed does not look dead while CME trades.
 
 #### Parameters
 
@@ -274,7 +277,7 @@ A broker gives one of two kinds of market data per contract: tick-by-tick trades
 
 Market-data messages keep their prices, sizes and instrument, and their timestamps never go backwards in the buffer. One instrument's feed carries one message type only.
 
-### 3. Contracts come from the exchange profile *(was behaviour 13 and the contract rules · System map decisions 31, 37)*
+### 3. Contracts come from the exchange profile *(settled · was behaviour 13 and the contract rules · System map decisions 31, 37)*
 
 #### Need
 
@@ -301,7 +304,7 @@ The broker answers a contract request with contract details (contract id, minimu
 
 Two instruments that share a broker symbol never share a contract, a tick subscription, a fill or a position. A new exchange needs a new exchange profile, not a Gateway change.
 
-### 4. Orders reach the broker valid, on tick and numbered *(was behaviour 3 · decision 5)*
+### 4. Orders reach the broker valid, on tick and numbered *(settled · was behaviour 3 · decision 5)*
 
 #### Need
 
@@ -331,7 +334,7 @@ The broker accepts MKT, STP and LMT orders with an OCA group and OCA type, and r
 
 Every placed order gets a distinct, increasing order id and ends FILLED, CANCELLED or REJECTED. Every STP and LMT price sent to the broker is on the contract's tick.
 
-### 5. Cancels end in one clear answer *(was behaviour 4 · decision 6)*
+### 5. Cancels end in one clear answer *(settled · was behaviour 4 · decision 6)*
 
 #### Need
 
@@ -358,7 +361,7 @@ The broker accepts a cancel by order id, sends an intermediate pending-cancel st
 
 A cancelled order never produces a later fill. A refused cancel never produces a CANCELLED update.
 
-### 6. The simulated broker fills like the broker *(was part of behaviour 3 · decision 2)*
+### 6. The simulated broker fills like the broker *(settled · was part of behaviour 3 · decision 2)*
 
 #### Need
 
@@ -371,7 +374,7 @@ In replay there is no broker. The simulated broker reads each bar from its own t
 #### Algorithm
 
 1.  Before the simulated broker sends bar N, it matches its resting orders against bar N, then makes bar N the current bar. Fills from bar N reach the event buffer before bar N itself, as with a broker that fills and then closes the bar.
-2.  Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the simulated broker sends bar N+1 only after the Event Loop has handled bar N, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.
+2.  Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the simulated broker sends bar N+1 only after the Event Loop has handled bar N and every command for bar N on the outbound buffer is answered, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.
 3.  Rest STP and LMT orders and emit OPEN. On each later bar of the instrument: a touch fills at the level, a gap fills at the bar's open.
 4.  When both legs of an OCA group fire on one bar, the stop wins; the other legs become CANCELLED.
 5.  Reject an order into an OCA group that already filled. A MKT order into a working group cancels the group's legs first.
@@ -388,11 +391,11 @@ In replay there is no broker. The simulated broker reads each bar from its own t
 
 For every supported reference price and slippage: the simulated broker emits the same order statuses, in the same order, as the broker gateway would for the same fills.
 
-### 7. Executions and open orders on request *(was behaviour 5 · decision 3)*
+### 7. Executions and open orders on request *(settled · was behaviour 5 · decision 3)*
 
 #### Need
 
-Safety's repair and the Event Loop's stuck-order check attribute broker fills to orders, even when several strategies trade the same instrument.
+Safety's repair and stuck-order check attribute broker fills to orders, even when several strategies trade the same instrument.
 
 #### Upstream gives
 
@@ -400,8 +403,8 @@ The broker answers requests for execution rows (optionally since a time) and for
 
 #### Algorithm
 
-1.  Request the executions since the given time, and the open orders.
-2.  Return each execution row with order id, instrument, side, fill quantity, average price, currency, fill time and execution id.
+1.  On an executions command or an open-orders command (feature 15), request the executions since the given time, or the open orders, from the broker.
+2.  Reply with an `executions` or `open_orders` event that carries the command's correlation id. Each execution row has order id, instrument, side, fill quantity, average price, currency, fill time and execution id.
 
 #### Parameters
 
@@ -411,7 +414,7 @@ None.
 
 Every execution row carries its order id, so each fill traces to exactly one order.
 
-### 8. History and seed bars in broker-neutral units *(was behaviours 7, 11 · System map decisions 30, 45)*
+### 8. History and seed bars in broker-neutral units *(settled · was behaviours 7, 11 · System map decisions 30, 45)*
 
 #### Need
 
@@ -439,11 +442,11 @@ The broker returns intraday bars for a contract and a duration in the broker's o
 
 History arrives in time order, with no bar after the requested window. A value the frame cannot serve exactly is never served silently.
 
-### 9. Positions and balances per account and currency *(was behaviour 8)*
+### 9. Positions and balances per account and currency *(settled · was behaviour 8)*
 
 #### Need
 
-Strategy books position and available funds per account, in the instrument's currency (USD for CME, EUR for Eurex). Safety and the deploy service read position snapshots.
+Strategy books position and available funds per account, in the instrument's currency (USD for CME, EUR for Eurex). Safety's positions poll and the deploy service read position snapshots.
 
 #### Upstream gives
 
@@ -453,7 +456,7 @@ The broker streams position and account-value updates per account, with decimal 
 
 1.  Turn each position update into a position event: signed size, side, average price, account; zero size is flat.
 2.  Turn each available-funds update into a balance event per account and per currency. Broker decimals become floats.
-3.  Answer a position snapshot for the configured accounts; on timeout, raise an error and remove the waiter.
+3.  Answer a `poll_positions` command with a `positions` event for the configured accounts, with the command's correlation id; on timeout, reply with an error event and remove the waiter.
 4.  The simulated broker reports from its simulated book.
 
 #### Parameters
@@ -466,11 +469,11 @@ The broker streams position and account-value updates per account, with decimal 
 
 Every update carries its account, and every money amount carries its currency. A timed-out snapshot leaves no waiter behind.
 
-### 10. Broker status messages become events or nothing *(was behaviour 9)*
+### 10. Broker status messages become events or nothing *(settled · was behaviour 9)*
 
 #### Need
 
-Order Manager must learn when the broker rejects an order, even when the broker sends no order status for that reject. Safety must learn when a data farm recovers, so that Safety can restore subscriptions.
+Order Manager must learn when the broker rejects an order, even when the broker sends no order status for that reject. Safety must learn when a data farm recovers, so that Safety can start its repair.
 
 #### Upstream gives
 
@@ -479,7 +482,7 @@ The broker sends error and status messages with numeric codes, for orders, for d
 #### Algorithm
 
 1.  Ignore harmless codes.
-2.  Track connectivity and each data farm's status; on recovery, raise one resubscribe request.
+2.  Track connectivity and each data farm's status; on recovery, subscribe the affected streams again and emit one `connection_restored` event.
 3.  Turn an order-reject code into a REJECTED order update by order id, never for a data request id. Code 401 (an order field failed validation) gets no order status from IBKR, so without this rule the order would wait, unprotected, until Safety's repair declared the order dead.
 4.  Resolve or fail pending history requests by their codes.
 
@@ -493,32 +496,34 @@ The broker sends error and status messages with numeric codes, for orders, for d
 
 No status message stops the engine, and no status message creates an order update for an order the broker did not reject.
 
-### 11. The socket heartbeat answers within a timeout *(was behaviour 6)*
+### 11. The Gateway runs its own socket heartbeat *(changed 2026-11-11 · was behaviour 6 · System map decisions 63, 65)*
 
 #### Need
 
-Safety must tell a dead socket from a quiet market. A quiet market sends no ticks, so tick silence alone cannot prove the socket is dead.
+A dead socket must be told from a quiet market. A quiet market sends no ticks, so tick silence alone cannot prove the socket is dead. Safety must see the socket's health without calling the Gateway.
 
 #### Upstream gives
 
-The broker answers a cheap request (at IBKR, the current-time request) while the socket is alive.
+The broker answers a cheap request (at IBKR, the current-time request) while the socket is alive. The simulated broker always answers.
 
 #### Algorithm
 
-1.  Send the cheap request and wait up to the heartbeat timeout.
-2.  Return True when the broker answers within the timeout, otherwise False.
+1.  Every heartbeat interval, in system time, on the Gateway's own task: send the cheap request and wait up to the heartbeat timeout.
+2.  When the broker answers within the timeout, emit a `heartbeat` event.
+3.  Otherwise start the reconnect loop (feature 1), which emits `connection_lost`.
 
 #### Parameters
 
 | Parameter | Configurable? | Supported | Default |
 |----|----|----|----|
-| Heartbeat timeout | Configurable per call; Safety passes its config value | any positive seconds | 3.0 s |
+| Heartbeat interval | Configurable per process ([System map decision 63](SYSTEM_MAP.md)); default in the constants package | any positive seconds below the stale threshold | 5 s |
+| Heartbeat timeout | Configurable per process | any positive seconds below the heartbeat interval | 3 s |
 
 #### Invariant
 
-For every timeout value: the heartbeat returns True if and only if the socket answers within that timeout.
+For every interval and timeout: a `heartbeat` event is emitted if and only if the socket answered within the timeout. The heartbeat loop is the same code for both subclasses.
 
-### 12. The simulated broker prepares its own replay data *(was behaviour 15 · System map decision 45 · decision 7)*
+### 12. The simulated broker prepares its own replay data *(settled · was behaviour 15 · System map decision 45 · decision 7)*
 
 #### Need
 
@@ -535,7 +540,7 @@ The config names a tape source, a replay date and a session. The tape is a file 
 3.  Answer daily history and seed-bar requests from the tape, like the broker gateway; return an empty list when the tape has no prior session.
 4.  Pad the replay window before and after the session with flat bars, when the option is on.
 5.  A synthetic generator is a second tape source behind the same simulated broker.
-6.  Send the replay bars one at a time. Before each bar, wait until the event buffer is idle (the Event Loop has handled every event it took); then match resting orders against the bar (feature 6) and send the bar as one `bar_update` (feature 2). After the last bar, wait until the buffer is idle again, then send `end_of_data`. The feed runs as its own task, started by `start_feed()`.
+6.  Send the replay bars one at a time, in the row order of the tape, so two events with the same event time keep the tape's order ([System map decision 66](SYSTEM_MAP.md)). Before each bar, wait until the inbound buffer is idle (the Event Loop has handled every event it took) and every command on the outbound buffer is answered; then match resting orders against the bar (feature 6) and send the bar as one `bar_update` (feature 2). After the last bar, wait until the buffer is idle again, then send `end_of_data`. The feed runs as its own task, started by `start_feed()`.
 7.  When the config sets `replay.journal`, write the broker journal: one row per order received and one row per fill sent, in the journal format of the [golden sample](SYSTEM_MAP.md).
 
 #### Parameters
@@ -547,9 +552,9 @@ The config names a tape source, a replay date and a session. The tape is a file 
 
 #### Invariant
 
-The runner writes no data file. At most one replay bar is in the event buffer or being handled at any time. Replay history has the same definitions as broker history (feature 8).
+The runner writes no data file. At most one replay bar is in the inbound buffer or being handled at any time. The simulated broker is the only part of the engine that knows the run is a simulation. Replay history has the same definitions as broker history (feature 8).
 
-### 13. Serve a strategy added while running *(was behaviour 14 · System map decisions 34–36)*
+### 13. Serve a strategy added while running *(settled · was behaviour 14 · System map decisions 34–36)*
 
 #### Need
 
@@ -574,7 +579,7 @@ None.
 
 Adding a strategy never subscribes again, or drops, a feed that a running strategy uses.
 
-### 14. One explicit interface, picked by name *(was behaviour 10 · System map decision 30)*
+### 14. One explicit interface, picked by name *(settled · was behaviour 10 · System map decision 30)*
 
 #### Need
 
@@ -586,8 +591,8 @@ Brokers differ in capability: some report feed liveness, commissions or roll mis
 
 #### Algorithm
 
-1.  Declare required operations (connect, disconnect, reconnect, orders, cancels, contracts, subscriptions, history, executions, positions) with no body; building a subclass that misses one fails at once.
-2.  Declare capabilities with a safe default: the market-data message type per instrument (feature 2; default `tick_update`), feed liveness, the resubscribe request, market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal. A subclass overrides a capability only when the broker has it.
+1.  Declare required operations (connect, disconnect, the cheap heartbeat request, orders, cancels, contracts, subscriptions, history, executions, open orders, positions, broker process restart) with no body; building a subclass that misses one fails at once. The base class runs the command consumer (feature 15), the heartbeat loop (feature 11) and the reconnect loop (feature 1) for every subclass.
+2.  Declare capabilities with a safe default: the market-data message type per instrument (feature 2; default `tick_update`), market-data readiness, roll-mismatch dates, commissions, the current bar for simulated fills, session declaration, and whether a failed intraday seed is fatal. A subclass overrides a capability only when the broker has it.
 3.  List each built-in subclass under a name in one fixed gateway table, `GATEWAYS`; the runner picks the subclass by that name. An unknown name fails at start, and the error lists the known names. Users do not add gateways, so the table has no registration hook.
 
 #### Parameters
@@ -600,9 +605,33 @@ Brokers differ in capability: some report feed liveness, commissions or roll mis
 
 No caller looks a Gateway operation up by name at runtime.
 
+### 15. Commands in, replies out with the same correlation id *(new 2026-11-11 · System map decisions 61, 65)*
+
+#### Need
+
+Order Manager, the Event Loop and Safety must reach the broker without holding a reference to the Gateway. A requester must match each reply to its request.
+
+#### Upstream gives
+
+One outbound buffer of commands: `place_order`, `cancel`, subscribe and unsubscribe, history requests, executions, open orders, `poll_positions`, `resubscribe(instruments)`, `reconnect`, `restart_broker_process`. Each request command carries a correlation id.
+
+#### Algorithm
+
+1.  The Gateway's command consumer drains the outbound buffer in order and runs each command's operation.
+2.  For a request, push the reply to the inbound buffer as an event that carries the request's correlation id; on failure, push an error reply with the same id.
+3.  `resubscribe(instruments)` cancels and renews the tick subscriptions of those instruments. `restart_broker_process` restarts the outside broker gateway process; the simulated broker does nothing.
+
+#### Parameters
+
+None.
+
+#### Invariant
+
+Every request gets exactly one reply with its correlation id. Commands run in the order they were pushed.
+
 ## Tests
 
-The goal and features as measurable cases. A test with parameter cases runs once per supported value. "Both subclasses" means the case runs on the IBKR gateway (against a broker stub) and on the simulated broker. No Gateway test exists in v3 yet; every row is not written yet.
+The goal and features as measurable cases. A test with parameter cases runs once per supported value. "Both subclasses" means the case runs on the IBKR gateway (against a broker stub) and on the simulated broker. Every row has a test under `tests/gateway/` (streaming core built 2026-11-11).
 
 **End to end · the sample (1 test)**
 
@@ -756,10 +785,10 @@ Each scenario drives the component only through its public interface, from a kno
 |----|----|
 | Test | `test_scenario_heartbeat_and_reconnect` |
 | Given | Connected, streaming MES, with the last order id K. |
-| When | Heartbeat with the timeout; reconnect; wait up to the first-message wait; place BUY 1 MKT and SELL 1 MKT. Then disconnect and heartbeat again. |
+| When | Let the heartbeat loop run; push a `reconnect` command; wait up to the first-message wait; push BUY 1 MKT and SELL 1 MKT commands. Then drop the socket. |
 | Parameter cases | subclass ∈ {IBKR paper}; heartbeat timeout ∈ {3.0 s} |
-| Passes when | The first heartbeat returns True within the timeout. After the reconnect: MES ticks arrive again, both orders give order updates and fills, the first new order id is \> K, and no event carries the old connection generation. After the disconnect the heartbeat returns False within the timeout. |
-| Fails when | True from a disconnected socket, or False from a connected one; a stream missing after the reconnect; an order id ≤ K; an event from the old generation. |
+| Passes when | A `heartbeat` event arrives every interval. After the reconnect: `connection_lost` then `connection_restored`, MES ticks arrive again, both orders give order updates and fills, the first new order id is \> K, and no event carries the old connection generation. After the drop, no `heartbeat` event and one `connection_lost` within the interval plus the timeout. |
+| Fails when | A `heartbeat` event from a dropped socket, or none from a connected one; a stream missing before `connection_restored`; an order id ≤ K; an event from the old generation. |
 
 **S14. Add an instrument while streaming (features 13)**
 
@@ -772,31 +801,40 @@ Each scenario drives the component only through its public interface, from a kno
 | Passes when | ES ticks arrive; MES is subscribed exactly once during the whole run and its ticks keep arriving. After the release no ES tick arrives and MES still streams. |
 | Fails when | MES is subscribed again or stops; no ES tick; an ES tick after the release. |
 
-**1. Connect and reconnect (3 tests · 4 cases)**
+**1. Connect and reconnect (8 tests · 11 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_reconnect_restores_order_account_and_tick_streams` | subclass ∈ {IBKR, simulated} | active streams after reconnect | order status, account and every instrument's ticks |
 | `test_stale_subscription_dropped_after_reconnect` | — | events from an older connection generation | 0 |
 | `test_order_ids_never_regress_on_reconnect` | — | first order id after reconnect | \> last order id before |
+| `test_reconnect_never_gives_up` | failures before success ∈ {1, 50} | loop result | connected; no exit before |
+| `test_backoff_delays` | base, cap ∈ {15 s, 120 s} | delay(n) for n = 1…8 | min(cap, base · 2^(n−1)), exact |
+| `test_connection_events_around_reconnect` | subclass ∈ {IBKR, simulated} | events in order | `connection_lost`, then streams active, then `connection_restored` |
+| `test_reconnect_backs_off_to_the_cap_and_restores_every_stream_first` | — | `kinds; inbound.events[-1]['data']['next_order_id']` | `= ['connection_lost', 'connection_restored']; = 7` |
+| `test_reconnect_command_while_reconnecting_runs_one_loop` | — | `inbound.events` | `= []` |
 
-**2. Market data reaches the event buffer in time order (4 tests · 5 cases)**
+**2. Market data reaches the event buffer in time order (6 tests · 7 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_market_data_appended_in_time_order` | subclass ∈ {IBKR (`tick_update`), simulated (`bar_update`)} | timestamps in the buffer | never decreasing; prices, sizes, instrument unchanged |
 | `test_declared_message_type_matches_messages_sent` | — | messages of a type other than the declared one, per instrument | 0 |
 | `test_reader_thread_wakes_loop_through_thread_safe_call` | — | loop state written from the reader thread | 0 writes; one wake-up call per burst |
-| `test_last_tick_ts_ignores_instrument_whose_data_session_is_closed` | — | last tick time while Eurex is closed and CME trades | follows CME ticks only |
+| `test_every_feed_event_carries_event_time_and_recv_ts` | message type ∈ {`tick_update`, `bar_update`} | feed events missing a broker timestamp or `recv_ts` | 0 |
+| `test_market_data_is_not_logged` | — | `events(caplog)` | `= []` |
+| `test_tick_event_time_is_the_broker_timestamp` | — | `buffer.events[-1]['event_time']; buffer.events[-1]['data']['recv_ts']` | `= monday; = monday + 0.2` |
 
-**3. Contracts come from the exchange profile (2 tests · 4 cases)**
+**3. Contracts come from the exchange profile (4 tests · 6 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_contract_resolved_from_exchange_profile` | (exchange, asset class) ∈ {(CME, future), (Eurex, future), (NASDAQ, stock)} | venue, currency, trading class of the resolved contract | equal to the exchange profile |
 | `test_shared_symbol_instruments_keyed_apart` | pair ∈ {FDAX/FDXS, FDAX/FDXM} | contracts, subscriptions, fills, positions that collide | 0 |
+| `test_future_contract_month_follows_the_roll_rule` | — | `contracts[MES]['contract_month']` | `= expected` |
+| `test_stock_contract_has_no_month` | — | `contracts[stock].get('contract_month')` | `is None` |
 
-**4. Orders reach the broker valid, on tick and numbered (4 tests · 19 cases)**
+**4. Orders reach the broker valid, on tick and numbered (18 tests · 47 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
@@ -804,14 +842,29 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_priced_order_without_valid_price_rejected_locally` | price ∈ {missing, 0, negative, NaN, text} × type ∈ {STP, LMT} | orders reaching the broker | 0 |
 | `test_oca_group_needs_valid_type` | OCA type ∈ {none, 1, 2, 3} | local reject | none → rejected; 1, 2, 3 → sent |
 | `test_order_ids_distinct_and_increasing` | orders ∈ {1000} | duplicate or decreasing ids | 0 |
+| `test_contract_without_known_tick_rejected` | 2 cases | `reason; 'tick'` | `is not None; in reason` |
+| `test_first_order_id_follows_the_brokers_next_valid_id` | — | `gateway.next_order_id()` | `= 100` |
+| `test_ibkr_oca_group_needs_a_valid_type` | 4 cases | `sent_orders(transport)[0][3]['oca_group']` | `= 'g'` |
+| `test_ibkr_order_ids_distinct_and_increasing` | — | `ids` | `= sorted(set(ids))` |
+| `test_ibkr_priced_order_without_valid_price_never_reaches_the_broker` | 5 cases | `sent_orders(transport); updates(buffer)` | `= []; = []` |
+| `test_ibkr_prices_rounded_by_side_and_type_before_sending` | 4 cases | `spec[field]; order[field]; spec['order_type']` | `= expected; = expected; = order_type` |
+| `test_next_order_id_starts_at_one_per_run_and_rises` | — | `ids` | `= [1, 2, 3]` |
+| `test_order_ids_are_unique_across_threads` | — | `len(set(taken))` | `= 2000` |
+| `test_order_ids_never_fall_back_when_the_floor_is_lower` | — | `sequence.next(); sequence.next()` | `= 10; = 50` |
+| `test_orders_are_sent_from_one_send_thread` | — | `set(threads)` | `= {'ibkr-send'}` |
+| `test_price_on_tick_is_left_alone` | 4 cases | `round_price(5000.25, 0.25, side, order_type); round_price(100.07, 0.01, side, order_type)` | `= 5000.25; = pytest.approx(100.07)` |
+| `test_rounded_price_is_a_whole_multiple_of_the_tick` | — | `abs(price / tick - round(price / tick))` | `< 1e-09` |
+| `test_simulation_logs_order_sent_and_every_broker_reply` | — | `[r.status for r in by_event(caplog, 'broker_order_update')]; by_event(caplog, 'broker_ord…` | `= ['SUBMITTED', 'FILLED']; = 5000.0` |
+| `test_valid_orders_pass_the_check` | — | `check_order(order('LMT', limit_price=5000.0), 0.25); check_order(order('STP', stop_price=…` | `is None; is None` |
 
-**5. Cancels end in one clear answer (3 tests · 5 cases)**
+**5. Cancels end in one clear answer (4 tests · 6 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_refused_cancel_becomes_cancel_rejected_never_cancelled` | code ∈ {10147, 10148, 161} | update for the order id | CANCEL_REJECTED; no CANCELLED |
 | `test_pending_cancel_status_never_forwarded` | — | pending-cancel updates in the buffer | 0 |
 | `test_sim_cancel_of_non_resting_order_emits_nothing` | — | events for that order id | 0 |
+| `test_simulation_logs_cancel_sent` | — | `by_event(caplog, 'cancel_sent')[0].order_id; [r.status for r in by_event(caplog, 'broker_…` | `= order['order_id']; = ['OPEN', 'CANCELLED']` |
 
 **6. The simulated broker fills like the broker (5 tests · 6 cases)**
 
@@ -823,41 +876,55 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_sim_market_fill_at_reference_price_plus_slippage` | reference ∈ {bar close} × slippage ∈ {0, 1, 2} ticks | fill price | reference ± slippage × tick, exact |
 | `test_resting_fill_sent_before_its_bar` | — | position of the FILLED update vs. its bar's `bar_update` | FILLED first; fill price = limit |
 
-**7. Executions and open orders on request (1 test · 2 cases)**
+**7. Executions and open orders on request (2 tests · 3 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_every_execution_row_carries_order_id_and_currency` | subclass ∈ {IBKR, simulated} | rows missing a field | 0 |
+| `test_open_orders_rows_carry_the_instrument` | — | `[(o['order_id'], o['instrument']) for o in await gateway.get_open_orders()]` | `= [(9, MES)]` |
 
-**8. History and seed bars in broker-neutral units (3 tests · 5 cases)**
+**8. History and seed bars in broker-neutral units (4 tests · 6 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_daily_frame_has_no_look_ahead_past_last_completed_close` | exchange ∈ {CME, Eurex} | bars after the last completed close, on the session's clock | 0 |
 | `test_history_window_in_months_or_dates` | unit ∈ {months, dates} | broker request built | covers exactly the window |
 | `test_roll_history_from_previous_contract` | — | contract used before the roll completes | the previous contract |
+| `test_seed_bars_are_requested_in_one_second_chunks_inside_the_prior_session` | — | `len(requests); {r[5] for r in requests}; bars; all((b['resolution_s'] == 1.0 and b['instr…` | `≥ 12; = {'1 secs'}; true; true` |
 
-**9. Positions and balances per account and currency (2 tests · 3 cases)**
+**9. Positions and balances per account and currency (4 tests · 5 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_balance_update_per_currency` | currency ∈ {USD, EUR} | balance events per currency | one per currency, never summed |
-| `test_position_snapshot_timeout_leaves_no_waiter` | — | waiters after timeout | 0; error raised |
+| `test_position_snapshot_timeout_leaves_no_waiter` | — | waiters after timeout; error reply with the correlation id | 0; 1 |
+| `test_pnl_moves_available_funds_by_multiplier` | — | `last['available'] - first['available']; await d.gateway.get_positions()` | `= 10.0 * MES.multiplier; = []` |
+| `test_positions_snapshot_carries_account_size_and_currency` | — | `await gateway.get_positions()` | `= [{'account_id': 'DU1', 'instrument': MES, 'size': 1, 'avg_cost': 25000.0, 'currency': '…` |
 
-**10. Broker status messages become events or nothing (2 tests · 8 cases)**
+**10. Broker status messages become events or nothing (9 tests · 15 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_order_reject_codes_become_rejected_by_order_id` | code ∈ {110, 200, 201, 203, 321, 401, 512} | REJECTED updates for an order id; for a data request id | 1; 0 |
-| `test_data_farm_recovery_raises_one_shot_resubscribe` | — | resubscribe requests per recovery | 1 |
+| `test_data_farm_recovery_emits_one_connection_restored` | — | `connection_restored` events per recovery | 1 |
+| `test_broker_log_lines_show_instrument_symbol` | — | `json.loads(JsonFormatter().format(record)).get('instrument', 'MES')` | `= 'MES'` |
+| `test_connectivity_restored_codes_emit_connection_restored` | — | `len(restored_events(buffer))` | `= 1` |
+| `test_ibkr_broker_lines_name_the_callback` | — | `[(r.event, r.funcName) for r in gateway_records(caplog)]` | `= [('order_sent', 'place_order'), ('cancel_sent', 'cancel_order'), ('broker_order_status'…` |
+| `test_ibkr_logs_broker_errors_executions_and_positions` | — | `by_event(caplog, 'broker_execution')[0].exec_id; by_event(caplog, 'broker_position')[0].s…` | `= 'e1'; = 1` |
+| `test_ibkr_logs_raw_order_status_even_when_ignored` | — | `by_event(caplog, 'order_sent')[0].order_id; by_event(caplog, 'broker_order_update')` | `= order['order_id']; = []` |
+| `test_order_status_translation_and_partial_fills` | — | `got` | `= [('OPEN', 0, None), ('PARTIALLY_FILLED', 1, 5000.0), ('FILLED', 3, 5001.0)]` |
+| `test_simulation_broker_lines_name_the_method_that_made_them` | — | `[(r.event, r.funcName) for r in gateway_records(caplog)]` | `= [('order_sent', 'place_order'), ('broker_order_update', 'place_order'), ('cancel_sent',…` |
 
-**11. The socket heartbeat answers within a timeout (1 test · 3 cases)**
+**11. The Gateway runs its own socket heartbeat (4 tests · 8 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
-| `test_heartbeat_true_iff_answer_within_timeout` | answer delay ∈ {0.5 × timeout, 2 × timeout, never} at timeout 3.0 s | return value | True; False; False |
+| `test_heartbeat_event_iff_answer_within_timeout` | answer delay ∈ {0.5 × timeout, 2 × timeout, never} at timeout 3 s | `heartbeat` event; reconnect loop started | event, no loop; no event, loop; no event, loop |
+| `test_heartbeat_every_interval` | interval ∈ {5 s} | `heartbeat` events in 60 s of system time with a healthy socket | 12 ± 1 |
+| `test_ping_is_false_when_disconnected` | — | `await gateway.ping(timeout=0.2)` | `is False` |
+| `test_ping_true_iff_answer_within_timeout` | 3 cases | `await gateway.ping(timeout=0.2)` | `is expected` |
 
-**12. The simulated broker prepares its own replay data (4 tests · 6 cases)**
+**12. The simulated broker prepares its own replay data (24 tests · 27 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
@@ -865,6 +932,26 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_replay_daily_history_matches_broker_definitions` | tape ∈ {Parquet, synthetic} | daily frame vs. the broker gateway's frame for the same bars | equal |
 | `test_replay_no_prior_session_returns_empty_seed` | — | seed bars returned | empty list |
 | `test_feed_sends_next_bar_only_when_buffer_idle` | bars ∈ {3} | `bar_update` messages sent before the buffer turns idle | exactly 1 per idle; then `end_of_data` |
+| `test_check_counts_rows_inside_session` | — | `check_tape_in_session(tape, MES, 'NY_RTH', start, end)` | `= 10` |
+| `test_day_session_only_tape_refused_for_overnight_session` | — | `check_tape_in_session(tape, MES, 'NY_GLOBEX', globex_start, globex_end)` | `raises ReplayDataError matching 'regular session only'` |
+| `test_flat_padding_surrounds_the_session` | — | `[b['start_ts'] - open_ts for b in bars]; {b['close'] for b in bars}; bars[0]['volume']` | `= [-3, -2, -1, 0, 1, 2, 3, 4, 5]; = {77.0}; = 0.0` |
+| `test_golden_daily_atr_is_20` | — | `len(daily); atr(daily); all((c['close'] == 5000.0 and c['high'] == 5010.0 and (c['low'] =…` | `≥ 15; = 20.0; true` |
+| `test_golden_phase_a_flat` | — | `{(b['open'], b['high'], b['low'], b['close']) for b in day_bars()[:600]}` | `= {(5000.0,) * 4}` |
+| `test_golden_phase_b_zigzag_reaches_5011` | — | `set(closes[618:]); all((c * 4 == round(c * 4) for c in closes))` | `= {5011.0}; true` |
+| `test_golden_prior_sessions_have_designed_shape` | — | `all((len(s) == 23400 for s in sessions)); {(s[0]['open'], max((b['high'] for b in s)), mi…` | `true; = {(5000.0, 5010.0, 4990.0, 5000.0)}` |
+| `test_golden_replay_delivers_every_bar_then_end_of_data_and_fills_two_orders` | — | `json.loads(buy_fill)['time'].endswith('.000Z'); fill['avg_fill_price']` | `true; = orders[side][1]['close']` |
+| `test_golden_replay_delivers_every_bar_then_end_of_data_in_time_order` | — | `{e['data']['instrument'] for e in buffer.events[:-1]}; (tmp_path / 'tape.sha256').read_te…` | `= {MES}; = gateway.tape_sha256.hexdigest()` |
+| `test_golden_tape_has_23400_bars` | — | `bars[0]['start_ts']; bars[-1]['end_ts']; all((b['end_ts'] - b['start_ts'] == 1.0 and b['r…` | `= start.timestamp(); = end.timestamp(); true` |
+| `test_golden_tape_has_nothing_before_sixty_sessions_or_after_replay_day` | — | `list(tape.bars(MES, far_start, far_end)); list(tape.bars(MES, next_start, next_end))` | `= []; = []` |
+| `test_golden_tape_is_deterministic` | — | `day_bars()` | `= day_bars()` |
+| `test_golden_tape_is_deterministic_across_runs` | — | `digests[0]; len(digests[0].strip())` | `= digests[1]; = 64` |
+| `test_parquet_tape_filters_instrument_and_window` | — | `got[0]['instrument']; got[0]['end_ts']; len(narrowed)` | `= MES; = got[0]['start_ts'] + 1.0; = 3` |
+| `test_replay_start_refuses_out_of_session_row` | 2 cases | `gateway.resolve_contract(instrument)` | `raises ReplayDataError matching 'outside session'` |
+| `test_simulated_broker_waits_until_every_command_is_answered_before_the_next_bar` | — | `taken['command_type']; [e['event_type'] for e in inbound.events]` | `= 'get_positions'; = ['bar_update', 'bar_update', 'end_of_data']` |
+| `test_tape_from_spec_picks_synthetic_or_parquet` | — | `isinstance(tape_from_spec(str(tmp_path / 'x.parquet')), ParquetTape); get_tape('golden_se…` | `true; is not None` |
+| `test_trading_day_with_no_tape_bars_refused_naming_date_and_session` | — | `gateway.resolve_contract(MES)` | `raises ReplayDataError matching '2026-04-15.*NY_RTH'` |
+| `test_two_instruments_merge_in_time_order` | — | `stamps; len(stamps)` | `= sorted(stamps); = 6` |
+| `test_weekend_date_refused` | — | `gateway.connect()` | `raises ReplayDataError matching '2026-04-18.*NY_RTH'` |
 
 **13. Serve a strategy added while running (2 tests · 2 cases)**
 
@@ -873,12 +960,32 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_new_instrument_subscribed_without_touching_running_feeds` | — | re-subscriptions or drops of existing feeds | 0 |
 | `test_sessions_declared_again_for_new_instrument` | — | clock used for a new Eurex feed | Frankfurt |
 
-**14. One explicit interface, picked by name (2 tests · 3 cases)**
+**14. One explicit interface, picked by name (11 tests · 12 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_subclass_missing_required_operation_fails_at_build` | — | build of an incomplete subclass | raises |
 | `test_gateway_picked_by_registered_name` | name ∈ {IBKR gateway, simulated broker} | class built by the runner | the registered class |
+| `test_async_capability_defaults` | — | `await gateway.get_commissions(); await gateway.unsubscribe_tick(object())` | `= {}; is None` |
+| `test_capabilities_have_safe_defaults` | — | `gateway.intraday_seed_failure_is_fatal(); hasattr(gateway, 'on_bar'); hasattr(gateway, 'c…` | `is False; false; false` |
+| `test_complete_gateway_builds_with_its_two_buffers` | — | `(gateway.inbound, gateway.outbound, gateway.config); hasattr(gateway, 'clock'); hasattr(g…` | `= (buffer, outbound, config); false; false` |
+| `test_gateway_picked_by_name` | — | `(get_gateway('simulation'), get_gateway('ibkr'))` | `= (SimulationGateway, IbGateway)` |
+| `test_ibkr_gateway_picked_by_registered_name` | — | `get_gateway('ibkr')` | `is IbGateway` |
+| `test_real_transport_builds_without_connecting` | — | `real.isConnected()` | `false` |
+| `test_simulated_broker_registered_and_declares_one_second_bars` | — | `get_gateway('simulation'); await gateway.market_data_type(MES)` | `is SimulationGateway; = ('bar_update', 1.0)` |
+| `test_start_feed_default_does_nothing_and_simulated_broker_replays` | — | `await gateway.start_feed(); buffer.events[-1]['event_type']` | `is None; = 'end_of_data'` |
+| `test_unknown_gateway_name_lists_known` | — | `get_gateway('nope')` | `raises KeyError matching 'simulation'` |
+
+**15. Commands in, replies out with the same correlation id (6 tests · 9 cases)**
+
+| Test | Parameter cases | Measure | Pass threshold |
+|----|----|----|----|
+| `test_every_request_gets_one_reply_with_its_id` | request ∈ {executions, open orders, poll_positions} | replies per request; id equal | 1; yes |
+| `test_commands_run_in_push_order` | — | order of broker calls for 100 pushed commands | same as push order |
+| `test_a_slow_command_finishes_before_the_next_one_starts` | — | `trace` | `= ['history started', 'history done', 'order']` |
+| `test_failed_order_ends_rejected_and_its_reply_carries_the_error` | — | `[(u['order_id'], u['status']) for u in updates]; replies(inbound)[0]['correlation_id']; r…` | `= [(9, 'REJECTED')]; = command['correlation_id']; true` |
+| `test_non_broker_commands_go_to_their_sink` | — | `[c['command_type'] for c in written]; replies(inbound)` | `= ['deploy_result']; = []` |
+| `test_reply_event_is_named_after_its_request` | 3 cases | `[e['event_type'] for e in inbound.events]` | `= [reply_type]` |
 
 ## Open questions
 
@@ -906,22 +1013,23 @@ Implementation detail and history. The skeleton still cites the old behaviour nu
 
 ### Step → code
 
-Each box of the algorithm map and the code that carries it. `Gateway` is in `gateways/gateway.py`; the simulated broker (`SimulationGateway`) is in `gateways/simulation_gateway/simulation_gateway.py`, with tapes in `gateways/simulation_gateway/tapes.py` and `synthetic_tapes.py`; the IBKR gateway (`IbGateway`) is in `gateways/ib_gateway/gateway.py`, with `transport.py` (the `IbTransport` interface), `client.py` and `errors.py`; the gateway table `GATEWAYS` and `get_gateway()` are in `gateways/__init__.py`.
+Each box of the algorithm map and the code that carries it. `Gateway` is in `gateways/gateway.py`; the simulated broker (`SimulationGateway`) is in `gateways/simulation_gateway/simulation_gateway.py`, with tapes in `gateways/simulation_gateway/tapes.py` and `synthetic_tapes.py`; the IBKR gateway (`IbGateway`) is in `gateways/ib_gateway/gateway.py`, with `transport.py` (the `IbTransport` interface), `client.py` and `errors.py`; the gateway table `GATEWAYS` and `get_gateway()` are in `gateways/__init__.py`; the command types are `constants/gateway.py` · `COMMAND_TYPES`.
 
 | Step | Code |
 |----|----|
-| Check and round order | `Gateway.place_order()`; `gateways/utils.py` · `round_price()` |
-| Assign order id | `Gateway.next_order_id()` |
+| Check and round order | `Gateway.place_order()`; `gateways/utils.py` · `check_order()`, `round_price()`; a failed order ends as a Rejected update (`Gateway.on_command_failed()`) |
+| Assign order id | `requests.py` · `Requests.next_order_id()`, `raise_order_id_floor()`; floor from `Gateway.order_id_floor()` at start and in `connection_restored` |
 | Send cancel | `Gateway.cancel_order()` |
-| Resolve contract | `Gateway.resolve_contract()`, `subscribe_tick()`, `unsubscribe_tick()`, `set_instrument_sessions()` |
-| \[ contracts by instrument \] | IBKR gateway state · Planned |
-| Append tick | IBKR gateway tick callback · Planned; `Gateway.last_tick_ts` |
-| Fill on bar (simulated) | `SimulationGateway.start_replay()`, `match_bar()`; `OrderFillingEngine.resting_price()`; `EventBuffer.wait_idle()` |
-| Translate status | IBKR gateway error handler · Planned; `Gateway.consume_resubscribe_request()` |
-| Report account | `Gateway.subscribe_account_update()`, `get_positions()` |
+| Resolve contract | `Gateway.resolve_contract()`, `subscribe()`, `unsubscribe()` (keep the subscribed contracts), `subscribe_tick()`, `unsubscribe_tick()`, `market_data_type()`, `set_instrument_sessions()` (a command the runtime book pushes for each new fed instrument) |
+| \[ contracts by instrument \] | `IbGateway.contracts`, `identity` |
+| Append tick | `IbGateway.on_tick()` (event time = broker timestamp) |
+| Fill on bar (simulated) | `SimulationGateway.start_replay()`, `wait_quiet()`, `match_bar()`; `OrderFillingEngine.resting_price()`; `EventBuffer.wait_idle()`, `CommandBuffer.wait_idle()` |
+| Translate status | `IbGateway.on_error()`, `on_order_status()`; a recovery code runs `IbGateway.recover_streams()`, which subscribes the streams again and then emits `connection_restored` |
+| Report account | `Gateway.subscribe_account_update()`, `get_positions()`, `poll_positions()` |
 | Build history frame | `Gateway.get_daily_history()`, `get_intraday_seed_bars()`, `roll_mismatch_dates()`; tape: `TapeSource`, `ParquetTape`, `SyntheticTape`, `check_tape_in_session()` |
-| Probe socket | `Gateway.heartbeat(timeout=3.0)` |
-| Reconnect | `Gateway.connect()`, `disconnect()`, `reconnect()`, `subscribe_order_update()` |
+| Probe socket | `Gateway.run_heartbeat()`, `ping(timeout)`; constants `HEARTBEAT_INTERVAL_S`, `HEARTBEAT_TIMEOUT_S` |
+| Reconnect | `Gateway.reconnect_forever()`, `restore_streams()`, `resubscribe()`, `connect()`, `disconnect()`; `reconnect_delay()`; constants `RECONNECT_BASE_S`, `RECONNECT_CAP_S` |
+| Consume commands | `Gateway.run_commands()`, `run_command()`; one reply per command (`messages.py` · `make_reply()`; reply event named by `constants/messages.py` · `REPLY_EVENTS`: `executions`, `open_orders`, `positions`); non-broker commands go to `Gateway.sinks` (`alert`, `deploy_result`) |
 | Fetch executions | `Gateway.get_executions(since)`, `get_open_orders()`, `get_commissions()` |
 | Interface and gateway table | `Gateway`, `GATEWAYS`, `get_gateway()` |
 
@@ -933,10 +1041,10 @@ The Gateway interface for v3, with two implementations: a broker gateway (IBKR f
 
 | Where | State | What it holds |
 |----|----|----|
-| Interface | `event_buffer` | The one shared queue the Event Loop drains. Every tick, order update and balance/position update is appended as `{event_type, data, enqueued_at}`; event types are `tick`, `order_update`, `position_update`, `balance_update`, `end_of_data`. |
-| Interface | `last_tick_ts` | Time of the last tick on an instrument whose data session is open. Safety's feed-liveness input. |
+| Interface | `inbound` | The inbound buffer the Event Loop drains. Every event is appended as `{event_type, data, enqueued_at}`; event types are `tick_update`, `bar_update`, `order_update`, `position_update`, `balance_update`, `heartbeat`, `connection_lost`, `connection_restored`, replies, `end_of_data`. |
+| Interface | `outbound` | The outbound buffer of commands that the Gateway's command consumer drains. |
+| Interface | subscribed contracts | The contracts to subscribe again after a reconnect. |
 | Broker gateway | contracts | Resolved contracts by instrument. |
-| Broker gateway | instrument sessions | Instrument → session, so liveness skips instruments whose data session is closed. |
 | Broker gateway | connection generation | Bumped on each (re)connect; stale subscriptions are dropped by it. |
 | Broker gateway | next order id | Guarded by a lock; never regresses on reconnect. |
 | Broker gateway | request waiters | Futures for executions, open orders, positions, history and contract-details requests in flight. |
@@ -949,15 +1057,16 @@ The Gateway interface for v3, with two implementations: a broker gateway (IBKR f
 
 | Old behaviour | Methods |
 |----|----|
-| 1\. Connection lifecycle | `connect()`, `disconnect()`, `reconnect()`, `subscribe_order_update()` |
-| 2\. Market data | `subscribe_tick()`, `last_tick_ts`, `market_data_ready()`, `set_instrument_sessions()` |
+| 1\. Connection lifecycle | `connect()`, `disconnect()`, `reconnect_forever()`, `subscribe_order_update()` |
+| 2\. Market data | `subscribe_tick()`, `market_data_ready()`, `set_instrument_sessions()` |
 | 3\. Placing orders | `next_order_id()`, `place_order()`, `resolve_contract()` |
 | 4\. Cancelling | `cancel_order()` |
 | 5\. Queries | `get_executions(since)`, `get_open_orders()`, `get_commissions()` |
-| 6\. Heartbeat | `heartbeat(timeout=3.0)` |
+| 6\. Heartbeat | `run_heartbeat()`, `ping(timeout)` |
 | 7\. History | `get_daily_history()`, `get_intraday_seed_bars()`, `roll_mismatch_dates()` |
 | 8\. Account updates | `subscribe_account_update()`, `get_positions()` |
-| 9\. Status messages | `consume_resubscribe_request()` |
+| 9\. Status messages | error handler; emits `connection_restored` |
+| Feature 15. Commands | `run_commands()`, `restart_broker_process()` |
 | 14\. Hot-add | `unsubscribe_tick()` |
 
 **Full skeleton code (python)**
@@ -977,11 +1086,19 @@ from alchemist.instruments import Instrument
 class Gateway(ABC):
     """Base of every broker gateway and of the simulated broker."""
 
-    event_buffer: deque
-    #   the one shared queue the Event Loop drains; entries are
-    #   {'event_type', 'data', 'enqueued_at'} with event_type in
-    #   tick_update, bar_update, order_update, position_update,
-    #   balance_update, end_of_data
+    inbound: deque     # events: tick_update, bar_update, order_update, position_update,
+                       # balance_update, heartbeat, connection_lost, connection_restored,
+                       # replies (with correlation_id), end_of_data
+    outbound: deque    # commands from Order Manager, the Event Loop and Safety
+
+    async def run_commands(self) -> None:
+        """Feature 15: drain the outbound buffer in order; one reply per request."""
+
+    async def run_heartbeat(self) -> None:
+        """Feature 11: ping every HEARTBEAT_INTERVAL_S; emit heartbeat or reconnect."""
+
+    async def reconnect_forever(self) -> None:
+        """Feature 1: connection_lost, backoff min(cap, base * 2**(n-1)), resubscribe all, connection_restored."""
 
     # ---- required (Behaviours 1-9) ----
     @abstractmethod
@@ -993,8 +1110,8 @@ class Gateway(ABC):
         """Behaviour 1: close the connection and release resources."""
 
     @abstractmethod
-    async def reconnect(self) -> None:
-        """Behaviour 1: re-establish the connection and restore subscriptions."""
+    async def restart_broker_process(self) -> None:
+        """Feature 15: restart the outside broker process; the simulated broker does nothing."""
 
     @abstractmethod
     async def subscribe_order_update(self) -> None:
@@ -1029,8 +1146,8 @@ class Gateway(ABC):
         """Behaviour 5: orders still working at the broker."""
 
     @abstractmethod
-    async def heartbeat(self, timeout: float = 3.0) -> bool:
-        """Behaviour 6: True iff the socket answers within the timeout."""
+    async def ping(self, timeout: float) -> bool:
+        """Feature 11: True iff the socket answers within the timeout."""
 
     @abstractmethod
     async def get_daily_history(self, instrument: Instrument, start: date,
@@ -1050,11 +1167,6 @@ class Gateway(ABC):
         """Behaviour 8: position snapshot for the configured accounts."""
 
     # ---- capabilities with safe defaults (Behaviour 10) ----
-    @property
-    def last_tick_ts(self) -> float | None:
-        """Behaviour 2: last tick on an instrument whose data session is open."""
-        return None
-
     def set_instrument_sessions(self, sessions: dict[Instrument, str]) -> None:
         """Behaviours 2, 14: which data session judges each instrument's feed."""
 
@@ -1063,10 +1175,6 @@ class Gateway(ABC):
         return ("tick_update", None)
     def market_data_ready(self) -> bool:
         return True
-
-    def consume_resubscribe_request(self) -> bool:
-        """Behaviour 9: read and reset the one-shot resubscribe request."""
-        return False
 
     def roll_mismatch_dates(self) -> frozenset:
         """Behaviour 7: sessions served by a newly rolled, still-thin contract."""
@@ -1102,7 +1210,9 @@ GATEWAYS: dict[str, type[Gateway]] = {}   # Behaviour 10: picked by name
 
 ### 4. How is data liveness tracked?
 
-**Answer:** The last-tick time is a property on the Gateway, so Safety can watch feed liveness separately from the socket heartbeat.
+**Answer:** Safety keeps the arrival time of the last feed event from its tap on the inbound buffer, separately from the Gateway's `heartbeat` events ([System map decision 63](SYSTEM_MAP.md)).
+
+*changed 2026-11-11 · was a `last_tick_ts` property on the Gateway*
 
 ### 5. Who rounds resting prices?
 
@@ -1124,8 +1234,8 @@ GATEWAYS: dict[str, type[Gateway]] = {}   # Behaviour 10: picked by name
 
 ### 8. How does the simulated broker know the current bar?
 
-**Answer:** From its own tape. The simulated broker sends one bar at a time: it waits until the event buffer is idle, matches resting orders against the next bar, then sends that bar (features 6, 12). The Gateway interface has no call that only one subclass uses.
+**Answer:** From its own tape. The simulated broker sends one bar at a time: it waits until the inbound buffer is idle and every command on the outbound buffer is answered, matches resting orders against the next bar, then sends that bar (feature 6, feature 12). The Gateway interface has no call that only one subclass uses.
 
 **Rejected:** Rejected: the Event Loop showing each dispatched bar to the Gateway through `on_bar()`. That call did nothing in the IBKR gateway, so it put a replay-only path into the shared interface and into the Event Loop.
 
-*agreed 2026-11-10*
+*agreed 2026-11-10 · changed 2026-11-11 · the wait covers the outbound buffer ([System map decision 66](SYSTEM_MAP.md))*

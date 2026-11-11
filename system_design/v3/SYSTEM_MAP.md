@@ -4,7 +4,7 @@ Frozen top-level boundary of Alchemist v3. Agents read this file to decide which
 
 The top-level boundary of the Alchemist v3 execution engine: what it is for, the components it is split into, what each one owns, and the one frozen example every component is tested against.
 
-**Last agreed: 2026-11-09 — v3 final.** v3 is an eight-component execution engine (decision 44). Its first requirement is multi-asset and multi-currency trading (R1, decisions 37–41), and a signal is a Python `SignalDag` class that holds its own params, behind an abstract interface (decision 42). All decisions 1–59 are agreed. Decisions 52–58 (and 44) were decided on 2026-11-09, when the human delegated the open questions. The human accepted every remaining proposed decision and finalized v3 on 2026-11-09. Change history: see `system_map.html`.
+**Last agreed: 2026-11-11 — streaming core.** The two questions left open by the streaming core were answered on 2026-11-11 (decisions 71 and 72). Decisions 61–70 and the changes to decisions 8, 46, 47, 50 and 51 were agreed on 2026-11-11: one inbound and one outbound buffer, event time and watch time in place of a shared clock, connection work inside the Gateway, Safety on buffer taps, and the simulated broker as the only simulation-aware part. v3 final was agreed on 2026-11-09: v3 is an eight-component execution engine (decision 44). Its first requirement is multi-asset and multi-currency trading (R1, decisions 37–41), and a signal is a Python `SignalDag` class that holds its own params, behind an abstract interface (decision 42). All decisions 1–59 are agreed. Decisions 52–58 (and 44) were decided on 2026-11-09, when the human delegated the open questions. The human accepted every remaining proposed decision and finalized v3 on 2026-11-09. Change history: see `system_map.html`.
 
 ## Goal
 
@@ -54,10 +54,10 @@ Every instrument names its exchange profile and currency, so every bar, order, f
   │ owns: all broker talk   │
   └─────────────────────────┘
         │
-        ├── health, last tick, executions ──▶ ┌─────────────────────────┐
+        ├── events, replies (inbound) ──────▶ ┌─────────────────────────┐
         │                                     │ Safety                  │
         │                                     │ owns: reconnect, repair │
-        │   ◀── heartbeat, reconnect, queries └─────────────────────────┘
+        │   ◀── requests (outbound buffer) ── └─────────────────────────┘
         │
         │ market data, order/position/balance updates, warmup history
         ▼
@@ -102,18 +102,18 @@ Every instrument names its exchange profile and currency, so every bar, order, f
   ( broker )
 ```
 
-Orders leave through the Gateway; StrategyExecution asks StrategySignal directly for entry/exit answers. Aux Data adds values to each bar before the Event Loop dispatches it.
+Orders leave through the Gateway; StrategyExecution asks StrategySignal directly for entry/exit answers. Aux Data adds values to each bar before the Event Loop dispatches it. Per decision 61, every arrow into the Gateway runs through the outbound buffer, and every arrow out of the Gateway runs through the inbound buffer.
 
 Not drawn: StrategyExecution times the signal's exit-input freeze and release. Aux Data reads daily series straight from outside data sources (or from files in replay), not through the Gateway. Per decision 35: in paper and live, an operator's deploy request reaches the Event Loop over a local socket. Every component reads exchange facts from the shared exchange profiles (decision 31).
 
 Flows not drawn on the spine (each is in the boundary section below):
 
-- Safety → Event Loop: repaired fill and Rejected events and position updates, through the event buffer. Event Loop → Safety: check-ins and the runtime book's members. Strategy → Safety: each slot's submitted, open and cancelling orders, and "processing an order?".
+- Safety → inbound buffer: repaired fill and Rejected events, each with its strategy key. Safety reads both buffers through taps (decisions 61, 69). Event Loop → Safety: check-ins.
 - Strategy → Order Manager: order updates and ownership checks. Order Manager → Strategy: ownership answers. Order Manager → StrategyExecution: query answers.
 - StrategyExecution ↔ StrategySignal: entry/exit questions and exit-input freeze/release; entry/exit signals back.
 - Aux Data → Strategy: ready / not ready, with the history frames. Strategy → Aux Data: frame requests on a cold rebuild.
-- Event Loop → Gateway: history requests; contract, subscribe and unsubscribe requests; session declarations. Gateway → Order Manager: the next order id.
-- ( operator ) → runner → Event Loop: in paper and live, deploy requests over a local socket (decisions 35, 51); status lines and alerts back to the operator. Safety → ( operator ): CRITICAL logs and stack dumps. Event Loop → ( disk ): bar and trade recordings (paper and live).
+- Event Loop → Gateway, as commands on the outbound buffer: history requests; contract, subscribe and unsubscribe requests. Gateway → Order Manager: the next order id.
+- ( operator ) → deploy socket → Event Loop: in paper and live, `deploy_request` events (decisions 35, 51, 67); `deploy_result` status lines and alerts back to the operator. Safety → ( operator ): CRITICAL logs and stack dumps. Event Loop → recorders → ( disk ): bar and trade recordings, in every mode (decision 67).
 - Every component reads exchange facts from the shared exchange profiles (decision 31).
 
 ## Component maps
@@ -137,26 +137,26 @@ For each component: what it owns, what it leaves to others, what it receives, an
 
 ### Gateway
 
-- **Owns** — All communication with the broker: market data in, orders and cancels out, fills and executions back, for every instrument the process trades. A replay source can stand in for the broker behind it.
-- **Does not own** — Building bars or deciding who hears an event (Event Loop); deciding what to trade (Strategy, StrategyExecution); tracking an order's life (Order Manager); noticing a dead connection or repairing strategies after one (Safety).
-- **Receives** — From the broker: market data and fills. From Order Manager: orders and cancels, each with its order id. From Safety: heartbeat checks, reconnect and resubscribe requests, requests for executions, open orders and positions. From the Event Loop: history requests for warmup; contract, subscribe and unsubscribe requests; session declarations.
-- **Produces** — To the Event Loop: `tick_update` and `bar_update` messages (each gateway declares which one it gives per instrument, decision 49), order, position and balance updates, and warmup history. To Order Manager: the next order id. To the broker: orders and cancels. To Safety: connection health, the last tick time and the broker's executions, open orders and positions.
+- **Owns** — All communication with the broker: market data in, orders and cancels out, fills and executions back, for every instrument the process trades. A replay source can stand in for the broker behind it. Also the connection's own heartbeat, reconnect and resubscribe-after-reconnect (decision 65).
+- **Not its job** — Building bars or deciding who hears an event (Event Loop); deciding what to trade (Strategy, StrategyExecution); tracking an order's life (Order Manager); deciding that a feed is stale, or repairing strategies after an outage (Safety).
+- **Receives** — From the broker: market data and fills. From Order Manager: orders and cancels, each with its order id. From Safety, as commands on the outbound buffer with a correlation id (decision 65): reconnect, resubscribe and broker-process-restart requests, requests for executions, open orders and positions. From the Event Loop: history requests for warmup; contract, subscribe and unsubscribe requests; session declarations.
+- **Produces** — To the Event Loop: `tick_update` and `bar_update` messages (each gateway declares which one it gives per instrument, decision 49), order, position and balance updates, and warmup history. To Order Manager: the next order id. To the broker: orders and cancels. To the inbound buffer, for Safety: `heartbeat`, `connection_lost` and `connection_restored` events, and replies with the broker's executions, open orders and positions, each with its request's correlation id.
 - **Why a component** — component test 1 (own outside source that can fail: the broker) and 3 (extension point: one subclass per broker, picked by name from the engine's gateway table, decision 30).
 
 ### Event Loop
 
 - **Owns** — Turning `tick_update` messages into completed bars, taking `bar_update` messages as completed bars, and delivering bars and order updates to the right strategies, in time order, exactly once; and seeding each strategy with the warmup history it needs (daily and prior-session), fetched through Gateway and retried until it lands.
-- **Does not own** — The broker connection, and building daily bars from intraday history (Gateway); entry/exit decisions (Strategy, StrategyExecution); recovering from an outage (Safety).
+- **Not its job** — The broker connection, and building daily bars from intraday history (Gateway); entry/exit decisions (Strategy, StrategyExecution); recovering from an outage (Safety).
 - **Receives** — From Gateway: `tick_update` and `bar_update` messages, order, position and balance updates, and warmup history. From Aux Data: values on each bar. From Safety: repaired fill and Rejected events, position updates, and a check-in request.
-- **Produces** — To Strategy: completed bars, order, position and balance updates, warmup history, flatten requests and quarantine calls. To Gateway: history requests. To Safety: check-ins and read access to the runtime book's members. To disk: bar and trade recordings (paper and live).
-- **Runtime book** — Also owns the runtime book, the one registry of the strategies the process runs and the per-instrument resources serving them, and adding one strategy to it while the process runs (decisions 34–36). Receives, from the runner's deploy socket in paper/live (decision 51): deploy requests as book operations. Produces, to the runner: one status per step until a terminal status, which the runner streams to the operator. Produces, to Gateway: contract, subscribe and unsubscribe requests for a new strategy's instruments.
+- **Produces** — To Strategy: completed bars, order, position and balance updates, warmup history, flatten requests and quarantine calls. To the outbound buffer: history requests, subscribe and unsubscribe commands, and deploy results. To Safety: check-ins. To the recorders, which are sinks: bar and fill events, in every mode (decision 67).
+- **Runtime book** — Also owns the runtime book, the one registry of the strategies the process runs and the per-instrument resources serving them, and adding one strategy to it while the process runs (decisions 34–36). Receives, from the deploy socket (decision 51): deploy requests, as `deploy_request` events on the inbound buffer, applied between events (decision 67). Produces, to the runner: one status per step until a terminal status, which the runner streams to the operator. Produces, to Gateway: contract, subscribe and unsubscribe requests for a new strategy's instruments.
 - **Why a component** — no component-test question passes; a component by the human's decision (decision 59).
 
 ### Aux Data *(decision 44)*
 
 - **Owns** — Reading auxiliary daily series from outside data sources, each through one data-source interface; deciding when a value is settled for its target session; arming and disarming each group of strategies that read them; adding the values to bars; and serving the history frames a cold rebuild needs.
 - **Does not own** — Broker history (Gateway, requested by the Event Loop); delivering bars (Event Loop); when a signal may be rebuilt and telling StrategyExecution it is ready (Strategy); how a calculation is seeded (StrategySignal).
-- **Receives** — From outside data sources (files in replay): auxiliary daily series. From the Event Loop: each completed bar before dispatch, and the runtime book's members. From Strategy: frame requests on a cold rebuild.
+- **Receives** — From outside data sources (files in replay): auxiliary daily series. From the Event Loop: each completed bar before dispatch, member events when a strategy joins or leaves the runtime book, and the watch time (decision 71). From Strategy: frame requests on a cold rebuild.
 - **Produces** — To the Event Loop: bars with auxiliary values added. To Strategy: ready / not ready, with the history frames.
 - **Why a component** — component test 1 (own outside input and own failure modes: source down, value not settled, provisional value changed, backup not confirmed; decision 44).
 
@@ -194,10 +194,10 @@ For each component: what it owns, what it leaves to others, what it receives, an
 
 ### Safety
 
-- **Owns** — Detecting a lost broker connection or a frozen process, reconnecting, un-sticking any strategy left waiting on an order whose fill happened during the outage, and the periodic stuck-order check (decision 50).
-- **Does not own** — Talking to the broker itself (Gateway); deciding what to trade (Strategy, StrategyExecution); normal event delivery (Event Loop).
-- **Receives** — From Gateway: connection health, the last tick time, and the broker's executions, open orders and positions. From the Event Loop: check-ins and the runtime book's members. From Strategy: each slot's submitted, open and cancelling orders, and "processing an order?".
-- **Produces** — To Gateway: heartbeat checks, reconnect and resubscribe requests, and queries. To the Event Loop: repaired fill and Rejected events and position updates, through the event buffer. To the operator: CRITICAL logs and stack dumps.
+- **Owns** — Detecting a lost broker connection, a stale feed or a frozen process, asking the Gateway to recover (the Gateway does the reconnect work, decision 65), un-sticking any strategy left waiting on an order whose fill happened during the outage, and the periodic stuck-order check (decision 50).
+- **Not its job** — Talking to the broker itself, and the connection's own heartbeat and reconnect (Gateway); deciding what to trade (Strategy, StrategyExecution); normal event delivery (Event Loop).
+- **Receives** — Per decisions 61 and 63: from both buffers, through a concurrent watcher that does not block the other consumers: feed events, `heartbeat` and connection events, replies (executions, open orders, positions), order events and the subscribe and order commands on the outbound buffer (decision 69). From the Event Loop: check-ins.
+- **Produces** — To the outbound buffer: requests to the Gateway (poll positions, executions, open orders, resubscribe, reconnect, broker process restart), each with a correlation id, and alerts. To the inbound buffer: repaired fill and Rejected events, each with its strategy key. To the operator: CRITICAL logs and stack dumps.
 - **Why a component** — component test 2 (fails and recovers independently of trading, decision 4).
 
 ### Shared, owned by no component
@@ -205,12 +205,27 @@ For each component: what it owns, what it leaves to others, what it receives, an
 - **Exchange profiles** — one per exchange: sessions, calendar, venue, currency, contract identity and, for futures, roll (decision 31).
 - **Instruments** — asset class, symbol, exchange profile, currency, multiplier, tick size (decision 37, 41).
 - **Configuration loading** and **structured logging**.
-- *Per decision 46:* **Clock** — `now()` and `wait(timeout)`, as `WallClock` or `ReplayClock`; and **RunMode** — the run mode, built once by the runner. The Event Loop moves the `ReplayClock` forward to each bar's end time in `emit_bar`; in replay `wait(timeout)` returns at once.
-- *Per decision 51:* **Runner** — `run_strategies.py`, `Runtime.build` and the deploy socket server. The runner builds the components in this order: Clock and RunMode, Gateway, Event Loop and runtime book, Aux Data, the slots (Strategy with its StrategySignal, StrategyExecution and Order Manager), Safety. The runner stops them in reverse. The runner owns the local deploy socket and hands each deploy request to the Event Loop as a book operation.
+- *Per decisions 62 and 68:* **Time** — there is no shared clock object. Logic reads event time; the bar flush and the shutdown read the watch time; system time is used only for logs, latency, the stale-feed and heartbeat gaps and the frozen-loop watchdog. **RunMode** stays inside the runner, which uses it only to select the adapters.
+- *Per decision 51:* **Runner** — `run_strategies.py`, `Runtime.build` and the deploy socket. The runner selects the adapters for the mode, then builds one core, the same in every mode, in this order: the inbound and the outbound buffer, Gateway, Event Loop and runtime book, Aux Data, the slots (Strategy with its StrategySignal, StrategyExecution and Order Manager), Safety. The runner stops them in reverse. The deploy socket turns each operator request into a `deploy_request` event (decision 67).
 
-### Open questions on the design pages
+### Open questions · decided
 
-None open. On 2026-11-09 every open question on this page and on the component pages was decided: decisions 52–58 here, and each component page lists its own answers under *Open questions*.
+Questions from the proposed streaming core, answered on 2026-11-11 (decisions 61–70). The questions decided on 2026-11-09 are decisions 52–58.
+
+1. **Bar flush in live.** The bar flush reads the watch time (decision 68).
+2. **No bar near the session end or the run end.** The shutdown runs its own watch (decision 64).
+3. **Same-time order in replay.** The order of the tape data (decision 66).
+4. **Heartbeat interval and stale threshold.** Defaults in the constants package, configurable per process (decision 63).
+5. **Adapter switches.** From the mode (decision 70).
+6. **Safety's view of orders and members.** Safety does not need the members (decision 69).
+7. **Frozen-loop watchdog.** System time (decision 70).
+8. **Other clock readers.** Event time and watch time (decision 68).
+9. **Watcher arming.** By the event time of the last feed event (decision 63).
+
+Answered later on 2026-11-11:
+
+1. **Aux Data without a shared clock.** Aux Data reads the watch time and gets its members from member events (decision 71).
+2. **Flush grace in watch time.** The default stays 1.0 s until a measurement in watch time sets it (decision 72).
 
 ## Golden sample
 
@@ -293,7 +308,7 @@ The replay session has exactly 23,400 bars (09:30:00 to 15:59:59, one bar per se
 | StrategySignal | Is warm on the first replay bar, with daily ATR = 20.00. Entry is false in phase A and true on one bar in phase B. Exit `target` is the first exit that is true after the entry. |
 | StrategyExecution | Stays flat in phase A. Decides one buy in phase B. Moves to in-position on the buy fill. Decides one sell when the target is reached. Returns to flat on the sell fill. Decides nothing in phase C. |
 | Order Manager | Submits exactly two market orders, tracks each one to filled, and ends with no open or submitted order. |
-| Safety | Replay uses the do-nothing stand-in (decision 46). Nothing to check in the golden run; Safety is proved by its own component tests. |
+| Safety | Safety runs as in live (decision 46). In the golden run, Safety sends no reconnect, resubscribe or restart request, pushes no repair event and logs no alert. |
 
 ### End to end
 
@@ -301,7 +316,7 @@ The broker journal is the output that the test reads. The simulated broker write
 
 | Journal rule | Value |
 |----|----|
-| Time | `ReplayClock` time in UTC, ISO-8601 with milliseconds. A fill row has the end time of the bar it filled on. |
+| Time | Event time in UTC, ISO-8601 with milliseconds. A fill row has the end time of the bar it filled on. |
 | Keys | Sorted by name; no spaces after separators. |
 | Prices | Written with 2 decimals. |
 | Order ids | The simulated broker numbers orders from 1 in each run. |
@@ -369,9 +384,11 @@ Checks 4 to 6 come from the designed price path, not from the frozen journal. Th
 
 #### 8. What does Safety exchange?
 
-**Answer:** Heartbeat and reconnect with Gateway, executions from Gateway, repaired fill events into the Event Loop.
+**Answer:** Safety reads `heartbeat`, connection, feed, order and reply events and the subscribe and order commands through taps on both buffers; Safety sends reconnect, resubscribe, restart and data requests to the Gateway on the outbound buffer, and repaired fill events into the inbound buffer (decisions 61, 65).
 
 **Rejected:** Rejected: detection-only.
+
+*changed 2026-11-11 · was heartbeat and reconnect calls on the Gateway*
 
 ### Golden sample
 
@@ -555,11 +572,11 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 34. Who owns the set of strategies the process runs?
 
-**Answer:** The Event Loop, as one **runtime book**: strategies in dispatch order, per-instrument resamplers and bar buffers, contracts, the recording session maps and the background retry tasks. Only the drain-loop task changes it, and only at a commit boundary: another task hands it a book operation and awaits the result, so a bar or order dispatch already in flight never sees the book change. Everyone else reads membership from the book at call time — shutdown, Safety's repair and positions poll, the auxiliary retry, the recorders and the reconnect resubscribe — so a strategy added later is a full member. Cold start and hot-add go through the same steps: reserve instruments, stage, prepare, commit.
+**Answer:** The Event Loop, as one **runtime book**: strategies in dispatch order, per-instrument resamplers and bar buffers, contracts, the recording session maps and the background retry tasks. Only the drain-loop task changes it, and only between events: a change starts from an event (a `deploy_request` or a reply to a deploy step), so a bar or order dispatch already in flight never sees the book change (decision 67). Shutdown and the auxiliary retry read membership from the book at call time, so a strategy added later is a full member. Safety, the recorders and the reconnect resubscribe do not read the book (decisions 65, 67, 69). Cold start and hot-add go through the same steps: reserve instruments, stage, prepare, commit.
 
 **Rejected:** Rejected: each consumer keeping its own copy of the strategy list made at start; a book changed from any task (a dispatch could see a half-added strategy).
 
-*agreed 2026-11-09*
+*agreed 2026-11-09 · changed 2026-11-11 · changes start from events, and Safety, the recorders and the resubscribe no longer read the book*
 
 #### 35. How does an operator add a strategy to a running process?
 
@@ -571,7 +588,7 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 36. What may a deploy request do?
 
-**Answer:** Add one new strategy key, nothing else, and only when it cannot disturb what is running. It is refused, before anything is touched, when the config file changed after the request was made (`stale_config`), the key is not in the config (`unknown_key`), the strategy folder fails to import (`import_error`), the signal's params fail their type check (`params_invalid`), the config differs anywhere but the new slot (`config_drift`), the key already runs (`conflict`), the strategy's session is open (`session_open`), its next session closes after this process exits (`after_process_exit`), no running strategy uses its account (`unknown_account_route`), or a position or order on its execution instrument belongs to no running strategy, compared per account (`unmanaged_exposure`; nothing is cancelled or flattened). A failure after that cleans only what the candidate created; shared feeds and running strategies are never touched. A committed strategy starts gated and can first enter at its next session open, once warmup and auxiliary data are ready.
+**Answer:** Add one new strategy key, nothing else, and only when it cannot disturb what is running. It is refused, before anything is touched, when the config file changed after the request was made (`stale_config`), the key is not in the config (`unknown_key`), the strategy folder fails to import (`import_error`), the signal's params fail their type check (`params_invalid`), the config differs anywhere but the new slot (`config_drift`), the key already runs (`conflict`), the strategy's session is open (`session_open`), its session on this run's trading date does not start later in this run or closes after the run exits (`after_process_exit`, decision 60), no running strategy uses its account (`unknown_account_route`), or a position or order on its execution instrument belongs to no running strategy, compared per account (`unmanaged_exposure`; nothing is cancelled or flattened). A failure after that cleans only what the candidate created; shared feeds and running strategies are never touched. A committed strategy starts gated and can first enter at its next session open, once warmup and auxiliary data are ready.
 
 **Rejected:** Rejected as out of scope: changing or removing a running strategy, reloading code or params, starting a strategy inside its own session, adding several strategies atomically, new account routes, changing when the process exits, automatic recovery from quarantine.
 
@@ -653,21 +670,15 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 46. How do components differ between replay and live?
 
-**Answer:** Only through what the runner passes in. A shared `Clock` (`now()`, `wait(timeout)`) is a `WallClock` live and a `ReplayClock` in replay, moving forward on each bar close; the bar flush, session-end flatten, reconcile and the session-active flag read it. `RunMode` is built once by the runner, which uses it to choose components and do-nothing stand-ins (recorders, Safety, state stores). No component reads the mode or checks a collaborator for `None`.
+**Answer:** They do not. The core (the two buffers, the Event Loop and every component) is the same code in every mode (decision 61). The mode only selects the adapters at the edges: the live or the simulated gateway, and whether the deploy socket and the OS signal handlers are on. Logic reads event time (decision 62). The simulated broker is the only part that knows the run is a simulation (decision 66). No component reads the mode, and Safety, the recorders and the state stores have no do-nothing stand-ins.
 
-**Rejected:** Rejected: checking a mode string inside components (it spreads, and a check that matches the wrong mode runs the wall clock against replayed data).
+**Rejected:** Rejected: checking a mode string inside components (it spreads, and a check that matches the wrong mode runs the wall clock against replayed data); a shared `Clock` and `RunMode`-chosen stand-ins (the earlier answer: components held the Gateway, the runtime book and the clock, so each mode needed its own wiring).
 
-*agreed 2026-11-09 · 2026-11-07*
+*agreed 2026-11-11 · was a shared `Clock` and do-nothing stand-ins chosen by `RunMode` (agreed 2026-11-09)*
 
 #### 47. What does `run_strategies.py` do?
 
-**Answer:** It is a thin startup module. It parses `--config` and `--mode` only (the deploy client is `deploy_strategy.py`, decision 35); replay settings (tape, date, session) sit in a `replay:` section of the config. It builds a `Runtime` from the config and the mode: the gateway by name from the gateway table (decision 30), the clock, the stand-ins and each component with its own typed config section. Every long-lived part follows one `Service` protocol (`start()`, `stop()`); `Runtime` starts them in order and stops them in reverse, also when start-up fails, then runs the Event Loop. Logging is one queue-handler setup (decision 29) with a logger per module. Comparing results with research stays outside (decision 3).
-
-``` python
-async def main(cfg, mode):
-    async with Runtime.build(cfg, mode) as rt:
-        await rt.run()
-```
+**Answer:** It is a thin startup module. It parses `--config` and `--mode` only (the deploy client is `deploy_strategy.py`, decision 35); replay settings (tape, date, session) sit in a `replay:` section of the config. It selects the adapters for the mode: the gateway by name from the gateway table (decision 30), and whether the deploy socket and the OS signal handlers are on. `Runtime.build` then builds one core, the same in every mode, with each component's own typed config section (decision 46, 61). Every long-lived part follows one `Service` protocol (`start()`, `stop()`); `Runtime` starts them in order and stops them in reverse, also when start-up fails, then runs the Event Loop. Logging is one queue-handler setup (decision 29) with a logger per module. Comparing results with research stays outside (decision 3).
 
 **Rejected:** Rejected: building components one by one with a try/finally of None checks; a long list of replay flags on the command line; keyword arguments copied one by one from config into a component.
 
@@ -742,19 +753,124 @@ async def main(cfg, mode):
 
 #### 50. Who runs the periodic stuck-order check?
 
-**Answer:** Safety, on its own heartbeat loop, every check interval (60 s). Safety reads the runtime book's members, asks each slot through Strategy whether it is processing an order, queries the Gateway, and runs the same repair it runs after a reconnect. The Event Loop no longer calls Safety.
+**Answer:** Safety, on its watcher thread, every check interval (60 s) in system time. Safety picks the pending orders that were sent but never acknowledged, from its own order view (decision 69), requests executions and open orders from the Gateway, and runs the same repair it runs after a reconnect. The Event Loop no longer calls Safety.
 
 **Rejected:** Rejected: the Event Loop querying the Gateway and then calling Safety's repair (two components share one job, and the call goes against the boundary direction).
 
-*agreed 2026-11-09*
+*agreed 2026-11-09 · changed 2026-11-11 · was a read of the runtime book and a call to Strategy*
 
 #### 51. Who owns startup, shutdown and the deploy socket?
 
-**Answer:** The runner, which is shared code, not a component: `run_strategies.py`, `Runtime.build`, `RunMode` and the deploy socket server. The runner builds and stops the components in a fixed order (see Shared, owned by no component) and hands each deploy request to the Event Loop as a book operation. The Event Loop still owns the runtime book and the admission steps (decisions 34–36).
+**Answer:** The runner, which is shared code, not a component: `run_strategies.py`, `Runtime.build`, `RunMode` (used only to select the adapters) and the deploy socket. The runner builds and stops the components in a fixed order (see Shared, owned by no component). The deploy socket turns each deploy request into a `deploy_request` event (decision 67). The Event Loop still owns the runtime book and the admission steps (decisions 34–36).
 
 **Rejected:** Rejected: a ninth Runner component (the runner has no outside input of its own and no failure mode beyond startup); the deploy socket server inside the Event Loop.
 
-*agreed 2026-11-09*
+*agreed 2026-11-09 · changed 2026-11-11 · deploy requests are events, not book operations*
+
+### Streaming core · agreed 2026-11-11
+
+#### 61. How do components exchange data?
+
+**Answer:** Through two buffers, in a producer → buffer → consumer pattern in both directions. The **inbound buffer** carries events to the Event Loop and the components: market data, order updates, replies and heartbeats from the Gateway, deploy requests from the operator socket, and OS signals. The **outbound buffer** carries commands from the components: orders, cancels and requests to the Gateway, alerts to the alert sink, and deploy results to the operator socket. A component consumes events and emits events or commands. A component holds no reference to the Gateway, the runtime book, a clock or the Event Loop. The inbound buffer keeps its control and data lanes (decision 26). v3 has one inbound buffer and one outbound buffer.
+
+**Rejected:** Rejected: passing the Gateway, the runtime book and the clock into Safety, the recorders and the deploy socket (each mode then needs its own wiring, and the boundaries leak); two outbound buffers by priority (not needed in v3).
+
+*agreed 2026-11-11*
+
+#### 62. Which time does the logic read?
+
+**Answer:** **Event time** only: the timestamp on each message (a tape bar, a history bar, a live bar, a fill). **System time** (the wall clock) is used only for logs, for the latency measures (`recv_ts`, decision 55) and for the gap that the stale-feed watcher measures (decision 63). There is no shared `Clock` object and no `clock_advance`.
+
+**Rejected:** Rejected: a shared `Clock` with `WallClock` and `ReplayClock` (one object mixed both times, and the Event Loop had to move the replay time forward).
+
+*agreed 2026-11-11*
+
+#### 63. How is a stale feed detected?
+
+**Answer:** Safety runs a concurrent background watcher. The watcher reads the feed events from the inbound buffer and does not block the other consumers. The watcher keeps the system time at which the last feed event arrived. Every watcher check interval, the watcher compares the gap from that time to the current system time with the stale threshold. The rule is the same in every mode; only the time gap matters. In replay, the simulated broker feeds bars as fast as the engine takes them, so a stale feed in replay means that the engine stalled. The watcher arms only while a data session is open: the event time of the last feed event, checked against the exchange profile, decides this. The Gateway's heartbeat interval must be shorter than the stale threshold.
+
+| Parameter | Configurable? | Supported | Default |
+|---|---|---|---|
+| Gateway heartbeat interval | yes, per process (decision 58) | any value below the stale threshold | 5 s |
+| Gateway heartbeat timeout | yes, per process | any value below the heartbeat interval | 3 s |
+| Stale threshold | yes, per process, with a per-exchange override | any value above the heartbeat interval | 45 s |
+| Watcher check interval | yes, per process | any value below the stale threshold | 1 s |
+
+Each default is a named value in the `alchemist/constants` package; the config reads its default from there.
+
+**Rejected:** Rejected: measuring only the gap between two successive feed events (a dead feed never sends the next event, so the gap is never seen).
+
+*agreed 2026-11-11*
+
+#### 64. What starts the session-end work?
+
+**Answer:** The shutdown's own watch. The shutdown watches the watch time (decision 68). When the watch time reaches a session end, or the run end (decision 60), the shutdown requests itself and runs the flatten and the exit sweep, whether bars arrive or not.
+
+**Rejected:** Rejected: a bar whose event time reaches the session end starts the shutdown (in a thin market or with a dead feed, no bar arrives, so the book is not flattened); a session-end calendar producer on the wall clock; a check driven by a shared clock.
+
+*agreed 2026-11-11*
+
+#### 65. Who does the connection work, and how does Safety ask for data?
+
+**Answer:** The Gateway runs its own heartbeat, reconnect and resubscribe-after-reconnect, and reports each result as an event (`heartbeat`, `connection_lost`, `connection_restored`). Safety asks for work as commands on the outbound buffer: `poll_positions`, executions, open orders, `resubscribe(instruments)` and `reconnect`. The Gateway answers each request with an event on the inbound buffer. Each request carries a **correlation id**, and its reply carries the same id. Safety keeps the last feed time from the events it reads, so the Gateway's `last_tick_ts` is removed.
+
+**Rejected:** Rejected: Safety calling Gateway methods directly (`heartbeat()`, `get_positions()`, `reconnect()`, `subscribe_tick()`, `last_tick_ts`).
+
+*agreed 2026-11-11*
+
+#### 66. Which part knows that the run is a simulation?
+
+**Answer:** Only the simulated broker. The simulated broker owns all simulated time: the tape timestamps, the order matching at the current tape time, and its heartbeats. The simulated broker sends events in the order of its tape data, so the order of two events with the same event time is the row order of the tape. The simulated broker answers every command at the current tape time before it sends the next bar. This rule extends the pacing on buffer idle (Gateway decision 8) to the outbound buffer.
+
+**Rejected:** Rejected: a `ReplayClock` that the Event Loop moves forward on each bar close.
+
+*agreed 2026-11-11*
+
+#### 67. How do the recorders, the state stores and the deploy socket fit the streaming core?
+
+**Answer:** The **recorders** are sinks. They read bar and fill events (each event carries its session and its strategy key) and write them under the run's `log_path`, in every mode. The **state stores** are the same in every mode; the run's `log_path` decides where state lives, so a replay run with a new `log_path` starts clean. The **deploy socket** is an inbound adapter: it turns an operator request into a `deploy_request` event, and it writes status lines from the `deploy_result` commands on the outbound buffer. The Event Loop applies each deploy request between events, so the `run_op` indirection is removed.
+
+**Rejected:** Rejected: do-nothing recorders and in-memory stores chosen by the run mode; `run_op` sending book operations into the loop.
+
+*agreed 2026-11-11*
+
+#### 68. Which time do the time-based watches read?
+
+**Answer:** The **watch time**: the event time of the last event, plus the system time that has passed since that event arrived. Two watches read the watch time: the bar flush and the shutdown (decision 64). The session-active flag and the reconcile read event time, and the watch time when no event arrives. In live, the watch time is the wall clock less the feed latency. In replay, the watch time moves with the tape. After the tape's last event, the watch time moves on in system time, so the session-end shutdown still runs after the tape ends. The bar flush emits an in-progress bar when the watch time reaches the bar end plus the flush grace.
+
+**Rejected:** Rejected: the system time directly (in replay the system time is not the tape time, so a bar would be flushed before its ticks arrive); a time event from the simulated broker (only the bar flush and the shutdown need a time when no event arrives).
+
+*agreed 2026-11-11*
+
+#### 69. Does Safety need the runtime book's members?
+
+**Answer:** No. Safety used the members for three jobs, and each job now has another source. (1) Which feeds to watch: Safety reads the subscribe and unsubscribe commands on the outbound buffer. (2) Which contracts to subscribe again after a reconnect: the Gateway knows its own subscriptions (decision 65). (3) Which orders are stuck: Safety reads the order commands on the outbound buffer (each one carries its strategy key) and the order updates on the inbound buffer. Safety sends each repair as an event with the strategy key, and the Event Loop gives the event to that strategy. Safety feature 10 is removed.
+
+**Rejected:** Rejected: Safety reading the runtime book or asking Strategy whether a slot is processing an order (a reach across the boundary).
+
+*agreed 2026-11-11*
+
+#### 70. Which threads keep system time?
+
+**Answer:** The frozen-loop watchdog stays a thread that reads the Event Loop's check-ins in system time (Safety feature 8). The runner turns the deploy socket and the OS signal handlers on and off from the mode (decision 47).
+
+*agreed 2026-11-11*
+
+#### 71. Which time does Aux Data read, and where do its members come from?
+
+**Answer:** Aux Data steps on the **watch time** (decision 68): every step interval of watch time, and once when the cold start has added every member. In replay the watch time is the tape time, so no replay date is passed to Aux Data. Aux Data learns its members from **member events** that the runtime book sends when a strategy joins (at commit) or leaves; Aux Data does not read the runtime book (decision 61).
+
+**Rejected:** Rejected: the watch time with reads of the runtime book (a reach across the boundary); keeping the replay date and the one-pass resolve at start (a replay-only path, decision 46).
+
+*decided 2026-11-11*
+
+#### 72. How long is the bar flush grace in watch time?
+
+**Answer:** The default stays 1.0 s and is configurable per process (decision 58). A measurement of the bar-flush delay in watch time on live feed-latency data sets the value later.
+
+**Rejected:** Rejected: measuring the grace on a synthetic replay tape now (replay has no feed latency, so the result says nothing about live).
+
+*decided 2026-11-11*
 
 ### Component status
 
@@ -765,6 +881,14 @@ async def main(cfg, mode):
 **Rejected:** Rejected: folding StrategyExecution and Order Manager back into Strategy as modules, and the Event Loop into the runner (a large boundary change for no gain in v3).
 
 *decided 2026-11-09*
+
+#### 60. What does one process run cover?
+
+**Answer:** One run covers one trading day. The process starts at 18:00 New York and exits at the run end, 17:00 New York on the next day; the process does not run in the maintenance hour between. At the run end the process requests its own shutdown (flatten, exit sweep, exit); no outside signal is needed. The run's trading date is the date of the run end. At each start the process loads the whole strategy book from the config, so a restart picks up every strategy added to the config. A hot-add (decision 36) exists only to let a new strategy trade a session that starts later in the same run, for example an RTH strategy deployed at 23:00 during the overnight session, which trades the 09:30 open. The run end and its time zone are configurable per process (decision 58); the default is 17:00 America/New_York.
+
+**Rejected:** Rejected: searching days ahead for a candidate's next session (a session after the run end belongs to the next run, which loads it from the config); a process that runs for several trading days.
+
+*decided 2026-11-11*
 
 ## Open questions
 
