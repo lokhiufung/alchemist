@@ -73,6 +73,8 @@ class EventLoopConfig:
     on_bar_error_quarantine: int = 3
     gil_switch_interval_s: float = 0.0005
     cutoff_offset_s: float = 60.0
+    run_end: str = "17:00"
+    run_tz: str = "America/New_York"
     flatten_timeout_s: float = 10.0
     scale_trigger_s: float = 0.003
     rebuild_yield_budget_s: float = 0.001

@@ -327,3 +327,14 @@ async def test_scenario_deploy_strategy(tmp_path, case):
 async def _held(gate, original, strategy):
     await gate.wait()
     return await original(strategy)
+
+
+@pytest.mark.parametrize("exit_at,expected", [
+    (datetime(2026, 4, 16, 21, 0, tzinfo=timezone.utc), ("registered", None)),
+    (datetime(2026, 4, 16, 19, 0, tzinfo=timezone.utc), ("rejected", "after_process_exit")),
+])
+async def test_overnight_deploy_needs_the_session_to_close_before_run_exit(tmp_path, exit_at, expected):
+    rig = Rig(tmp_path, now=CLOSED)
+    await rig.start_a()
+    rig.exit_at = exit_at
+    assert statuses(await rig.deploy("b"))[-1] == expected

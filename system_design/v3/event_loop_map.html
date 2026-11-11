@@ -36,6 +36,7 @@
 <div class="lede"><p>The engine's heartbeat. It drains one shared queue of events, packs ticks into bars at each strategy's resolution, and hands every bar and order update to the right strategies — in time order, exactly once — while keeping one broken strategy from stopping the rest.</p></div>
 <div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: sessions and cutoffs follow each instrument's exchange profile, each on its own clock.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-11</strong> — One run covers one trading day (<a href="system_map.html#d60">System map decision 60</a>). <a href="#f8">Feature 8</a>: each strategy's cutoff is computed one time for the run's trading date; new parameter run end; at the run end the process requests shutdown by itself. <a href="#f12">Feature 12</a>: <code>after_process_exit</code> checks only the session on the run's trading date.</li>
 <li><strong>2026-11-10</strong> — The Event Loop no longer shows each bar to the Gateway (<a href="gateway_map.html#d8">Gateway decision 8</a>). <a href="#f4">Feature 4</a>: the event buffer signals when it is idle; the replay feed waits for that signal before it sends the next bar, so replay no longer preloads the whole day.</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
 <li><strong>2026-11-09</strong> — Load scenario tick rate decided: 500 ticks per second per stream.</li>
@@ -463,14 +464,17 @@
 <dt>Need</dt><dd>Positions must not stay open past a session's end. At exit every configured position must be flat or flagged, and no queued event may be lost.</dd>
 <dt>Upstream gives</dt><dd>The clock; each instrument's exchange profile (session calendar, early closes, time zone); shutdown signals; <code>end_of_data</code> in replay.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>At each session's cutoff, on that session's own clock (early closes included, never at a session open), ask each strategy of that session to flatten.</li>
+<li>When a strategy joins the runtime book, compute its cutoff one time: its session's end on the run's trading date (<a href="system_map.html#d60">System map decision 60</a>), on that session's own clock with early closes included, minus the cutoff offset. If the run's trading date is not a trading day for the strategy's exchange, the strategy has no cutoff in this run.</li>
+<li>At each strategy's cutoff, ask the strategy to flatten. The loop only compares the clock with the stored cutoff; the loop never computes a session window on a loop pass.</li>
 <li>Repeat on every bar of the instrument until the strategy is flat and idle, a SIGINT/SIGTERM arrives, or the flatten timeout passes. A flattening slot gets no bars. Keep going when a flatten raises.</li>
 <li>When every slot has ended but an exchange's data session is still open, keep running and recording until it closes.</li>
+<li>At the run end, request shutdown, the same as a SIGINT/SIGTERM. The loop checks the run end on every pass, and an idle loop wakes at least once per drain timeout, so the process exits at the run end without an outside signal.</li>
 <li>Before exit: cancel working orders on configured instruments and wait; force-flatten any leftover position that has no working order; otherwise page and exit non-zero. If open orders cannot be read, treat every configured instrument as blocked.</li>
 <li>Clean shutdown: flush buffered bars, drain the recorders, tell the strategies, leave the loop.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Cutoff offset before session end</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>1 min</td><td>1 min</td></tr>
+<tr><td>Run end and its time zone</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>any time of day; any IANA time zone</td><td>17:00, America/New_York</td></tr>
 <tr><td>Flatten timeout</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>10 s</td><td>10 s</td></tr>
 </tbody></table></div></dd>
 <dt>Invariant</dt><dd>At exit every configured position is flat or flagged. An instrument the engine does not trade is never touched. No market order is sent at shutdown on an instrument that has, or may have, a working order. A normal shutdown leaves no queued event and no open file.</dd>
@@ -511,7 +515,7 @@
 <dt>Need</dt><dd>The operator adds a strategy in paper or live without a restart, and without touching the strategies already running.</dd>
 <dt>Upstream gives</dt><dd>A deploy request on the runner's local socket, the config file, and the broker's positions and open orders per account.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li><strong>Pre-flight</strong> (nothing exists yet): refuse <code>stale_config</code>, <code>config_drift</code>, <code>unknown_key</code>, <code>conflict</code>, <code>import_error</code>, <code>params_invalid</code>, <code>session_open</code>, <code>after_process_exit</code>, <code>unknown_account_route</code> or <code>unmanaged_exposure</code>.</li>
+<li><strong>Pre-flight</strong> (nothing exists yet): refuse <code>stale_config</code>, <code>config_drift</code>, <code>unknown_key</code>, <code>conflict</code>, <code>import_error</code>, <code>params_invalid</code>, <code>session_open</code>, <code>after_process_exit</code>, <code>unknown_account_route</code> or <code>unmanaged_exposure</code>. <code>after_process_exit</code>: take the candidate's session on the run's trading date (<a href="system_map.html#d60">System map decision 60</a>); refuse unless that session starts after now and ends at or before the run end.</li>
 <li><strong>Reserve and subscribe</strong> each new instrument through a book operation; subscribe ticks only for a new signal instrument.</li>
 <li><strong>Prepare</strong>: warm up the candidate alone (<a href="#f7">feature 7</a>); a fetch miss is not a failure.</li>
 <li><strong>Commit</strong> through a book operation that re-checks shutdown and the session gate; reply <code>registered</code>.</li>
@@ -704,10 +708,13 @@
 <tr><td><code>test_terminal_quarantine_never_overwritten_by_retry</code></td><td>—</td><td>state after a late retry lands</td><td><code>QUARANTINED_TERMINAL</code></td></tr>
 </tbody></table></div></details>
 
-<details><summary>8. Session end and shutdown leave the book flat<span class="count">5 tests · 10 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>8. Session end and shutdown leave the book flat<span class="count">8 tests · 15 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_cutoff_on_session_clock</code></td><td>exchange ∈ {CME, Eurex} × session ∈ {day, overnight}</td><td>time of first flatten request</td><td>session end − cutoff offset (1 min), on the session's clock</td></tr>
 <tr><td><code>test_early_close_cutoff_from_exchange_profile</code></td><td>—</td><td>time of first flatten request</td><td>early close − cutoff offset</td></tr>
 <tr><td><code>test_flatten_repeats_until_flat_signal_or_timeout</code></td><td>outcome ∈ {flat, signal, timeout}</td><td>when repeating stops</td><td>at flat; at signal; ≤ flatten timeout (10 s)</td></tr>
+<tr><td><code>test_run_exits_at_the_first_run_end_after_start</code></td><td>start ∈ {18:00, 10:00} New York</td><td>run end</td><td>17:00 New York on the next day; 17:00 New York on the same day</td></tr>
+<tr><td><code>test_process_due_does_not_recompute_session_windows_on_every_call</code></td><td>15 strategies × 500 loop passes</td><td>session window computations</td><td>≤ 3 per strategy</td></tr>
+<tr><td><code>test_loop_exits_by_itself_at_run_end</code></td><td>overnight strategy, clock runs past 17:00 New York, no signal, no <code>end_of_data</code></td><td>shutdown requested; loop ended</td><td>yes; yes</td></tr>
 <tr><td><code>test_unreadable_open_orders_block_force_flatten</code></td><td>—</td><td>market orders sent at exit</td><td>0</td></tr>
 <tr><td><code>test_end_of_data_leaves_no_queued_event</code></td><td>—</td><td>events left; files left open</td><td>0; 0</td></tr>
 </tbody></table></div></details>
@@ -729,9 +736,10 @@
 <tr><td><code>test_day_strategy_added_in_evening_not_due_that_evening</code></td><td>—</td><td>first flatten request</td><td>at the next day-session cutoff</td></tr>
 </tbody></table></div></details>
 
-<details><summary>12. Add a strategy while running<span class="count">3 tests · 14 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>12. Add a strategy while running<span class="count">4 tests · 16 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_each_refusal_reason_touches_nothing</code></td><td>reason ∈ the 10 pre-flight refusals</td><td>book and subscriptions after the reply</td><td>unchanged</td></tr>
 <tr><td><code>test_failed_candidate_releases_only_its_own_instruments</code></td><td>—</td><td>instruments released</td><td>only those no running strategy uses</td></tr>
+<tr><td><code>test_overnight_deploy_needs_the_session_to_close_before_run_exit</code></td><td>deploy at 18:00 New York of an RTH strategy × run end ∈ {17:00, 15:00} New York next day</td><td>reply</td><td><code>registered</code>; <code>rejected</code> with <code>after_process_exit</code></td></tr>
 <tr><td><code>test_busy_noop_shutting_down_replies</code></td><td>case ∈ {request in flight, same revision, after shutdown}</td><td>reply</td><td><code>busy</code>; <code>noop</code> with the original ID; <code>shutting_down</code></td></tr>
 </tbody></table></div></details>
 

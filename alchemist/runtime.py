@@ -179,7 +179,7 @@ class Runtime:
                 loaded_folders.update(load_strategies(config.system.strategies_root, exclude=loaded_folders))
                 return build_slot(strategy_config)
 
-            service = DeployService(config.path, config, book, gateway, clock, build_from_config, lambda: None,
+            service = DeployService(config.path, config, book, gateway, clock, build_from_config, lambda: shutdown.run_exit,
                                     lambda: loop.book_closed or shutdown.shutdown_requested)
             services.append(("deploy_socket", DeploySocketServer(root / SOCKET_FILE, service)))
         return cls(config, mode, services, loop, shutdown, gateway, clock, safety, slots)

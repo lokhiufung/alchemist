@@ -231,3 +231,22 @@ async def test_process_due_does_not_recompute_session_windows_on_every_call(monk
         rig.clock.advance(start + timedelta(seconds=second))
         await rig.shutdown.process_due()
     assert len(calls) <= 15 * 3
+
+
+@pytest.mark.parametrize("start,expected", [
+    (datetime(2026, 4, 15, 22, 0, tzinfo=timezone.utc), datetime(2026, 4, 16, 21, 0, tzinfo=timezone.utc)),
+    (datetime(2026, 4, 15, 14, 0, tzinfo=timezone.utc), datetime(2026, 4, 15, 21, 0, tzinfo=timezone.utc)),
+])
+def test_run_exits_at_the_first_run_end_after_start(start, expected):
+    from alchemist.event_loop.shutdown import run_exit_after
+    assert run_exit_after(start, EventLoopConfig()) == expected
+
+
+async def test_loop_exits_by_itself_at_run_end():
+    strategy = FlattenStrategy("s", MES, flat_on_request=None, session="NY_GLOBEX")
+    start = at(MES, "NY_GLOBEX", 16, 59, 50)
+    rig = Rig([strategy], start, config=FAST)
+    rig.push_second_bars(MES, start, 30)
+    await rig.run()
+    assert rig.shutdown.shutdown_requested
+    assert rig.clock.now() >= rig.shutdown.run_exit

@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Callable
 from zoneinfo import ZoneInfo
@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 from alchemist.clock import Clock
 from alchemist.config import ConfigError, Configuration, StrategyConfig, load_config
 from alchemist.constants.deploy import DeployStatus, RefusalReason
-from alchemist.constants.event_loop import NEXT_SESSION_LOOKAHEAD_DAYS
 from alchemist.event_loop.book import BookError, RuntimeBook
 from alchemist.exchanges import exchange_profile
 from alchemist.loader import StrategyLoadError
@@ -131,16 +130,12 @@ class DeployService:
         if exit_at is None:
             return
         profile = exchange_profile(candidate.signal_instrument)
-        now = self.clock.now()
-        for offset in range(NEXT_SESSION_LOOKAHEAD_DAYS):
-            day = now.astimezone(ZoneInfo(profile.tz)).date() + timedelta(days=offset)
-            if not profile.is_trading_day(day):
-                continue
-            start, end = profile.session_window(candidate.session, day)
-            if start > now:
-                if end > exit_at:
-                    raise DeployRefused(DeployStatus.REJECTED, RefusalReason.AFTER_PROCESS_EXIT)
+        run_date = exit_at.astimezone(ZoneInfo(profile.session(candidate.session).tz)).date()
+        if profile.is_trading_day(run_date):
+            start, end = profile.session_window(candidate.session, run_date)
+            if self.clock.now() < start and end <= exit_at:
                 return
+        raise DeployRefused(DeployStatus.REJECTED, RefusalReason.AFTER_PROCESS_EXIT)
 
     async def check_exposure(self, candidate, strategy_config: StrategyConfig) -> None:
         account, instrument = strategy_config.account_id, strategy_config.execution_instrument

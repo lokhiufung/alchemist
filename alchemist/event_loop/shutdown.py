@@ -4,15 +4,25 @@ import asyncio
 import logging
 import signal
 import time
+from datetime import date, datetime, timedelta
+from datetime import time as clock_time
 from functools import partial
+from zoneinfo import ZoneInfo
 
 from alchemist.clock import Clock
 from alchemist.config import EventLoopConfig
-from alchemist.constants.event_loop import POLL_S, RECHECK_OUTSIDE_SESSION_S
+from alchemist.constants.event_loop import POLL_S
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("shutdown")
+
+
+def run_exit_after(at: datetime, config: EventLoopConfig) -> datetime:
+    zone = ZoneInfo(config.run_tz)
+    local = at.astimezone(zone)
+    exit_at = datetime.combine(local.date(), clock_time.fromisoformat(config.run_end), zone)
+    return exit_at if exit_at > local else exit_at + timedelta(days=1)
 
 
 class ShutdownCoordinator:
@@ -27,7 +37,9 @@ class ShutdownCoordinator:
         self.last_request: dict[str, float] = {}
         self.window_end: dict[str, float] = {}
         self.settled_until: dict[str, float] = {}
-        self.cutoffs: dict[str, tuple[float, float, float]] = {}
+        self.run_exit = run_exit_after(clock.now(), self.config)
+        self.run_date: date = self.run_exit.astimezone(ZoneInfo(self.config.run_tz)).date()
+        self.cutoffs: dict[str, tuple[float, float]] = {}
 
     def request_shutdown(self, reason: str) -> None:
         logger.warning("shutdown requested", extra={"event": "shutdown_requested", "reason": reason})
@@ -46,27 +58,28 @@ class ShutdownCoordinator:
     def flattening_names(self) -> set[str]:
         return set(self.first_request)
 
-    def cutoff_for(self, strategy, now: float) -> tuple[float, float, float]:
+    def cutoff_for(self, strategy) -> tuple[float, float]:
         known = self.cutoffs.get(strategy.name)
-        if known is not None and now < known[2]:
-            return known
-        profile = exchange_profile(strategy.execution_instrument)
-        window = profile.session_window_at(self.book.sessions_by_strategy[strategy.name], self.clock.now())
-        if window is None:
-            known = (float("inf"), float("inf"), now + RECHECK_OUTSIDE_SESSION_S)
-        else:
-            end_ts = window[1].timestamp()
-            known = (end_ts - self.config.cutoff_offset_s, end_ts, end_ts)
-        self.cutoffs[strategy.name] = known
+        if known is None:
+            known = self.cutoffs[strategy.name] = self.run_cutoff(strategy)
         return known
+
+    def run_cutoff(self, strategy) -> tuple[float, float]:
+        profile = exchange_profile(strategy.execution_instrument)
+        if not profile.is_trading_day(self.run_date):
+            return float("inf"), float("inf")
+        _, end = profile.session_window(self.book.sessions_by_strategy[strategy.name], self.run_date)
+        return end.timestamp() - self.config.cutoff_offset_s, end.timestamp()
 
     async def process_due(self) -> None:
         now = self.clock.timestamp()
+        if not self.shutdown_requested and now >= self.run_exit.timestamp():
+            self.request_shutdown("run_end")
         for strategy in self.active_strategies():
             name = strategy.name
             if name in self.first_request:
                 continue
-            cutoff, end_ts, _ = self.cutoff_for(strategy, now)
+            cutoff, end_ts = self.cutoff_for(strategy)
             if now < cutoff or self.settled_until.get(name, 0.0) >= end_ts:
                 continue
             self.window_end[name] = end_ts

@@ -117,7 +117,7 @@ A deploy request only adds one new strategy key. It is rejected when:
 - the config differs anywhere but the new slot (`config_drift`, `stale_config`)
 - the key is not in the config (`unknown_key`) or already runs (`conflict`)
 - the strategy code does not import or its params are invalid (`import_error`, `params_invalid`)
-- the strategy's session is open now (`session_open`), or its next session closes after the process exits (`after_process_exit`)
+- the strategy's session is open now (`session_open`), or its session on this run's trading date does not start later in the run or closes after the run end, 17:00 New York by default (`after_process_exit`)
 - no running strategy uses its account (`unknown_account_route`)
 - a position or order on its execution instrument belongs to no running strategy (`unmanaged_exposure`)
 
