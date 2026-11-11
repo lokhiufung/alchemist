@@ -3,8 +3,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from time_helpers import ManualWatchTime
 from alchemist.config import AuxConfig
-from alchemist.external_data.provider import AuxProvider
-from alchemist.external_data.sources import AuxSource
+from alchemist.aux_data.provider import AuxProvider
+from alchemist.aux_data.sources import AuxSource
 from alchemist.instruments import FDAX, MES
 
 TARGET = date(2026, 4, 15)

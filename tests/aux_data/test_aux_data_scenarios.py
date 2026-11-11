@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import pytest
 
 from time_helpers import ManualWatchTime
-from alchemist.external_data.sources import ConfirmedBackupAuxSource, FileAuxSource
+from alchemist.aux_data.sources import ConfirmedBackupAuxSource, FileAuxSource
 from alchemist.instruments import FDAX, MES
 
 from aux_helpers import (tape_bar, TARGET, ScriptedSource, StubStrategy, berlin, make_provider, ny, row,

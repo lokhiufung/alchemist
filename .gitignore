@@ -179,3 +179,5 @@ local/*
 local/strategies/*
 !local/strategies/macd_rsi_rth_long/
 .DS_Store
+
+golden/

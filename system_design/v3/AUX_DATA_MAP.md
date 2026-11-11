@@ -558,7 +558,7 @@ Implementation detail and history. Feature numbers equal the old behaviour numbe
 
 ### Step → code
 
-Sources are in `external_data/sources.py`; the provider and groups are in `external_data/provider.py`; the poll period of the resident task is in `constants/aux_data.py`.
+Sources are in `aux_data/sources.py`; the provider and groups are in `aux_data/provider.py`; the poll period of the resident task is in `constants/aux_data.py`.
 
 | Step | Code |
 |----|----|

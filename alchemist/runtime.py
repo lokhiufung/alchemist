@@ -23,8 +23,8 @@ from alchemist.event_loop.seeder import Seeder
 from alchemist.event_loop.shutdown import ShutdownCoordinator
 from alchemist.event_loop.watch_time import WatchTime
 from alchemist.exchanges import EXCHANGES
-from alchemist.external_data.provider import AuxProvider
-from alchemist.external_data.sources import build_aux_source
+from alchemist.aux_data.provider import AuxProvider
+from alchemist.aux_data.sources import build_aux_source
 from alchemist.gateways import get_gateway
 from alchemist.loader import StrategyLoadError, load_strategies
 from alchemist.logger import attach_watch_time

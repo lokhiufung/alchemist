@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from alchemist.config import AuxConfig
 from alchemist.constants.aux_data import AUX_POLL_S
 from alchemist.exchanges import ExchangeProfile, exchange_profile
-from alchemist.external_data.sources import AuxSource
+from alchemist.aux_data.sources import AuxSource
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("aux_data")

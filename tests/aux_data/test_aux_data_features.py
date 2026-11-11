@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pytest
 
 from time_helpers import ManualWatchTime
-from alchemist.external_data.sources import ConfirmedBackupAuxSource, FileAuxSource, build_aux_source
+from alchemist.aux_data.sources import ConfirmedBackupAuxSource, FileAuxSource, build_aux_source
 from alchemist.instruments import FDAX, MES
 
 from aux_helpers import (tape_bar, TARGET, ScriptedSource, StubStrategy, berlin, make_provider, ny, row,
@@ -260,5 +260,5 @@ async def test_resident_task_crash_logs_critical(caplog):
 
 def test_aux_holds_no_runtime_book_and_no_clock():
     import inspect
-    from alchemist.external_data.provider import AuxProvider
+    from alchemist.aux_data.provider import AuxProvider
     assert set(inspect.signature(AuxProvider).parameters).isdisjoint({"book", "clock"})
