@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import itertools
 from typing import Any, TypedDict
 
+from alchemist.constants.messages import REPLY_EVENTS
 from alchemist.instruments import Instrument
 
 
@@ -84,8 +86,27 @@ class Execution(TypedDict):
 class Event(TypedDict):
     event_type: str
     data: dict[str, Any]
-    enqueued_at: float
+    event_time: float
 
 
-def make_event(event_type: str, data: dict[str, Any], now: float) -> Event:
-    return {"event_type": event_type, "data": data, "enqueued_at": now}
+class Command(TypedDict):
+    command_type: str
+    data: dict[str, Any]
+    correlation_id: int | None
+
+
+def make_event(event_type: str, data: dict[str, Any], event_time: float) -> Event:
+    return {"event_type": event_type, "data": data, "event_time": event_time}
+
+
+correlation_ids = itertools.count(1)
+
+
+def make_command(command_type: str, data: dict[str, Any] | None = None) -> Command:
+    return {"command_type": command_type, "data": data or {}, "correlation_id": next(correlation_ids)}
+
+
+def make_reply(command: Command, event_time: float, result: Any = None, error: str | None = None,
+               terminal: bool = False) -> Event:
+    return make_event(REPLY_EVENTS.get(command["command_type"], "reply"), {"correlation_id": command["correlation_id"], "request": command["command_type"],
+                                "result": result, "error": error, "terminal": terminal}, event_time)

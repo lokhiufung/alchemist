@@ -10,6 +10,20 @@ from typing import Any
 
 import yaml
 
+from alchemist.constants.gateway import RECONNECT_BASE_S, RECONNECT_CAP_S
+from alchemist.constants.safety import (
+    CHECK_IN_INTERVAL_S,
+    FREEZE_THRESHOLD,
+    HEARTBEAT_INTERVAL_S,
+    HEARTBEAT_TIMEOUT_S,
+    REJECT_SYNTHESIS_MIN_AGE_S,
+    RESUBSCRIBE_BACKOFF_BASE_S,
+    RESUBSCRIBE_MAX_ATTEMPTS,
+    RESUBSCRIBE_WITHOUT_FEED_CAP,
+    STALE_FEED_S,
+    STUCK_CHECK_INTERVAL_S,
+    WATCH_CHECK_INTERVAL_S,
+)
 from alchemist.instruments import Instrument, instrument
 
 ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -31,6 +45,10 @@ class GatewayConfig:
     name: str
     options: dict = field(default_factory=dict)
     replay: "ReplayConfig | None" = None
+    heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S
+    heartbeat_timeout_s: float = HEARTBEAT_TIMEOUT_S
+    reconnect_base_s: float = RECONNECT_BASE_S
+    reconnect_cap_s: float = RECONNECT_CAP_S
 
 
 @dataclass(frozen=True)
@@ -47,21 +65,20 @@ class ReplayConfig:
 
 @dataclass(frozen=True)
 class SafetyConfig:
-    reconnect_base_s: float = 15.0
-    reconnect_cap_s: float = 120.0
     maintenance_windows: tuple[tuple[str, str], ...] = ()
     positions_poll_s: float | None = None
-    heartbeat_interval_s: float = 5.0
-    heartbeat_timeout_s: float = 3.0
-    stale_tick_s: float = 45.0
+    heartbeat_interval_s: float = HEARTBEAT_INTERVAL_S
+    heartbeat_timeout_s: float = HEARTBEAT_TIMEOUT_S
+    stale_feed_s: float = STALE_FEED_S
     stale_overrides: dict = field(default_factory=dict)
-    resubscribe_max_attempts: int = 4
-    resubscribe_without_tick_cap: int = 3
-    resubscribe_backoff_base_s: float = 5.0
-    check_interval_s: float = 60.0
-    reject_synthesis_min_age_s: float = 120.0
-    freeze_threshold: int = 10
-    check_in_interval_s: float = 1.0
+    watch_check_interval_s: float = WATCH_CHECK_INTERVAL_S
+    resubscribe_max_attempts: int = RESUBSCRIBE_MAX_ATTEMPTS
+    resubscribe_without_feed_cap: int = RESUBSCRIBE_WITHOUT_FEED_CAP
+    resubscribe_backoff_base_s: float = RESUBSCRIBE_BACKOFF_BASE_S
+    check_interval_s: float = STUCK_CHECK_INTERVAL_S
+    reject_synthesis_min_age_s: float = REJECT_SYNTHESIS_MIN_AGE_S
+    freeze_threshold: int = FREEZE_THRESHOLD
+    check_in_interval_s: float = CHECK_IN_INTERVAL_S
 
 
 @dataclass(frozen=True)
@@ -92,7 +109,6 @@ class AuxConfig:
     recheck_interval_s: float = 3600.0
     confirmations: int = 1
     frame_days: int = 730
-    resolve_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +189,14 @@ def build_replay(raw: dict | None) -> ReplayConfig | None:
     return ReplayConfig(**{**raw, "journal": Path(journal) if journal else None})
 
 
+GATEWAY_FIELDS = ("heartbeat_interval_s", "heartbeat_timeout_s", "reconnect_base_s", "reconnect_cap_s")
+
+
+def build_gateway(raw: dict, replay: ReplayConfig | None) -> GatewayConfig:
+    typed = {key: raw.pop(key) for key in GATEWAY_FIELDS if key in raw}
+    return GatewayConfig(name=raw.pop("name"), options=raw, replay=replay, **typed)
+
+
 def build_safety(raw: dict | None) -> SafetyConfig:
     raw = dict(raw or {})
     if "maintenance_windows" in raw:
@@ -194,7 +218,7 @@ def load_config(path: Path) -> Configuration:
             log_path=Path(system["log_path"]),
             strategies_root=Path(system.get("strategies_root", "local/strategies")),
         ),
-        gateway=GatewayConfig(name=gateway.pop("name"), options=gateway, replay=replay),
+        gateway=build_gateway(gateway, replay),
         safety=build_safety(raw.get("safety")),
         aux_sources=raw.get("aux_sources") or {},
         aux=AuxConfig(**(raw.get("aux") or {})),

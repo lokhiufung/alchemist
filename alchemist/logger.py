@@ -10,14 +10,14 @@ from pathlib import Path
 
 from alchemist.constants.runtime import LOGS_DIR
 
-RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message", "asctime", "clock_time"}
+RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message", "asctime", "event_time"}
 
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
             "timestamp": iso_utc(record.created),
-            "clock_time": vars(record).get("clock_time"),
+            "event_time": vars(record).get("event_time"),
             "level": record.levelname,
             "logger": record.name,
             "method": record.funcName,
@@ -39,18 +39,17 @@ def fields_of(record: logging.LogRecord) -> dict:
     return {key: value for key, value in vars(record).items() if key not in RECORD_FIELDS}
 
 
-class NoClock:
-    def timestamp(self) -> None:
-        return None
+class NoWatchTime:
+    event_time = None
 
 
 class RecordQueue(logging.handlers.QueueHandler):
-    clock = NoClock()
+    watch_time = NoWatchTime()
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         record = copy.copy(record)
-        epoch = self.clock.timestamp()
-        record.clock_time = None if epoch is None else iso_utc(epoch)
+        epoch = self.watch_time.event_time
+        record.event_time = None if epoch is None else iso_utc(epoch)
         record.msg, record.args = record.getMessage(), None
         if record.exc_info:
             record.exc_text, record.exc_info = JsonFormatter().formatException(record.exc_info), None
@@ -91,10 +90,10 @@ def strategy_logger(strategy_key: str) -> logging.Logger:
     return logging.getLogger(f"{strategy_key}_strategy")
 
 
-def attach_clock(clock) -> None:
+def attach_watch_time(watch_time) -> None:
     for handler in logging.getLogger().handlers:
         if isinstance(handler, RecordQueue):
-            handler.clock = clock
+            handler.watch_time = watch_time
 
 
 def setup_logging(log_path: Path, level: int = logging.INFO) -> Listener:

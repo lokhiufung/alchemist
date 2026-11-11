@@ -89,5 +89,16 @@ def test_gateway_options_are_everything_but_name(tmp_path, monkeypatch):
 
 def test_safety_defaults_follow_the_map(tmp_path, monkeypatch):
     monkeypatch.setenv("GOLDEN_OUT", str(tmp_path))
-    safety = load_config(write(tmp_path, GOLDEN_YAML)).safety
-    assert (safety.reconnect_base_s, safety.reconnect_cap_s) == (15.0, 120.0)
+    config = load_config(write(tmp_path, GOLDEN_YAML))
+    safety, gateway = config.safety, config.gateway
+    assert (gateway.reconnect_base_s, gateway.reconnect_cap_s) == (15.0, 120.0)
+    assert (gateway.heartbeat_interval_s, gateway.heartbeat_timeout_s) == (5.0, 3.0)
+    assert (safety.heartbeat_interval_s, safety.heartbeat_timeout_s) == (5.0, 3.0)
+    assert (safety.stale_feed_s, safety.watch_check_interval_s) == (45.0, 1.0)
+
+
+def test_gateway_watch_numbers_are_configurable_per_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOLDEN_OUT", str(tmp_path))
+    text = GOLDEN_YAML.replace("  name: simulation", "  name: simulation\n  heartbeat_interval_s: 2.0\n  reconnect_cap_s: 60.0")
+    gateway = load_config(write(tmp_path, text)).gateway
+    assert (gateway.heartbeat_interval_s, gateway.reconnect_cap_s, gateway.options) == (2.0, 60.0, {})
