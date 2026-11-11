@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from typing import AsyncIterator
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import ExecutionConfig, StrategyConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.logger import strategy_logger
@@ -32,20 +31,20 @@ class Strategy:
     signal_dag: str
     resolution_s = 1.0
 
-    def __init__(self, config: StrategyConfig, gateway, clock: Clock, stores: Stores,
+    def __init__(self, config: StrategyConfig, requests, watch_time, stores: Stores,
                  execution_config: ExecutionConfig | None = None,
                  rebuild_yield_budget_s: float = REBUILD_YIELD_BUDGET_S) -> None:
         self.config = config
         self.rebuild_yield_budget_s = rebuild_yield_budget_s
         self.name = config.name
         self.log = strategy_logger(config.name)
-        self.clock = clock
+        self.watch_time = watch_time
         self.stores = stores
         self.signal_instrument = config.signal_instrument
         self.execution_instrument = config.execution_instrument
         self.position = self.flat_position()
         self.balance = {"currency": self.execution_instrument.currency, "available": None}
-        self.om = OrderManager(gateway, config.account_id, config.name)
+        self.om = OrderManager(requests, config.account_id, config.name)
         self.deferred_bars: list | None = None
         self.history: dict = {}
         self.aux_frames: dict = {}
@@ -61,11 +60,13 @@ class Strategy:
         self.session = exchange_profile(self.signal_instrument).session(self.signal.params.session).name
         self.execution = make_execution(
             config.execution, self.signal, self.om, instrument=self.execution_instrument,
-            account_id=config.account_id, slot=self.name, session=self.session, clock=clock,
+            account_id=config.account_id, slot=self.name, session=self.session, watch_time=watch_time,
             roundtrip_store=stores.round_trips, config=execution_config)
         if not self.signal.aux_names():
             self.execution.set_aux_ready()
-        self.restore_signal_state()
+        self.signal_state_restored = False
+        if watch_time.now() is not None:
+            self.restore_signal_state()
 
     @property
     def signal_name(self) -> str:
@@ -91,7 +92,7 @@ class Strategy:
 
     def trading_date(self) -> str:
         profile = exchange_profile(self.signal_instrument)
-        return self.clock.now().astimezone(ZoneInfo(profile.tz)).date().isoformat()
+        return self.watch_time.moment().astimezone(ZoneInfo(profile.tz)).date().isoformat()
 
     def in_session(self, bar: dict) -> bool:
         profile = exchange_profile(self.signal_instrument)
@@ -185,6 +186,8 @@ class Strategy:
         self.signal.seed({**self.history, "aux": self.aux_frames})
 
     def warmup(self, history: dict) -> None:
+        if not self.signal_state_restored:
+            self.restore_signal_state()
         if not self.is_flat_idle():
             self.pending_warmup = history
             self.execution.set_warmup_ready(False)
@@ -278,6 +281,7 @@ class Strategy:
         self.execution.request_flatten(self.position_view(), reason)
 
     def restore_signal_state(self) -> None:
+        self.signal_state_restored = True
         state = self.stores.calc_state.load(self.name, self.trading_date())
         if state:
             self.log.warning("session-fixed signal state restored after a restart",

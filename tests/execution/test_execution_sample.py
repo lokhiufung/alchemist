@@ -1,6 +1,5 @@
 from datetime import date, datetime, timezone
 
-from alchemist.clock import ReplayClock
 from alchemist.exchanges import exchange_profile
 from alchemist.gateways.simulation_gateway.tapes import tape_from_spec
 from alchemist.instruments import MES
@@ -22,7 +21,7 @@ async def test_golden_macd_entry_then_target_exit():
 
     processing = []
     for index, bar in enumerate(bars):
-        slot.clock.advance(datetime.fromtimestamp(bar["end_ts"], timezone.utc))
+        slot.clock.advance(bar["end_ts"])
         signal.index = index
         slot.execution.on_bar(bar, signal.step)
         await settle()

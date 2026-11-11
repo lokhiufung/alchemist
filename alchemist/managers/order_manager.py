@@ -33,8 +33,8 @@ ACKNOWLEDGED = {OrderState.SUBMITTED, OrderState.OPEN, OrderState.PARTIALLY_FILL
 
 
 class OrderManager:
-    def __init__(self, gateway, account_id: str, slot: str) -> None:
-        self.gateway = gateway
+    def __init__(self, requests, account_id: str, slot: str) -> None:
+        self.requests = requests
         self.account_id = account_id
         self.slot = slot
         self.stores: dict[str, dict[int, dict]] = {name: {} for name in STORE_NAMES}
@@ -44,13 +44,13 @@ class OrderManager:
                           order_type: str, stop_price: float | None = None,
                           limit_price: float | None = None,
                           oca_group: str | None = None) -> dict:
-        order = self.stamp(self.gateway.next_order_id(), instrument, side, qty, order_type,
+        order = self.stamp(self.requests.next_order_id(), instrument, side, qty, order_type,
                            stop_price, limit_price, oca_group)
         await self.send(order)
         return dict(order)
 
     async def place_group(self, orders: list[dict]) -> str:
-        ids = [self.gateway.next_order_id() for _ in orders]
+        ids = [self.requests.next_order_id() for _ in orders]
         group = self.fresh_group_name(ids[0])
         stamped = [
             self.stamp(order_id, o["instrument"], o["side"], o["qty"], o["order_type"],
@@ -86,8 +86,8 @@ class OrderManager:
             "instrument": order["instrument"].symbol, "side": order["side"], "qty": order["qty"],
             "order_type": order["order_type"], "stop_price": order["stop_price"],
             "limit_price": order["limit_price"], "oca_group": order["oca_group"]})
-        await self.gateway.place_order({k: v for k, v in order.items()
-                                        if k not in ORDER_RECORD_ONLY})
+        self.requests.command("place_order", order={k: v for k, v in order.items()
+                                                    if k not in ORDER_RECORD_ONLY})
 
     def locate(self, order_id: int) -> str | None:
         return next((name for name, store in self.stores.items() if order_id in store), None)
@@ -195,7 +195,7 @@ class OrderManager:
     async def send_cancel(self, order_id: int) -> None:
         order = self.move(order_id, "open", "cancelling")
         order["status"] = OrderState.CANCELLING.value
-        await self.gateway.cancel_order(order_id)
+        self.requests.command("cancel_order", order_id=order_id)
 
     async def cancel_group(self, group: str) -> None:
         for order in self.get_open_orders(group):

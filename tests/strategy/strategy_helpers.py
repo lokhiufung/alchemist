@@ -3,7 +3,6 @@ from collections import deque
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from alchemist.clock import ReplayClock
 from alchemist.config import StrategyConfig
 from alchemist.instruments import FDAX, MES, NQ
 from alchemist.logger import fields_of
@@ -138,20 +137,8 @@ class StubExecution:
         return None
 
 
-class FakeGateway:
-    def __init__(self) -> None:
-        self.next_id = 1
-        self.placed: list[dict] = []
-
-    def next_order_id(self):
-        self.next_id += 1
-        return self.next_id - 1
-
-    async def place_order(self, order):
-        self.placed.append(dict(order))
-
-    async def cancel_order(self, order_id):
-        return None
+from request_helpers import OrderSink as FakeGateway
+from time_helpers import ManualWatchTime
 
 
 register_stub_name = "stub_signal"
@@ -169,9 +156,9 @@ def make_strategy(instrument=MES, execution=True, calc_store=None, snapshot_inte
                   strategy_class=StubStrategy, execution_instrument=None) -> Strategy:
     config = StrategyConfig(name, "stub", "ACC", (instrument,), (execution_instrument or instrument,),
                             snapshot_interval=snapshot_interval)
-    clock = ReplayClock(datetime.fromtimestamp(SESSION_OPEN, timezone.utc))
+    watch_time = ManualWatchTime(SESSION_OPEN)
     stores = Stores(calc_state=calc_store or InMemoryCalcStateStore(), round_trips=InMemoryRoundTripStore())
-    strategy = strategy_class(config, FakeGateway(), clock, stores)
+    strategy = strategy_class(config, FakeGateway(), watch_time, stores)
     if execution:
         stub = StubExecution()
         stub.aux_ready = strategy.execution.aux_ready

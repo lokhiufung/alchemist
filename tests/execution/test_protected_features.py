@@ -168,12 +168,12 @@ def test_make_execution_refuses_bad_protected_blocks(options, message):
     slot = Slot(protected_signal(), ready=False)
     with pytest.raises(ExecutionConfigError, match=message):
         make_execution(options, slot.signal, slot.om, instrument=None, account_id="SIM", slot="my_slot",
-                       session="NY_RTH", clock=slot.clock, roundtrip_store=slot.store)
+                       session="NY_RTH", watch_time=slot.clock, roundtrip_store=slot.store)
 
 
 def test_make_execution_builds_both_protected_classes():
     slot = Slot(protected_signal(), ready=False)
-    common = dict(instrument=None, account_id="SIM", slot="s", session="NY_RTH", clock=slot.clock, roundtrip_store=slot.store)
+    common = dict(instrument=None, account_id="SIM", slot="s", session="NY_RTH", watch_time=slot.clock, roundtrip_store=slot.store)
     one = make_execution(PROTECTED_BLOCK, slot.signal, slot.om, **common)
     two = make_execution(STOP_LOSS_BLOCK, slot.signal, slot.om, **common)
     assert (type(one).__name__, type(two).__name__) == ("ProtectedStrategyExecution",

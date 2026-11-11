@@ -2,7 +2,6 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from alchemist.clock import ReplayClock
 from alchemist.config import ExecutionConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import MES
@@ -24,21 +23,8 @@ def make_bar(index: int, close: float = 100.0, open_ts: float | None = None, **f
             "close": close, "volume": 1.0, "resolution_s": 1.0, "broker_ts": start + 1.0, **fields}
 
 
-class FakeGateway:
-    def __init__(self) -> None:
-        self.next_id = 1
-        self.placed: list[dict] = []
-        self.cancelled: list[int] = []
-
-    def next_order_id(self) -> int:
-        self.next_id += 1
-        return self.next_id - 1
-
-    async def place_order(self, order: dict) -> None:
-        self.placed.append(dict(order))
-
-    async def cancel_order(self, order_id: int) -> None:
-        self.cancelled.append(order_id)
+from request_helpers import OrderSink as FakeGateway
+from time_helpers import ManualWatchTime
 
 
 class ScriptedSignal:
@@ -110,13 +96,13 @@ class Slot:
         self.signal = signal or ScriptedSignal(cap=cap)
         self.gateway = FakeGateway()
         self.om = OrderManager(self.gateway, "SIM", name)
-        self.clock = ReplayClock(datetime.fromtimestamp(session_open_ts(instrument, session), timezone.utc))
+        self.clock = ManualWatchTime(session_open_ts(instrument, session))
         self.open_ts = session_open_ts(instrument, session)
         self.store = store if store is not None else InMemoryRoundTripStore()
         self.name = name
         self.execution = make_execution(
             execution_config, self.signal, self.om, instrument=instrument, account_id="SIM", slot=name,
-            session=session, clock=self.clock, roundtrip_store=self.store,
+            session=session, watch_time=self.clock, roundtrip_store=self.store,
             config=ExecutionConfig(reminder_interval_s=reminder_interval_s), **make_kwargs)
         if ready:
             self.execution.set_warmup_ready()
@@ -131,9 +117,8 @@ class Slot:
         return bar
 
     async def raw_bar(self, bar):
-        at = datetime.fromtimestamp(bar["end_ts"], timezone.utc)
-        if at > self.clock.now():
-            self.clock.advance(at)
+        if bar["end_ts"] > self.clock.now():
+            self.clock.advance(bar["end_ts"])
         self.execution.on_bar(bar, self.signal.step)
         await settle()
 

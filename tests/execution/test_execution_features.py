@@ -217,7 +217,7 @@ async def test_failed_exit_never_resent_flattens_next_bar(ending):
 def test_make_execution_picks_base_class_and_refuses_bad_blocks():
     slot = Slot()
     assert type(slot.execution) is StrategyExecution
-    kwargs = dict(instrument=None, account_id="SIM", slot="my_slot", session="NY_RTH", clock=slot.clock,
+    kwargs = dict(instrument=None, account_id="SIM", slot="my_slot", session="NY_RTH", watch_time=slot.clock,
                   roundtrip_store=slot.store)
     with pytest.raises(ExecutionConfigError, match="my_slot"):
         make_execution({"class": "NoSuchExecution"}, slot.signal, slot.om, **kwargs)

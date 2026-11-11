@@ -10,8 +10,8 @@ from alchemist.gateways.simulation_gateway.tapes import tape_from_spec
 from alchemist.instruments import FDAX, MES, NQ
 from alchemist.loader import load_strategies
 from alchemist.registry import get_strategy
-from alchemist.clock import ReplayClock
 from alchemist.config import GatewayConfig, ReplayConfig, StrategyConfig
+from alchemist.event_loop.buffer import CommandBuffer
 from alchemist.gateways.simulation_gateway import SimulationGateway
 from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
 from alchemist.strategy_builder.strategy import Stores
@@ -66,12 +66,14 @@ async def test_golden_round_trip_books_position():
     strategy_class = get_strategy("macd_rsi_rth_long")
     replay = ReplayConfig("synthetic:golden_session", date(2026, 4, 15), "NY_RTH")
     start, end = exchange_profile(MES).session_window("NY_RTH", replay.date)
-    clock = ReplayClock(start.astimezone(timezone.utc))
-    gateway = SimulationGateway(type("B", (), {"push": lambda self, e: None})(), GatewayConfig("simulation", replay=replay),
-                                clock)
+    from request_helpers import OrderSink
+    from time_helpers import ManualWatchTime
+    watch_time = ManualWatchTime(start)
+    gateway = SimulationGateway(type("B", (), {"push": lambda self, e: None})(), CommandBuffer(),
+                                GatewayConfig("simulation", replay=replay))
     config = StrategyConfig("macd_rsi_rth_long", "macd_rsi_rth_long", "SIM", (MES,), (MES,))
     stores = Stores(InMemoryCalcStateStore(), InMemoryRoundTripStore())
-    strategy = strategy_class(config, gateway, clock, stores)
+    strategy = strategy_class(config, OrderSink(), watch_time, stores)
     assert strategy.execution.aux_ready is True
 
     steps = []
@@ -265,10 +267,10 @@ async def test_flatten_closes_booked_position(size):
     strategy.on_bar(deque([bar]), bar)
     if size:
         await place_and_fill(strategy, "BUY")
-    placed = len(strategy.om.gateway.placed)
+    placed = len(strategy.om.requests.placed)
     strategy.request_flatten("session_end", bar["start_ts"])
     await settle()
-    orders = strategy.om.gateway.placed[placed:]
+    orders = strategy.om.requests.placed[placed:]
     assert [(o["side"], o["order_type"], o["qty"]) for o in orders] == ([("SELL", "MKT", 1)] if size else [])
 
 
@@ -308,6 +310,7 @@ async def test_snapshot_every_n_bars(interval, expected, caplog):
     assert len(rows) == expected and all("stale" not in row for row in rows)
 
 
+@pytest.mark.load
 async def test_rebuild_replay_yields_within_budget():
     import asyncio
     import time

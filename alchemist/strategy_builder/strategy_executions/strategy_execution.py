@@ -7,7 +7,6 @@ from enum import Enum
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-from alchemist.clock import Clock
 from alchemist.config import ExecutionConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
@@ -76,7 +75,7 @@ class StrategyExecution:
         return {}
 
     def __init__(self, signal, om: OrderManager, instrument: Instrument, account_id: str, slot: str,
-                 session: str, clock: Clock, roundtrip_store, config: ExecutionConfig | None = None) -> None:
+                 session: str, watch_time, roundtrip_store, config: ExecutionConfig | None = None) -> None:
         self.signal = signal
         self.om = om
         self.instrument = instrument
@@ -84,7 +83,7 @@ class StrategyExecution:
         self.slot = slot
         self.log = strategy_logger(slot)
         self.session = session
-        self.clock = clock
+        self.watch_time = watch_time
         self.roundtrip_store = roundtrip_store
         self.config = config or ExecutionConfig()
         self.state = Phase.WARMUP
@@ -389,7 +388,7 @@ class StrategyExecution:
             return
         self.state_before_quarantine = self.state
         self.quarantine_reason = reason
-        self.quarantined_at = self.clock.timestamp()
+        self.quarantined_at = self.watch_time.now()
         self.last_reminder = None
         self.log.error("strategy quarantined", extra={"event": "quarantined", "reason": reason})
         self.set_phase(Phase.ERROR)
@@ -405,7 +404,7 @@ class StrategyExecution:
         return self.state is Phase.ERROR
 
     def remind_quarantine(self, bar: dict) -> None:
-        now = self.clock.timestamp()
+        now = self.watch_time.now()
         if self.last_reminder is not None and now - self.last_reminder < self.config.reminder_interval_s:
             return
         self.last_reminder = now
