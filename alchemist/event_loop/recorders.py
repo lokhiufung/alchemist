@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 from zoneinfo import ZoneInfo
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument, instrument as lookup_instrument
@@ -19,42 +23,83 @@ def session_day(instrument: Instrument, session: str, at_ts: float) -> str:
     return window[1].astimezone(ZoneInfo(profile.session(session).tz)).date().isoformat()
 
 
+BAR_SCHEMA = pa.schema([("instrument", pa.string())] + [(key, pa.float64()) for key in BAR_KEYS])
+ROUND_TRIP_SCHEMA = pa.schema([
+    ("strategy", pa.string()), ("instrument", pa.string()), ("currency", pa.string()), ("side", pa.string()),
+    ("qty", pa.int64()), ("entry_price", pa.float64()), ("exit_price", pa.float64()), ("entry_ts", pa.float64()),
+    ("exit_ts", pa.float64()), ("commission", pa.float64())])
+
+
 def bar_path(root: Path, instrument: Instrument, day: str) -> Path:
-    return Path(root) / "bars" / f"{instrument.symbol}_{day}.jsonl"
+    return Path(root) / "bars" / f"{instrument.symbol}_{day}.parquet"
+
+
+def staging_path(path: Path) -> Path:
+    return path.with_name(f".{path.stem}.staging.jsonl")
+
+
+def read_parquet_rows(path: Path) -> list[dict]:
+    return pq.read_table(path).to_pylist() if path.exists() else []
+
+
+def read_bar_rows(path: Path) -> list[dict]:
+    rows = read_parquet_rows(path)
+    staging = staging_path(path)
+    if staging.exists():
+        rows += [json.loads(line) for line in staging.read_text().splitlines() if line]
+    return rows
+
+
+def write_parquet_rows(path: Path, rows: list[dict], schema: pa.Schema) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.tmp")
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), temp)
+    temp.replace(path)
+
+
+def roll_up(path: Path) -> None:
+    staging = staging_path(path)
+    if not staging.exists():
+        return
+    write_parquet_rows(path, read_bar_rows(path), BAR_SCHEMA)
+    staging.unlink()
 
 
 class BarRecorder:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.handles: dict[Path, object] = {}
+        self.handles: dict[Path, TextIO] = {}
+        self.current: dict[str, Path] = {}
 
     def record(self, instrument: Instrument, bar: dict, session: str) -> None:
         path = bar_path(self.root, instrument, session_day(instrument, session, bar["start_ts"]))
+        previous = self.current.get(instrument.symbol)
+        if previous is not None and previous != path:
+            self.close(previous)
+        self.current[instrument.symbol] = path
         handle = self.handles.get(path)
         if handle is None:
             path.parent.mkdir(parents=True, exist_ok=True)
-            handle = self.handles[path] = open(path, "a")
+            handle = self.handles[path] = open(staging_path(path), "a")
         row = {"instrument": instrument.symbol, **{key: bar[key] for key in BAR_KEYS}}
         handle.write(json.dumps(row) + "\n")
         handle.flush()
 
-    def finalize(self) -> None:
-        for handle in self.handles.values():
+    def close(self, path: Path) -> None:
+        handle = self.handles.pop(path, None)
+        if handle is not None:
             handle.close()
-        self.handles.clear()
+        roll_up(path)
+
+    def finalize(self) -> None:
+        for path in list(self.handles):
+            self.close(path)
+        self.current.clear()
 
 
 def load_recorded_bars(root: Path, instrument: Instrument, session: str, at_ts: float) -> list[dict]:
-    day = session_day(instrument, session, at_ts)
-    path = bar_path(root, instrument, day)
-    if not path.exists():
-        return []
-    bars = []
-    for line in path.read_text().splitlines():
-        row = json.loads(line)
-        row["instrument"] = lookup_instrument(row["instrument"])
-        bars.append(row)
-    return bars
+    path = bar_path(root, instrument, session_day(instrument, session, at_ts))
+    return [{**row, "instrument": lookup_instrument(row["instrument"])} for row in read_bar_rows(path)]
 
 
 class TradeRecorder:
@@ -102,12 +147,12 @@ class TradeRecorder:
     def write_pending(self) -> None:
         if not self.pending:
             return
+        by_path: dict[Path, list[dict]] = {}
         for row in self.pending:
             day = datetime.fromtimestamp(row["exit_ts"], timezone.utc).date().isoformat()
-            path = self.root / "trades" / f"round_trips_{day}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a") as handle:
-                handle.write(json.dumps(row) + "\n")
+            by_path.setdefault(self.root / "trades" / f"round_trips_{day}.parquet", []).append(row)
+        for path, rows in by_path.items():
+            write_parquet_rows(path, read_parquet_rows(path) + rows, ROUND_TRIP_SCHEMA)
         self.pending = []
 
     async def flush(self) -> None:

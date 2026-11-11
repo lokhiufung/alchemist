@@ -1,7 +1,7 @@
-import json
 from collections import deque
 from datetime import datetime, timezone
 
+import pyarrow.parquet as pq
 import pytest
 
 from alchemist.event_loop.recorders import BarRecorder, TradeRecorder, load_recorded_bars
@@ -35,7 +35,7 @@ def bar(ts, close=100.0):
 
 
 def files(root):
-    return sorted(p.name for p in (root / "bars").glob("*"))
+    return sorted(p.name for p in (root / "bars").glob("*.parquet"))
 
 
 @pytest.mark.parametrize("session,start", [("NY_RTH", at(MES, "NY_RTH", 15, 0)), ("NY_GLOBEX", at(MES, "NY_GLOBEX", 23, 59, 0, day=14))])
@@ -45,7 +45,7 @@ def test_scenario_recording_bars(session, start, tmp_path):
         recorder.record(MES, bar(start.timestamp() + index))
     recorder.finalize()
     assert len(files(tmp_path)) == 1
-    rows = [json.loads(line) for line in (tmp_path / "bars" / files(tmp_path)[0]).read_text().splitlines()]
+    rows = pq.read_table(tmp_path / "bars" / files(tmp_path)[0]).to_pylist()
     assert len(rows) == 180 and rows[0]["instrument"] == "MES" and rows[0]["close"] == 100.0
 
 
@@ -71,8 +71,23 @@ def test_recorded_bar_durable_before_finalize(tmp_path):
     start = at(MES, "NY_RTH", 10, 0).timestamp()
     for index in range(10):
         recorder.record(MES, bar(start + index))
-    lines = (tmp_path / "bars" / files(tmp_path)[0]).read_text().splitlines()
-    assert len(lines) == 10
+    assert len(load_recorded_bars(tmp_path, MES, "NY_RTH", start + 10)) == 10
+
+
+def test_previous_session_rolls_up_when_next_session_starts(tmp_path):
+    recorder = SessionBarRecorder(tmp_path, "NY_GLOBEX")
+    recorder.record(MES, bar(at(MES, "NY_GLOBEX", 20, 0, 0, day=14).timestamp()))
+    recorder.record(MES, bar(at(MES, "NY_GLOBEX", 20, 0, 0, day=15).timestamp()))
+    assert len(files(tmp_path)) == 1
+
+
+def test_restart_appends_to_the_rolled_up_session(tmp_path):
+    start = at(MES, "NY_RTH", 10, 0).timestamp()
+    for offset in (0, 1):
+        recorder = SessionBarRecorder(tmp_path, "NY_RTH")
+        recorder.record(MES, bar(start + offset))
+        recorder.finalize()
+    assert len(load_recorded_bars(tmp_path, MES, "NY_RTH", start + 10)) == 2
 
 
 def test_recorded_bars_load_back_for_a_mid_session_start(tmp_path):
@@ -107,8 +122,7 @@ def recorder_for(tmp_path, owned):
 
 
 def rows(root):
-    path = next((root / "trades").glob("*.jsonl"))
-    return [json.loads(line) for line in path.read_text().splitlines()]
+    return pq.read_table(next((root / "trades").glob("*.parquet"))).to_pylist()
 
 
 async def test_scenario_recording_round_trip_row_has_prices_and_currency(tmp_path):
@@ -135,7 +149,7 @@ async def test_open_position_is_not_written_until_closed(tmp_path):
     recorder = recorder_for(tmp_path, {1: "BUY"})
     recorder.record_update(fill(1, 1, 5001.0, 1.0))
     await recorder.flush()
-    assert list((tmp_path / "trades").glob("*.jsonl")) == []
+    assert list((tmp_path / "trades").glob("*.parquet")) == []
 
 
 def test_unowned_updates_are_ignored(tmp_path):

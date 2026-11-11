@@ -458,8 +458,8 @@ Bar and fill events, in every mode. Each bar event carries its instrument and se
 #### Algorithm
 
 1.  The recorders are sinks: the loop hands each closed bar and each fill event to them, and they hold no reference to the runtime book or the Gateway.
-2.  Append every bar to the session day's file per instrument (an overnight session is not split at midnight); roll it up at day end or on finalize.
-3.  Pair fills into per-strategy round trips by strategy key (weighted average price for multi-fill legs), with currency; flush them, and repair a pending commission later.
+2.  Append every bar to the session day's staging file per instrument (an overnight session is not split at midnight); roll it up into `bars/<SYMBOL>_<session day>.parquet` at day end or on finalize.
+3.  Pair fills into per-strategy round trips by strategy key (weighted average price for multi-fill legs), with currency; flush them to `trades/round_trips_<exit date>.parquet`, and repair a pending commission later.
 4.  Write under the run's `log_path`. A replay run uses its own `log_path`, so it reads no recording of an earlier run.
 
 #### Parameters
@@ -850,7 +850,7 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_recorded_bar_durable_before_finalize` | — | bars on disk after a crash before finalize | every bar emitted before the crash |
 | `test_bars_are_recorded` | — | `harness.bar_recorder.bars` | `= [OPEN, OPEN + 1]` |
 | `test_next_overnight_session_gets_its_own_file` | — | `len(files(tmp_path))` | `= 2` |
-| `test_open_position_is_not_written_until_closed` | — | `list((tmp_path / 'trades').glob('*.jsonl'))` | `= []` |
+| `test_open_position_is_not_written_until_closed` | — | `list((tmp_path / 'trades').glob('*.parquet'))` | `= []` |
 | `test_recorded_bars_load_back_for_a_mid_session_start` | — | `[b['close'] for b in loaded]; loaded[0]['instrument']; load_recorded_bars(tmp_path / 'mis…` | `= [100.0 + i for i in range(5)]; = MES; = []` |
 | `test_scenario_recording_bars` | 2 cases | `len(files(tmp_path)); len(rows); rows[0]['instrument']; rows[0]['close']` | `= 1; = 180; = 'MES'; = 100.0` |
 | `test_scenario_recording_round_trip_row_has_prices_and_currency` | — | `(row['strategy'], row['currency'], row['entry_price'], row['exit_price'], row['qty'])` | `= ('slot', 'USD', 5001.0, 5011.0, 1)` |
