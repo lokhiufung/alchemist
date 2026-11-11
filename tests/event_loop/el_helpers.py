@@ -86,15 +86,10 @@ class RecordingStrategy:
 class StubGateway:
     def __init__(self, message_type="bar_update", log=None) -> None:
         self.message_type = message_type
-        self.shown: list[float] = []
         self.log = log if log is not None else []
 
     def market_data_type(self, instrument):
         return (self.message_type, 1.0 if self.message_type == "bar_update" else None)
-
-    def on_bar(self, instrument, bar):
-        self.log.append(("gateway", bar["start_ts"]))
-        self.shown.append(bar["start_ts"])
 
 
 class StubAux:

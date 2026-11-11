@@ -52,7 +52,6 @@ async def test_scenario_bar_updates():
     await harness.run()
     assert strategy.bars == [OPEN + i for i in range(10)]
     assert strategy.clock_at_bar == [OPEN + i + 1 for i in range(10)]
-    assert harness.gateway.shown == strategy.bars
 
 
 async def test_scenario_fill_jumps_tick_burst():

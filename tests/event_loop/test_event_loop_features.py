@@ -21,13 +21,13 @@ async def test_bars_in_order_exactly_once(strategies):
         assert member.bars == [OPEN + i for i in range(20)]
 
 
-async def test_aux_then_gateway_then_strategies():
+async def test_aux_then_strategies():
     log = []
     strategy = RecordingStrategy(log=log)
     harness = Harness([strategy], log=log)
     harness.push(bar_update(OPEN), end_of_data())
     await harness.run()
-    assert [entry[0] for entry in log] == ["aux", "gateway", "strategy"]
+    assert [entry[0] for entry in log] == ["aux", "strategy"]
 
 
 async def test_final_drain_uses_same_handlers():

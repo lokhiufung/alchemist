@@ -112,7 +112,7 @@ Flows not drawn on the spine (each is in the boundary section below):
 - Strategy → Order Manager: order updates and ownership checks. Order Manager → Strategy: ownership answers. Order Manager → StrategyExecution: query answers.
 - StrategyExecution ↔ StrategySignal: entry/exit questions and exit-input freeze/release; entry/exit signals back.
 - Aux Data → Strategy: ready / not ready, with the history frames. Strategy → Aux Data: frame requests on a cold rebuild.
-- Event Loop → Gateway: history requests; contract, subscribe and unsubscribe requests; session declarations; each completed bar (the simulated broker fills against it). Gateway → Order Manager: the next order id.
+- Event Loop → Gateway: history requests; contract, subscribe and unsubscribe requests; session declarations. Gateway → Order Manager: the next order id.
 - ( operator ) → runner → Event Loop: in paper and live, deploy requests over a local socket (decisions 35, 51); status lines and alerts back to the operator. Safety → ( operator ): CRITICAL logs and stack dumps. Event Loop → ( disk ): bar and trade recordings (paper and live).
 - Every component reads exchange facts from the shared exchange profiles (decision 31).
 
@@ -139,7 +139,7 @@ For each component: what it owns, what it leaves to others, what it receives, an
 
 - **Owns** — All communication with the broker: market data in, orders and cancels out, fills and executions back, for every instrument the process trades. A replay source can stand in for the broker behind it.
 - **Does not own** — Building bars or deciding who hears an event (Event Loop); deciding what to trade (Strategy, StrategyExecution); tracking an order's life (Order Manager); noticing a dead connection or repairing strategies after one (Safety).
-- **Receives** — From the broker: market data and fills. From Order Manager: orders and cancels, each with its order id. From Safety: heartbeat checks, reconnect and resubscribe requests, requests for executions, open orders and positions. From the Event Loop: history requests for warmup; contract, subscribe and unsubscribe requests; session declarations; each completed bar (the simulated broker fills against it).
+- **Receives** — From the broker: market data and fills. From Order Manager: orders and cancels, each with its order id. From Safety: heartbeat checks, reconnect and resubscribe requests, requests for executions, open orders and positions. From the Event Loop: history requests for warmup; contract, subscribe and unsubscribe requests; session declarations.
 - **Produces** — To the Event Loop: `tick_update` and `bar_update` messages (each gateway declares which one it gives per instrument, decision 49), order, position and balance updates, and warmup history. To Order Manager: the next order id. To the broker: orders and cancels. To Safety: connection health, the last tick time and the broker's executions, open orders and positions.
 - **Why a component** — component test 1 (own outside source that can fail: the broker) and 3 (extension point: one subclass per broker, picked by name from the engine's gateway table, decision 30).
 
@@ -148,7 +148,7 @@ For each component: what it owns, what it leaves to others, what it receives, an
 - **Owns** — Turning `tick_update` messages into completed bars, taking `bar_update` messages as completed bars, and delivering bars and order updates to the right strategies, in time order, exactly once; and seeding each strategy with the warmup history it needs (daily and prior-session), fetched through Gateway and retried until it lands.
 - **Does not own** — The broker connection, and building daily bars from intraday history (Gateway); entry/exit decisions (Strategy, StrategyExecution); recovering from an outage (Safety).
 - **Receives** — From Gateway: `tick_update` and `bar_update` messages, order, position and balance updates, and warmup history. From Aux Data: values on each bar. From Safety: repaired fill and Rejected events, position updates, and a check-in request.
-- **Produces** — To Strategy: completed bars, order, position and balance updates, warmup history, flatten requests and quarantine calls. To Gateway: history requests and each completed bar. To Safety: check-ins and read access to the runtime book's members. To disk: bar and trade recordings (paper and live).
+- **Produces** — To Strategy: completed bars, order, position and balance updates, warmup history, flatten requests and quarantine calls. To Gateway: history requests. To Safety: check-ins and read access to the runtime book's members. To disk: bar and trade recordings (paper and live).
 - **Runtime book** — Also owns the runtime book, the one registry of the strategies the process runs and the per-instrument resources serving them, and adding one strategy to it while the process runs (decisions 34–36). Receives, from the runner's deploy socket in paper/live (decision 51): deploy requests as book operations. Produces, to the runner: one status per step until a terminal status, which the runner streams to the operator. Produces, to Gateway: contract, subscribe and unsubscribe requests for a new strategy's instruments.
 - **Why a component** — no component-test question passes; a component by the human's decision (decision 59).
 
@@ -497,7 +497,7 @@ These decisions were proposed during the design and accepted when v3 was finaliz
 
 #### 27. What happens when the event buffer backs up?
 
-**Answer:** It stays lossless (order updates are never dropped), but a control-lane backlog over a threshold becomes an ERROR with an operator alert, and the size of each lane and the queue wait are logged with each drain pass. The data lane has no alert, because replay loads a whole day of bars into the data lane on purpose.
+**Answer:** It stays lossless (order updates are never dropped), but a control-lane backlog over a threshold becomes an ERROR with an operator alert, and the size of each lane and the queue wait are logged with each drain pass. The data lane has no alert.
 
 **Rejected:** Rejected: a hard size limit that drops events — it could drop a fill.
 

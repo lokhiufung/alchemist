@@ -40,6 +40,20 @@ def test_each_lane_drains_in_arrival_order_and_nothing_is_dropped():
     assert len(events) == 100
 
 
+def test_idle_only_after_every_popped_event_is_handled():
+    buffer = EventBuffer(EventLoopConfig())
+    assert buffer.idle.is_set()
+    buffer.push(tick(100.0, 1.0, 1))
+    buffer.push(order_update(1))
+    assert not buffer.idle.is_set()
+    buffer.begin_pass()
+    buffer.pop()
+    buffer.pop()
+    assert not buffer.idle.is_set()
+    assert buffer.pop() is None
+    assert buffer.idle.is_set()
+
+
 def test_end_of_data_waits_for_the_data_lane():
     from el_helpers import end_of_data
     buffer = EventBuffer(EventLoopConfig())

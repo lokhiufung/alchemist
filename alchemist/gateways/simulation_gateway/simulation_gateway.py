@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import heapq
 import json
+import logging
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterator
@@ -21,6 +23,8 @@ SEED_LOOKBACK_SESSIONS = 10
 SESSION_MARGIN = timedelta(hours=6)
 PRICE_KEYS = ("open", "high", "low", "close", "volume")
 FINGERPRINT_FILE = "tape.sha256"
+
+logger = logging.getLogger("gateway")
 
 
 def canonical_bar(bar: dict) -> bytes:
@@ -106,7 +110,7 @@ class SimulationGateway(Gateway):
         super().__init__(event_buffer, config, clock)
         self.replay = config.replay
         self.tape = tape or tape_from_spec(self.replay.tape)
-        self.instruments: list[Instrument] = []
+        self.day_bars: dict[Instrument, list[dict]] = {}
         self.tape_sha256 = hashlib.sha256()
         self.ids = OrderIdSequence(1)
         self.engine = OrderFillingEngine(self.replay.fill_reference, self.replay.slippage_ticks)
@@ -117,6 +121,7 @@ class SimulationGateway(Gateway):
         self.executions: list[dict] = []
         self.positions: dict[tuple[str, Instrument], dict] = {}
         self.funds: dict[tuple[str, str], float] = {}
+        self.feed_task: asyncio.Task | None = None
 
     def market_data_type(self, instrument: Instrument) -> tuple[str, float | None]:
         return ("bar_update", BAR_SECONDS)
@@ -130,6 +135,8 @@ class SimulationGateway(Gateway):
                 f"replay date {self.replay.date.isoformat()} is not a trading day for session {self.replay.session}")
 
     async def disconnect(self) -> None:
+        if self.feed_task is not None:
+            self.feed_task.cancel()
         self.journal.close()
 
     async def reconnect(self) -> None:
@@ -161,7 +168,8 @@ class SimulationGateway(Gateway):
         return {"instrument": instrument}
 
     async def subscribe_tick(self, contract: Any) -> None:
-        self.instruments.append(contract["instrument"])
+        instrument = contract["instrument"]
+        self.day_bars[instrument] = list(self.replay_bars(instrument))
 
     def next_order_id(self) -> int:
         return self.ids.next()
@@ -251,7 +259,7 @@ class SimulationGateway(Gateway):
         self.emit("balance_update", {"account_id": account, "currency": instrument.currency,
                                      "available": self.funds[key]})
 
-    def on_bar(self, instrument: Instrument, bar: dict[str, Any]) -> None:
+    def match_bar(self, instrument: Instrument, bar: dict[str, Any]) -> None:
         self.current_bars[instrument] = bar
         fires = []
         for order_id in sorted(self.resting):
@@ -341,13 +349,22 @@ class SimulationGateway(Gateway):
                    "broker_ts": begin + BAR_SECONDS}
 
     async def start_feed(self) -> None:
-        await self.start_replay()
+        self.feed_task = asyncio.get_running_loop().create_task(self.guarded_replay())
+
+    async def guarded_replay(self) -> None:
+        try:
+            await self.start_replay()
+        except Exception:
+            logger.critical("replay feed failed", exc_info=True, extra={"event": "replay_feed_failed"})
+            self.event_buffer.push(make_event("end_of_data", {}, self.clock.timestamp()))
 
     async def start_replay(self) -> None:
-        streams = [self.replay_bars(instrument) for instrument in self.instruments]
-        for bar in heapq.merge(*streams, key=lambda b: b["start_ts"]):
+        for bar in heapq.merge(*self.day_bars.values(), key=lambda b: b["start_ts"]):
+            await self.event_buffer.wait_idle()
+            self.match_bar(bar["instrument"], bar)
             self.tape_sha256.update(canonical_bar(bar))
             self.event_buffer.push(make_event("bar_update", bar, self.clock.timestamp()))
+        await self.event_buffer.wait_idle()
         self.event_buffer.push(make_event("end_of_data", {}, self.clock.timestamp()))
         self.write_tape_fingerprint()
 

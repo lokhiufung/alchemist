@@ -63,7 +63,7 @@ async def test_golden_bar_updates_fills_and_end_of_data(caplog, tmp_path):
     assert seeder.state_of("golden").value == "ready" and MES not in book.resamplers
     loop = EventLoop(buffer, book, gateway, StubAux(), StubSafety(), StubRecorder(), StubRecorder(),
                      ShutdownCoordinator(book, gateway, clock, config), clock, config, clock_advance=clock.advance)
-    await gateway.start_replay()
+    await gateway.start_feed()
     with caplog.at_level(logging.INFO):
         await loop.run()
     assert strategy.seeded_before_first_bar is True

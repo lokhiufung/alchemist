@@ -18,6 +18,8 @@ class EventBuffer:
         self.data: deque[dict] = deque()
         self.wake_pending = False
         self.drain_wakeup = asyncio.Event()
+        self.idle = asyncio.Event()
+        self.idle.set()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.loop_thread: int | None = None
         self.wakeups = 0
@@ -32,12 +34,14 @@ class EventBuffer:
 
     def push(self, event: dict, wake: bool = True) -> None:
         event.setdefault("pushed_at", time.time())
+        self.idle.clear()
         self.lane_for(event).append(event)
         if wake:
             self.raise_wakeup()
 
     def push_front(self, event: dict) -> None:
         event.setdefault("pushed_at", time.time())
+        self.idle.clear()
         self.control.appendleft(event)
         self.raise_wakeup()
 
@@ -70,7 +74,11 @@ class EventBuffer:
                 return control.popleft()
         if self.data:
             return self.data.popleft()
+        self.idle.set()
         return None
+
+    async def wait_idle(self) -> None:
+        await self.idle.wait()
 
     async def wait(self, clock) -> None:
         await clock.wait(self.config.drain_timeout_s)

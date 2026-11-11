@@ -36,6 +36,7 @@
 <div class="lede"><p>The engine's heartbeat. It drains one shared queue of events, packs ticks into bars at each strategy's resolution, and hands every bar and order update to the right strategies — in time order, exactly once — while keeping one broken strategy from stopping the rest.</p></div>
 <div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: sessions and cutoffs follow each instrument's exchange profile, each on its own clock.</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-10</strong> — The Event Loop no longer shows each bar to the Gateway (<a href="gateway_map.html#d8">Gateway decision 8</a>). <a href="#f4">Feature 4</a>: the event buffer signals when it is idle; the replay feed waits for that signal before it sends the next bar, so replay no longer preloads the whole day.</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
 <li><strong>2026-11-09</strong> — Load scenario tick rate decided: 500 ticks per second per stream.</li>
 <li><strong>2026-11-09</strong> — New section End-to-end scenarios in Tests (13 scenarios, proposed, not agreed).</li>
@@ -59,12 +60,12 @@
 <div class="table-wrap"><table>
 <thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
 <tbody>
-<tr><td rowspan="4">Other components call the Event Loop</td><td>Gateway feed, Safety, bar flush</td><td>Push an event into the buffer (Safety pushes repaired fills, Rejected updates and position updates)</td><td>event: type, data, enqueued_at</td></tr>
+<tr><td rowspan="4">Other components call the Event Loop</td><td>Gateway feed, Safety, bar flush</td><td>Push an event into the buffer (Safety pushes repaired fills, Rejected updates and position updates); wait until the buffer is idle</td><td>event: type, data, enqueued_at</td></tr>
 <tr><td>Replay runner</td><td>Push a fill to the front of the buffer</td><td>fill event</td></tr>
 <tr><td>Any task off the loop</td><td>Run a book operation and await its result</td><td>an operation on the runtime book → result or error</td></tr>
 <tr><td>Operator (local socket)</td><td>Deploy one strategy</td><td>strategy key → one status line per step</td></tr>
 <tr><td rowspan="5">The Event Loop calls other components</td><td>Strategy</td><td>Step on a bar; book an order or balance update; seed with warmup history; request flatten; ask "flat and idle?" and "processing an order?"; quarantine</td><td>bar, update, history, flatten reason</td></tr>
-<tr><td>Gateway</td><td>Request daily history and seed bars; show a bar (drives simulated fills); read each instrument's market-data message type; resolve contracts, subscribe and unsubscribe ticks</td><td>history request, bar, query, instrument</td></tr>
+<tr><td>Gateway</td><td>Request daily history and seed bars; read each instrument's market-data message type; resolve contracts, subscribe and unsubscribe ticks</td><td>history request, query, instrument</td></tr>
 <tr><td>Aux Data</td><td>Annotate a bar</td><td>bar → bar + aux values</td></tr>
 <tr><td>Safety</td><td>Check in from the loop (freeze detector)</td><td>check-in</td></tr>
 <tr><td>Clock</td><td>Read the time; wait</td><td>now, wait</td></tr>
@@ -305,15 +306,15 @@
 <li>A producer appends to its lane, then raises the drain wake-up only if <code>wake_pending</code> is clear, and sets it. A producer on another thread wakes the loop only through the loop's thread-safe call.</li>
 <li>The drain clears the wake-up and <code>wake_pending</code> <em>before</em> each pass, never after; empties the control lane, then takes data events; and yields when the batch budget is spent. Leftovers go to the next pass without a new wake-up.</li>
 <li>With nothing to do, wait on the wake-up with the wait timeout, so the clock-driven flush (<a href="#f1">feature 1</a>) still runs.</li>
-<li>Each pass logs the size of each lane and the p99 queue wait. When the control lane is above the backlog threshold, raise an ERROR with an operator alert. The data lane raises no alert, because replay loads a whole day of bars into the data lane. Never drop.</li>
-<li>Replay preloads the whole day and puts fills at the front of the buffer.</li>
+<li>Each pass logs the size of each lane and the p99 queue wait. When the control lane is above the backlog threshold, raise an ERROR with an operator alert. The data lane raises no alert. Never drop.</li>
+<li>The buffer is idle when the drain finds both lanes empty, which is only after every event the drain took has been handled. A push clears the idle state. A producer can wait until the buffer is idle; the replay feed does this before each bar (<a href="gateway_map.html#f12">Gateway feature 12</a>).</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Batch budget per pass</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>2 ms</td><td>2 ms</td></tr>
 <tr><td>Wait timeout</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>20 ms</td><td>20 ms</td></tr>
 <tr><td>Backlog alert threshold</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>)</td><td>5000 events</td><td>5000 events</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>Queue wait is close to 0, not 0 to the wait timeout. A burst costs one wake-up, not one per event. An event appended while a pass ends never waits for the timeout. Each lane drains in arrival order, each event exactly once, and nothing is dropped.</dd>
+<dt>Invariant</dt><dd>Queue wait is close to 0, not 0 to the wait timeout. A burst costs one wake-up, not one per event. An event appended while a pass ends never waits for the timeout. Each lane drains in arrival order, each event exactly once, and nothing is dropped. The buffer is never idle while an event that the drain took is still being handled.</dd>
 </dl>
 <details><summary>Why: the load and where it costs time<span class="count">load target, cost view, burst example, race rule</span></summary>
 <div class="details-body">
@@ -663,7 +664,7 @@
 
 <details><summary>2. Bars delivered in time order, exactly once<span class="count">4 tests · 7 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_bars_in_order_exactly_once</code></td><td>strategies per instrument ∈ {1, 15}</td><td>each strategy's bar timestamps</td><td>strictly increasing, no gap, no repeat</td></tr>
-<tr><td><code>test_aux_then_gateway_then_strategies</code></td><td>—</td><td>call order on one bar</td><td>Aux Data, Gateway, strategies</td></tr>
+<tr><td><code>test_aux_then_strategies</code></td><td>—</td><td>call order on one bar</td><td>Aux Data, strategies; the Gateway is not called</td></tr>
 <tr><td><code>test_final_drain_uses_same_handlers</code></td><td>—</td><td>handler per event type after stop</td><td>same as main drain</td></tr>
 <tr><td><code>test_every_bar_close_passes_one_function</code></td><td>close cause ∈ {rollover, flush, end of data, <code>bar_update</code>}</td><td>bars made outside that function</td><td>0</td></tr>
 <tr><td><code>test_bar_update_feed_bypasses_resampler_and_finer_resolution_refused</code></td><td>slot resolution ∈ {1 s on a 1 s feed, finer than the feed}</td><td>Resampler calls; startup result</td><td>0, starts; refused, names the slot</td></tr>
@@ -674,8 +675,9 @@
 <tr><td><code>test_round_trip_close_flushes_trade_recorder</code></td><td>—</td><td>recorder flushes per closed round trip</td><td>exactly 1</td></tr>
 </tbody></table></div></details>
 
-<details><summary>4. Fills never wait behind ticks<span class="count">6 tests · 7 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>4. Fills never wait behind ticks<span class="count">7 tests · 8 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_control_lane_drained_before_data_lane</code></td><td>ticks queued ahead ∈ {0, 2000}</td><td>dispatch position of a fill pushed after the ticks</td><td>first</td></tr>
+<tr><td><code>test_idle_only_after_every_popped_event_is_handled</code></td><td>—</td><td>idle state after push, after the last pop, after the empty pop</td><td>clear; clear; set</td></tr>
 <tr><td><code>test_burst_sends_one_wakeup_while_loop_awake</code></td><td>burst size ∈ {1000}</td><td>wake-up calls during one drain</td><td>1</td></tr>
 <tr><td><code>test_push_racing_end_of_drain_is_not_left_for_timeout</code></td><td>wait timeout ∈ {20 ms}</td><td>queue wait of a push between last pop and sleep</td><td>&lt; wait timeout</td></tr>
 <tr><td><code>test_drain_pass_yields_after_batch_budget</code></td><td>budget ∈ {2 ms}</td><td>pass length; wake-ups for leftovers</td><td>≤ budget + one event; 0</td></tr>

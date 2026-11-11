@@ -4,7 +4,7 @@ The engine's only line to the broker. Prices come in through the Gateway, orders
 
 Frozen contract for the Gateway component. Agents implement against this file and must not edit it: it changes only by re-running `/component-design` with the human, compiled from the HTML design page `gateway_map.html` in this folder (the human-readable source). System boundary: [SYSTEM_MAP.md](SYSTEM_MAP.md).
 
-**Last agreed: 2026-11-09.** **v3 final, 2026-11-09 — agreed.** The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3). Change history: see `gateway_map.html`.
+**Last agreed: 2026-11-10.** **v3 final, 2026-11-09 — agreed.** The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3). Change history: see `gateway_map.html`.
 
 ## Goal and scope
 
@@ -19,7 +19,7 @@ Frozen contract for the Gateway component. Agents implement against this file an
 | Direction | Who | Operation | Carries |
 |----|----|----|----|
 | Other components call the Gateway | Order Manager | Place an order; cancel an order | order: instrument, action, size, type (MKT, STP, LMT), price, OCA group and type; order id |
-|  | Event Loop | Resolve a contract; subscribe and unsubscribe ticks; declare instrument sessions; request daily history and intraday seed bars; show a bar (the simulated broker fills against the bar) | instrument, history window (months or dates) and session, bar |
+|  | Event Loop | Resolve a contract; subscribe and unsubscribe ticks; declare instrument sessions; request daily history and intraday seed bars | instrument, history window (months or dates) and session |
 |  | Safety | Probe the socket; reconnect; read the last tick time; fetch executions, open orders and positions; take the resubscribe request | timeout, since-timestamp |
 | The Gateway calls other components | Event Loop | Push events into the event buffer and raise the drain wake-up | `tick_update` or `bar_update`, order update, position update, balance update, `end_of_data` |
 |  | Broker (outside the system) | Send orders, cancels, subscriptions and requests through the broker's API | broker messages |
@@ -144,9 +144,9 @@ Each feature says which component needs it and why, what the broker can give, an
         ▼
   ( Event Loop )
 
-  ( Event Loop )
+  ( Replay tape )
         │
-        │ completed bar
+        │ next bar, when the event buffer is idle
         ▼
   ┌─────────────────────────┐
   │ Fill on bar (simulated) │
@@ -366,15 +366,16 @@ A replay must produce the same order updates as a paper or live run, so the rest
 
 #### Upstream gives
 
-In replay there is no broker. The Event Loop shows the simulated broker each completed bar before the strategies see the bar.
+In replay there is no broker. The simulated broker reads each bar from its own tape (feature 12). The Event Loop shows the simulated broker nothing.
 
 #### Algorithm
 
-1.  Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the Event Loop shows bar N to the simulated broker before the strategies, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.
-2.  Rest STP and LMT orders and emit OPEN. On each later bar of the instrument: a touch fills at the level, a gap fills at the bar's open.
-3.  When both legs of an OCA group fire on one bar, the stop wins; the other legs become CANCELLED.
-4.  Reject an order into an OCA group that already filled. A MKT order into a working group cancels the group's legs first.
-5.  A resting fill is booked after strategies have seen its bar: one bar later than live. This difference is accepted.
+1.  Before the simulated broker sends bar N, it matches its resting orders against bar N, then makes bar N the current bar. Fills from bar N reach the event buffer before bar N itself, as with a broker that fills and then closes the bar.
+2.  Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the simulated broker sends bar N+1 only after the Event Loop has handled bar N, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.
+3.  Rest STP and LMT orders and emit OPEN. On each later bar of the instrument: a touch fills at the level, a gap fills at the bar's open.
+4.  When both legs of an OCA group fire on one bar, the stop wins; the other legs become CANCELLED.
+5.  Reject an order into an OCA group that already filled. A MKT order into a working group cancels the group's legs first.
+6.  A resting fill reaches the strategies before the bar it filled on, as in live.
 
 #### Parameters
 
@@ -534,7 +535,7 @@ The config names a tape source, a replay date and a session. The tape is a file 
 3.  Answer daily history and seed-bar requests from the tape, like the broker gateway; return an empty list when the tape has no prior session.
 4.  Pad the replay window before and after the session with flat bars, when the option is on.
 5.  A synthetic generator is a second tape source behind the same simulated broker.
-6.  Send each replay bar as one `bar_update` (feature 2).
+6.  Send the replay bars one at a time. Before each bar, wait until the event buffer is idle (the Event Loop has handled every event it took); then match resting orders against the bar (feature 6) and send the bar as one `bar_update` (feature 2). After the last bar, wait until the buffer is idle again, then send `end_of_data`. The feed runs as its own task, started by `start_feed()`.
 7.  When the config sets `replay.journal`, write the broker journal: one row per order received and one row per fill sent, in the journal format of the [golden sample](SYSTEM_MAP.md).
 
 #### Parameters
@@ -546,7 +547,7 @@ The config names a tape source, a replay date and a session. The tape is a file 
 
 #### Invariant
 
-The runner writes no data file. Replay history has the same definitions as broker history (feature 8).
+The runner writes no data file. At most one replay bar is in the event buffer or being handled at any time. Replay history has the same definitions as broker history (feature 8).
 
 ### 13. Serve a strategy added while running *(was behaviour 14 · System map decisions 34–36)*
 
@@ -812,7 +813,7 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_pending_cancel_status_never_forwarded` | — | pending-cancel updates in the buffer | 0 |
 | `test_sim_cancel_of_non_resting_order_emits_nothing` | — | events for that order id | 0 |
 
-**6. The simulated broker fills like the broker (4 tests · 5 cases)**
+**6. The simulated broker fills like the broker (5 tests · 6 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
@@ -820,6 +821,7 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_sim_stop_wins_when_both_legs_touch` | — | filled leg; other leg's status | stop; CANCELLED |
 | `test_sim_order_into_filled_group_rejected` | — | status of the new order | REJECTED |
 | `test_sim_market_fill_at_reference_price_plus_slippage` | reference ∈ {bar close} × slippage ∈ {0, 1, 2} ticks | fill price | reference ± slippage × tick, exact |
+| `test_resting_fill_sent_before_its_bar` | — | position of the FILLED update vs. its bar's `bar_update` | FILLED first; fill price = limit |
 
 **7. Executions and open orders on request (1 test · 2 cases)**
 
@@ -855,13 +857,14 @@ Each scenario drives the component only through its public interface, from a kno
 |----|----|----|----|
 | `test_heartbeat_true_iff_answer_within_timeout` | answer delay ∈ {0.5 × timeout, 2 × timeout, never} at timeout 3.0 s | return value | True; False; False |
 
-**12. The simulated broker prepares its own replay data (3 tests · 5 cases)**
+**12. The simulated broker prepares its own replay data (4 tests · 6 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_replay_refuses_tape_rows_outside_session` | exchange ∈ {CME, Eurex} | replay start with an out-of-session row | refused |
 | `test_replay_daily_history_matches_broker_definitions` | tape ∈ {Parquet, synthetic} | daily frame vs. the broker gateway's frame for the same bars | equal |
 | `test_replay_no_prior_session_returns_empty_seed` | — | seed bars returned | empty list |
+| `test_feed_sends_next_bar_only_when_buffer_idle` | bars ∈ {3} | `bar_update` messages sent before the buffer turns idle | exactly 1 per idle; then `end_of_data` |
 
 **13. Serve a strategy added while running (2 tests · 2 cases)**
 
@@ -903,7 +906,7 @@ Implementation detail and history. The skeleton still cites the old behaviour nu
 
 ### Step → code
 
-Each box of the algorithm map and the code that carries it. `Gateway` is in `gateways/gateway.py`; the simulated broker (`SimulationGateway`) is in `gateways/simulation_gateway/simulation_gateway.py`, with tapes in `gateways/simulation_gateway/tapes.py` and `synthetic_tapes.py`; the IBKR gateway (`IbGateway`) is in `gateways/ib_gateway/gateway.py`, with `client.py` and `errors.py`; the gateway table `GATEWAYS` and `get_gateway()` are in `gateways/__init__.py`.
+Each box of the algorithm map and the code that carries it. `Gateway` is in `gateways/gateway.py`; the simulated broker (`SimulationGateway`) is in `gateways/simulation_gateway/simulation_gateway.py`, with tapes in `gateways/simulation_gateway/tapes.py` and `synthetic_tapes.py`; the IBKR gateway (`IbGateway`) is in `gateways/ib_gateway/gateway.py`, with `transport.py` (the `IbTransport` interface), `client.py` and `errors.py`; the gateway table `GATEWAYS` and `get_gateway()` are in `gateways/__init__.py`.
 
 | Step | Code |
 |----|----|
@@ -913,7 +916,7 @@ Each box of the algorithm map and the code that carries it. `Gateway` is in `gat
 | Resolve contract | `Gateway.resolve_contract()`, `subscribe_tick()`, `unsubscribe_tick()`, `set_instrument_sessions()` |
 | \[ contracts by instrument \] | IBKR gateway state · Planned |
 | Append tick | IBKR gateway tick callback · Planned; `Gateway.last_tick_ts` |
-| Fill on bar (simulated) | `SimulationGateway.on_bar()`; `OrderFillingEngine.try_fill()` |
+| Fill on bar (simulated) | `SimulationGateway.start_replay()`, `match_bar()`; `OrderFillingEngine.resting_price()`; `EventBuffer.wait_idle()` |
 | Translate status | IBKR gateway error handler · Planned; `Gateway.consume_resubscribe_request()` |
 | Report account | `Gateway.subscribe_account_update()`, `get_positions()` |
 | Build history frame | `Gateway.get_daily_history()`, `get_intraday_seed_bars()`, `roll_mismatch_dates()`; tape: `TapeSource`, `ParquetTape`, `SyntheticTape`, `check_tape_in_session()` |
@@ -948,7 +951,7 @@ The Gateway interface for v3, with two implementations: a broker gateway (IBKR f
 |----|----|
 | 1\. Connection lifecycle | `connect()`, `disconnect()`, `reconnect()`, `subscribe_order_update()` |
 | 2\. Market data | `subscribe_tick()`, `last_tick_ts`, `market_data_ready()`, `set_instrument_sessions()` |
-| 3\. Placing orders | `next_order_id()`, `place_order()`, `resolve_contract()`, `on_bar()` |
+| 3\. Placing orders | `next_order_id()`, `place_order()`, `resolve_contract()` |
 | 4\. Cancelling | `cancel_order()` |
 | 5\. Queries | `get_executions(since)`, `get_open_orders()`, `get_commissions()` |
 | 6\. Heartbeat | `heartbeat(timeout=3.0)` |
@@ -1072,9 +1075,6 @@ class Gateway(ABC):
     async def get_commissions(self) -> dict[str, dict]:
         return {}
 
-    def on_bar(self, instrument: Instrument, bar: dict[str, Any]) -> None:
-        """Behaviour 3: current bar from the Event Loop; drives simulated fills."""
-
     def intraday_seed_failure_is_fatal(self) -> bool:
         return False
 
@@ -1121,3 +1121,11 @@ GATEWAYS: dict[str, type[Gateway]] = {}   # Behaviour 10: picked by name
 **Rejected:** Rejected: the runner slicing the tape and writing history files before start (a second history path beside the Gateway, and it must read strategies before they exist to know which columns to build).
 
 *agreed 2026-11-09 · 2026-11-07*
+
+### 8. How does the simulated broker know the current bar?
+
+**Answer:** From its own tape. The simulated broker sends one bar at a time: it waits until the event buffer is idle, matches resting orders against the next bar, then sends that bar (features 6, 12). The Gateway interface has no call that only one subclass uses.
+
+**Rejected:** Rejected: the Event Loop showing each dispatched bar to the Gateway through `on_bar()`. That call did nothing in the IBKR gateway, so it put a replay-only path into the shared interface and into the Event Loop.
+
+*agreed 2026-11-10*

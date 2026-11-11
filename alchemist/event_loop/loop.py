@@ -162,7 +162,6 @@ class EventLoop:
             self.clock_advance(bar_end)
         await self.shutdown.process_due()
         self.aux.annotate(instrument, bar)
-        self.gateway.on_bar(instrument, bar)
         history = self.book.bars.setdefault(instrument, deque(maxlen=BAR_HISTORY))
         history.append(bar)
         self.bar_recorder.record(instrument, bar)

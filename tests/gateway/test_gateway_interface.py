@@ -137,7 +137,7 @@ def test_capabilities_have_safe_defaults():
     assert gateway.roll_mismatch_dates() == frozenset()
     assert gateway.intraday_seed_failure_is_fatal() is False
     assert gateway.set_instrument_sessions({MES: "NY_RTH"}) is None
-    assert gateway.on_bar(MES, {}) is None
+    assert not hasattr(gateway, "on_bar")
 
 
 async def test_async_capability_defaults():
@@ -165,4 +165,5 @@ async def test_start_feed_default_does_nothing_and_simulated_broker_replays():
     await simulated.connect()
     await simulated.subscribe_tick(await simulated.resolve_contract(instrument))
     await simulated.start_feed()
+    await simulated.feed_task
     assert buffer.events[-1]["event_type"] == "end_of_data"

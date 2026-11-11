@@ -4,7 +4,7 @@ The engine's heartbeat. It drains one shared queue of events, packs ticks into b
 
 Frozen contract for the Event Loop component. Agents implement against this file and must not edit it: it changes only by re-running `/component-design` with the human, compiled from the HTML design page `event_loop_map.html` in this folder (the human-readable source). System boundary: [SYSTEM_MAP.md](SYSTEM_MAP.md).
 
-**Last agreed: 2026-11-09.** **v3 final, 2026-11-09 — agreed.** The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: sessions and cutoffs follow each instrument's exchange profile, each on its own clock. Change history: see `event_loop_map.html`.
+**Last agreed: 2026-11-10.** **v3 final, 2026-11-09 — agreed.** The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: sessions and cutoffs follow each instrument's exchange profile, each on its own clock. Change history: see `event_loop_map.html`.
 
 ## Goal and scope
 
@@ -18,12 +18,12 @@ Frozen contract for the Event Loop component. Agents implement against this file
 
 | Direction | Who | Operation | Carries |
 |----|----|----|----|
-| Other components call the Event Loop | Gateway feed, Safety, bar flush | Push an event into the buffer (Safety pushes repaired fills, Rejected updates and position updates) | event: type, data, enqueued_at |
+| Other components call the Event Loop | Gateway feed, Safety, bar flush | Push an event into the buffer (Safety pushes repaired fills, Rejected updates and position updates); wait until the buffer is idle | event: type, data, enqueued_at |
 |  | Replay runner | Push a fill to the front of the buffer | fill event |
 |  | Any task off the loop | Run a book operation and await its result | an operation on the runtime book → result or error |
 |  | Operator (local socket) | Deploy one strategy | strategy key → one status line per step |
 | The Event Loop calls other components | Strategy | Step on a bar; book an order or balance update; seed with warmup history; request flatten; ask "flat and idle?" and "processing an order?"; quarantine | bar, update, history, flatten reason |
-|  | Gateway | Request daily history and seed bars; show a bar (drives simulated fills); read each instrument's market-data message type; resolve contracts, subscribe and unsubscribe ticks | history request, bar, query, instrument |
+|  | Gateway | Request daily history and seed bars; read each instrument's market-data message type; resolve contracts, subscribe and unsubscribe ticks | history request, query, instrument |
 |  | Aux Data | Annotate a bar | bar → bar + aux values |
 |  | Safety | Check in from the loop (freeze detector) | check-in |
 |  | Clock | Read the time; wait | now, wait |
@@ -271,8 +271,8 @@ Producers on different threads: the Gateway feed (the broker's reader thread), t
 2.  A producer appends to its lane, then raises the drain wake-up only if `wake_pending` is clear, and sets it. A producer on another thread wakes the loop only through the loop's thread-safe call.
 3.  The drain clears the wake-up and `wake_pending` *before* each pass, never after; empties the control lane, then takes data events; and yields when the batch budget is spent. Leftovers go to the next pass without a new wake-up.
 4.  With nothing to do, wait on the wake-up with the wait timeout, so the clock-driven flush (feature 1) still runs.
-5.  Each pass logs the size of each lane and the p99 queue wait. When the control lane is above the backlog threshold, raise an ERROR with an operator alert. The data lane raises no alert, because replay loads a whole day of bars into the data lane. Never drop.
-6.  Replay preloads the whole day and puts fills at the front of the buffer.
+5.  Each pass logs the size of each lane and the p99 queue wait. When the control lane is above the backlog threshold, raise an ERROR with an operator alert. The data lane raises no alert. Never drop.
+6.  The buffer is idle when the drain finds both lanes empty, which is only after every event the drain took has been handled. A push clears the idle state. A producer can wait until the buffer is idle; the replay feed does this before each bar (Gateway feature 12).
 
 #### Parameters
 
@@ -284,7 +284,7 @@ Producers on different threads: the Gateway feed (the broker's reader thread), t
 
 #### Invariant
 
-Queue wait is close to 0, not 0 to the wait timeout. A burst costs one wake-up, not one per event. An event appended while a pass ends never waits for the timeout. Each lane drains in arrival order, each event exactly once, and nothing is dropped.
+Queue wait is close to 0, not 0 to the wait timeout. A burst costs one wake-up, not one per event. An event appended while a pass ends never waits for the timeout. Each lane drains in arrival order, each event exactly once, and nothing is dropped. The buffer is never idle while an event that the drain took is still being handled.
 
 **Why: the load and where it costs time (load target, cost view, burst example, race rule)**
 
@@ -732,7 +732,7 @@ Each scenario drives the component only through its public interface, from a kno
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_bars_in_order_exactly_once` | strategies per instrument ∈ {1, 15} | each strategy's bar timestamps | strictly increasing, no gap, no repeat |
-| `test_aux_then_gateway_then_strategies` | — | call order on one bar | Aux Data, Gateway, strategies |
+| `test_aux_then_strategies` | — | call order on one bar | Aux Data, strategies; the Gateway is not called |
 | `test_final_drain_uses_same_handlers` | — | handler per event type after stop | same as main drain |
 | `test_every_bar_close_passes_one_function` | close cause ∈ {rollover, flush, end of data, `bar_update`} | bars made outside that function | 0 |
 | `test_bar_update_feed_bypasses_resampler_and_finer_resolution_refused` | slot resolution ∈ {1 s on a 1 s feed, finer than the feed} | Resampler calls; startup result | 0, starts; refused, names the slot |
@@ -744,11 +744,12 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_order_update_reaches_every_strategy` | strategy state ∈ {in session, flattening, session ended} | strategies that received the update | all |
 | `test_round_trip_close_flushes_trade_recorder` | — | recorder flushes per closed round trip | exactly 1 |
 
-**4. Fills never wait behind ticks (6 tests · 7 cases)**
+**4. Fills never wait behind ticks (7 tests · 8 cases)**
 
 | Test | Parameter cases | Measure | Pass threshold |
 |----|----|----|----|
 | `test_control_lane_drained_before_data_lane` | ticks queued ahead ∈ {0, 2000} | dispatch position of a fill pushed after the ticks | first |
+| `test_idle_only_after_every_popped_event_is_handled` | — | idle state after push, after the last pop, after the empty pop | clear; clear; set |
 | `test_burst_sends_one_wakeup_while_loop_awake` | burst size ∈ {1000} | wake-up calls during one drain | 1 |
 | `test_push_racing_end_of_drain_is_not_left_for_timeout` | wait timeout ∈ {20 ms} | queue wait of a push between last pop and sleep | \< wait timeout |
 | `test_drain_pass_yields_after_batch_budget` | budget ∈ {2 ms} | pass length; wake-ups for leftovers | ≤ budget + one event; 0 |

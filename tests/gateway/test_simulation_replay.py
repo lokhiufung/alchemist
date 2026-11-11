@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from datetime import date, timedelta
 
@@ -11,7 +12,7 @@ from alchemist.gateways.simulation_gateway import SimulationGateway
 from alchemist.gateways.simulation_gateway.tapes import ParquetTape, ReplayDataError
 from alchemist.instruments import FDAX, MES, MNQ
 
-from gateway_helpers import REPLAY_DATE, ListTape, make_gateway, session_seconds, tape_bar
+from gateway_helpers import REPLAY_DATE, ListTape, make_gateway, make_order, session_seconds, tape_bar
 
 CME = exchange_profile(MES)
 
@@ -182,3 +183,62 @@ async def test_two_instruments_merge_in_time_order():
     await gateway.start_replay()
     stamps = [b["start_ts"] for b in buffer.of_type("bar_update")]
     assert stamps == sorted(stamps) and len(stamps) == 6
+
+
+class GatedBuffer:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+        self.idle = asyncio.Event()
+        self.idle.set()
+
+    def push(self, event) -> None:
+        self.events.append(event)
+        self.idle.clear()
+
+    async def wait_idle(self) -> None:
+        await self.idle.wait()
+
+    def kinds(self) -> list[str]:
+        return [e["event_type"] for e in self.events]
+
+    async def settle(self) -> None:
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+
+def gated_gateway(rows):
+    gateway, _ = make_gateway(tape=ListTape(rows))
+    gateway.event_buffer = GatedBuffer()
+    return gateway, gateway.event_buffer
+
+
+async def test_feed_sends_next_bar_only_when_buffer_idle():
+    gateway, buffer = gated_gateway(session_seconds(MES, "NY_RTH", REPLAY_DATE, 3))
+    await started(gateway)
+    await gateway.start_feed()
+    for sent in (1, 2, 3):
+        await buffer.settle()
+        assert buffer.kinds() == ["bar_update"] * sent
+        buffer.idle.set()
+    await gateway.feed_task
+    assert buffer.kinds() == ["bar_update"] * 3 + ["end_of_data"]
+
+
+async def test_resting_fill_sent_before_its_bar():
+    rows = session_seconds(MES, "NY_RTH", REPLAY_DATE, 1, close=5000.0)
+    rows.append(tape_bar(MES, rows[0]["start_ts"] + 1.0, 5000.0, high=5200.0))
+    gateway, buffer = gated_gateway(rows)
+    await started(gateway)
+    await gateway.start_feed()
+    await buffer.settle()
+    order = make_order(gateway, "LMT", "SELL", limit_price=5100.0)
+    await gateway.place_order(order)
+    while not gateway.feed_task.done():
+        buffer.idle.set()
+        await buffer.settle()
+    kinds = buffer.kinds()
+    filled = next(i for i, e in enumerate(buffer.events)
+                  if e["event_type"] == "order_update" and e["data"]["status"] == "FILLED")
+    second_bar = [i for i, kind in enumerate(kinds) if kind == "bar_update"][1]
+    assert filled < second_bar
+    assert buffer.events[filled]["data"]["avg_fill_price"] == 5100.0

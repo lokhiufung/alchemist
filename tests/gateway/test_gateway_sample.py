@@ -30,7 +30,7 @@ async def test_golden_replay_delivers_every_bar_then_end_of_data_and_fills_two_o
     for index, event in enumerate(bars[:-1]):
         bar = event["data"]
         gateway.clock.advance(__import__("datetime").datetime.fromtimestamp(bar["end_ts"], timezone.utc))
-        gateway.on_bar(MES, bar)
+        gateway.match_bar(MES, bar)
         if index in (ENTRY_INDEX, TARGET_INDEX):
             side = "BUY" if index == ENTRY_INDEX else "SELL"
             order = make_order(gateway, "MKT", side)

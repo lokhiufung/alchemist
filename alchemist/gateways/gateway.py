@@ -111,8 +111,6 @@ class Gateway(ABC):
     async def get_commissions(self) -> dict[str, dict]:
         return {}
 
-    def on_bar(self, instrument: Instrument, bar: dict[str, Any]) -> None: ...
-
     def intraday_seed_failure_is_fatal(self) -> bool:
         return False
 

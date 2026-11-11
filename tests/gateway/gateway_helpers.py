@@ -18,6 +18,9 @@ class RecordingBuffer:
     def push(self, event) -> None:
         self.events.append(event)
 
+    async def wait_idle(self) -> None:
+        return None
+
     def of_type(self, event_type: str) -> list[dict]:
         return [e["data"] for e in self.events if e["event_type"] == event_type]
 
@@ -71,7 +74,7 @@ class Driver:
         bar = tape_bar(instrument, self.open_ts + self.index, close, high=high, low=low, open_=open_)
         self.index += 1
         self.gateway.clock.advance(datetime.fromtimestamp(bar["end_ts"], timezone.utc))
-        self.gateway.on_bar(instrument, bar)
+        self.gateway.match_bar(instrument, bar)
         return bar
 
     def updates(self, order_id=None):

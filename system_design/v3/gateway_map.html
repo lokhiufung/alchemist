@@ -36,6 +36,7 @@
 <div class="lede"><p>The engine's only line to the broker. Prices come in through the Gateway, orders go out through the Gateway, and fills come back through the Gateway. In simulation, a simulated broker sits behind the same interface.</p></div>
 <div class="meta"><p><strong>v3 final, 2026-11-09 — agreed.</strong> The End-to-end scenarios in Tests were agreed on 2026-11-09. All features and decisions are agreed. Multi-asset: contract identity, venue and session clocks come from each instrument's exchange profile (feature 3).</p>
 <details><summary>Change history</summary><ul>
+<li><strong>2026-11-10</strong> — The Event Loop no longer shows bars to the Gateway: <code>on_bar</code> is removed from the public interface. The simulated broker matches resting orders against each bar of its own tape before it sends that bar (<a href="#f6">feature 6</a>), and sends the next bar only when the event buffer is idle (<a href="#f12">feature 12</a>). A resting fill now reaches the strategies before its bar, as in live. New <a href="#d8">decision 8</a>.</li>
 <li><strong>2026-11-10</strong> — <a href="#f14">Feature 14</a> step 3 changed: gateways are listed in one fixed table, <code>GATEWAYS</code>, instead of a decorator registry (System map decision 30). Step → code gives the new paths, <code>gateways/simulation_gateway/</code> and <code>gateways/ib_gateway/</code>, and the IBKR class name <code>IbGateway</code>.</li>
 <li><strong>2026-11-09</strong> — End-to-end scenarios agreed.</li>
 <li><strong>2026-11-09</strong> — Scenario questions decided: resting distance 2% of the last price; paper account from the test <code>.env</code>; test instruments from a test instrument config.</li>
@@ -60,7 +61,7 @@
 <thead><tr><th>Direction</th><th>Who</th><th>Operation</th><th>Carries</th></tr></thead>
 <tbody>
 <tr><td rowspan="3">Other components call the Gateway</td><td>Order Manager</td><td>Place an order; cancel an order</td><td>order: instrument, action, size, type (MKT, STP, LMT), price, OCA group and type; order id</td></tr>
-<tr><td>Event Loop</td><td>Resolve a contract; subscribe and unsubscribe ticks; declare instrument sessions; request daily history and intraday seed bars; show a bar (the simulated broker fills against the bar)</td><td>instrument, history window (months or dates) and session, bar</td></tr>
+<tr><td>Event Loop</td><td>Resolve a contract; subscribe and unsubscribe ticks; declare instrument sessions; request daily history and intraday seed bars</td><td>instrument, history window (months or dates) and session</td></tr>
 <tr><td>Safety</td><td>Probe the socket; reconnect; read the last tick time; fetch executions, open orders and positions; take the resubscribe request</td><td>timeout, since-timestamp</td></tr>
 <tr><td rowspan="2">The Gateway calls other components</td><td>Event Loop</td><td>Push events into the event buffer and raise the drain wake-up</td><td><code>tick_update</code> or <code>bar_update</code>, order update, position update, balance update, <code>end_of_data</code></td></tr>
 <tr><td>Broker (outside the system)</td><td>Send orders, cancels, subscriptions and requests through the broker's API</td><td>broker messages</td></tr>
@@ -163,7 +164,7 @@
   <path class="g-a" d="M880,336 H810"/><text class="g-l" x="845" y="330">tick</text>
   <path class="g-a" d="M650,336 H620"/>
 
-  <rect class="g-ext" x="10" y="390" width="115" height="52" rx="20"/><text class="g-x" x="67" y="420">Event Loop</text>
+  <rect class="g-ext" x="10" y="390" width="115" height="52" rx="20"/><text class="g-x" x="67" y="420">Replay tape</text>
   <rect class="g-stp" x="250" y="390" width="190" height="52" rx="8"/><text class="g-t" x="345" y="412">Fill on bar (simulated)</text><text class="g-r" x="345" y="430">touch → level, gap → open</text>
   <path class="g-a" d="M125,416 H250"/><text class="g-l" x="188" y="410">bar</text>
   <path class="g-a" d="M440,416 H500 V356"/><text class="g-l" x="470" y="432">fill</text>
@@ -296,13 +297,14 @@
 
 <div class="behaviour" id="f6"><h3><span class="num">6</span>The simulated broker fills like the broker<span class="added">settled · was part of behaviour 3 · decision 2</span></h3><dl class="gmi">
 <dt>Need</dt><dd>A replay must produce the same order updates as a paper or live run, so the rest of the engine runs unchanged (<a href="system_map.html#d6">System map decision 6</a>).</dd>
-<dt>Upstream gives</dt><dd>In replay there is no broker. The Event Loop shows the simulated broker each completed bar before the strategies see the bar.</dd>
+<dt>Upstream gives</dt><dd>In replay there is no broker. The simulated broker reads each bar from its own tape (<a href="#f12">feature 12</a>). The Event Loop shows the simulated broker nothing.</dd>
 <dt>Algorithm</dt><dd><ol>
-<li>Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the Event Loop shows bar N to the simulated broker before the strategies, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.</li>
+<li>Before the simulated broker sends bar N, it matches its resting orders against bar N, then makes bar N the current bar. Fills from bar N reach the event buffer before bar N itself, as with a broker that fills and then closes the bar.</li>
+<li>Fill a MKT order at the reference price of the current bar, plus slippage. The current bar is the bar on which the strategy made the decision (bar N): the simulated broker sends bar N+1 only after the Event Loop has handled bar N, so an order sent while bar N is dispatched fills on bar N. The fill time is the end time of bar N.</li>
 <li>Rest STP and LMT orders and emit OPEN. On each later bar of the instrument: a touch fills at the level, a gap fills at the bar's open.</li>
 <li>When both legs of an OCA group fire on one bar, the stop wins; the other legs become CANCELLED.</li>
 <li>Reject an order into an OCA group that already filled. A MKT order into a working group cancels the group's legs first.</li>
-<li>A resting fill is booked after strategies have seen its bar: one bar later than live. This difference is accepted.</li>
+<li>A resting fill reaches the strategies before the bar it filled on, as in live.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>MKT reference price</td><td>Configurable</td><td>bar close</td><td>bar close</td></tr>
@@ -390,14 +392,14 @@
 <li>Answer daily history and seed-bar requests from the tape, like the broker gateway; return an empty list when the tape has no prior session.</li>
 <li>Pad the replay window before and after the session with flat bars, when the option is on.</li>
 <li>A synthetic generator is a second tape source behind the same simulated broker.</li>
-<li>Send each replay bar as one <code>bar_update</code> (<a href="#f2">feature 2</a>).</li>
+<li>Send the replay bars one at a time. Before each bar, wait until the event buffer is idle (the Event Loop has handled every event it took); then match resting orders against the bar (<a href="#f6">feature 6</a>) and send the bar as one <code>bar_update</code> (<a href="#f2">feature 2</a>). After the last bar, wait until the buffer is idle again, then send <code>end_of_data</code>. The feed runs as its own task, started by <code>start_feed()</code>.</li>
 <li>When the config sets <code>replay.journal</code>, write the broker journal: one row per order received and one row per fill sent, in the journal format of the <a href="system_map.html#golden-end-to-end">golden sample</a>.</li>
 </ol></dd>
 <dt>Parameters</dt><dd><div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Configurable?</th><th>Supported</th><th>Default</th></tr></thead><tbody>
 <tr><td>Tape source</td><td>Configurable</td><td>Parquet file, synthetic generator</td><td>—</td></tr>
 <tr><td>Flat-bar padding before / after the session</td><td>Configurable per process (<a href="system_map.html#d58">System map decision 58</a>) (<code>replay.pad_before_s</code>, <code>replay.pad_after_s</code>)</td><td>any seconds ≥ 0; 0 means off</td><td>0 (off)</td></tr>
 </tbody></table></div></dd>
-<dt>Invariant</dt><dd>The runner writes no data file. Replay history has the same definitions as broker history (<a href="#f8">feature 8</a>).</dd>
+<dt>Invariant</dt><dd>The runner writes no data file. At most one replay bar is in the event buffer or being handled at any time. Replay history has the same definitions as broker history (<a href="#f8">feature 8</a>).</dd>
 </dl></div>
 
 <div class="behaviour" id="f13"><h3><span class="num">13</span>Serve a strategy added while running<span class="added">settled · was behaviour 14 · System map decisions 34–36</span></h3><dl class="gmi">
@@ -587,11 +589,12 @@
 <tr><td><code>test_sim_cancel_of_non_resting_order_emits_nothing</code></td><td>—</td><td>events for that order id</td><td>0</td></tr>
 </tbody></table></div></details>
 
-<details><summary>6. The simulated broker fills like the broker<span class="count">4 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>6. The simulated broker fills like the broker<span class="count">5 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_sim_resting_order_fills_on_touch_or_gap</code></td><td>case ∈ {touch, gap}</td><td>fill price</td><td>touch → level; gap → bar open</td></tr>
 <tr><td><code>test_sim_stop_wins_when_both_legs_touch</code></td><td>—</td><td>filled leg; other leg's status</td><td>stop; CANCELLED</td></tr>
 <tr><td><code>test_sim_order_into_filled_group_rejected</code></td><td>—</td><td>status of the new order</td><td>REJECTED</td></tr>
 <tr><td><code>test_sim_market_fill_at_reference_price_plus_slippage</code></td><td>reference ∈ {bar close} × slippage ∈ {0, 1, 2} ticks</td><td>fill price</td><td>reference ± slippage × tick, exact</td></tr>
+<tr><td><code>test_resting_fill_sent_before_its_bar</code></td><td>—</td><td>position of the FILLED update vs. its bar's <code>bar_update</code></td><td>FILLED first; fill price = limit</td></tr>
 </tbody></table></div></details>
 
 <details><summary>7. Executions and open orders on request<span class="count">1 test · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -618,10 +621,11 @@
 <tr><td><code>test_heartbeat_true_iff_answer_within_timeout</code></td><td>answer delay ∈ {0.5 × timeout, 2 × timeout, never} at timeout 3.0 s</td><td>return value</td><td>True; False; False</td></tr>
 </tbody></table></div></details>
 
-<details><summary>12. The simulated broker prepares its own replay data<span class="count">3 tests · 5 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
+<details><summary>12. The simulated broker prepares its own replay data<span class="count">4 tests · 6 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
 <tr><td><code>test_replay_refuses_tape_rows_outside_session</code></td><td>exchange ∈ {CME, Eurex}</td><td>replay start with an out-of-session row</td><td>refused</td></tr>
 <tr><td><code>test_replay_daily_history_matches_broker_definitions</code></td><td>tape ∈ {Parquet, synthetic}</td><td>daily frame vs. the broker gateway's frame for the same bars</td><td>equal</td></tr>
 <tr><td><code>test_replay_no_prior_session_returns_empty_seed</code></td><td>—</td><td>seed bars returned</td><td>empty list</td></tr>
+<tr><td><code>test_feed_sends_next_bar_only_when_buffer_idle</code></td><td>bars ∈ {3}</td><td><code>bar_update</code> messages sent before the buffer turns idle</td><td>exactly 1 per idle; then <code>end_of_data</code></td></tr>
 </tbody></table></div></details>
 
 <details><summary>13. Serve a strategy added while running<span class="count">2 tests · 2 cases</span></summary><div class="table-wrap"><table><thead><tr><th>Test</th><th>Parameter cases</th><th>Measure</th><th>Pass threshold</th></tr></thead><tbody>
@@ -663,7 +667,7 @@
 <h2>Reference</h2>
 <p>Implementation detail and history. The skeleton still cites the old behaviour numbers; each feature card lists the behaviours it replaces.</p>
 <h3>Step → code</h3>
-<p>Each box of the algorithm map and the code that carries it. <code>Gateway</code> is in <code>gateways/gateway.py</code>; the simulated broker (<code>SimulationGateway</code>) is in <code>gateways/simulation_gateway/simulation_gateway.py</code>, with tapes in <code>gateways/simulation_gateway/tapes.py</code> and <code>synthetic_tapes.py</code>; the IBKR gateway (<code>IbGateway</code>) is in <code>gateways/ib_gateway/gateway.py</code>, with <code>client.py</code> and <code>errors.py</code>; the gateway table <code>GATEWAYS</code> and <code>get_gateway()</code> are in <code>gateways/__init__.py</code>.</p>
+<p>Each box of the algorithm map and the code that carries it. <code>Gateway</code> is in <code>gateways/gateway.py</code>; the simulated broker (<code>SimulationGateway</code>) is in <code>gateways/simulation_gateway/simulation_gateway.py</code>, with tapes in <code>gateways/simulation_gateway/tapes.py</code> and <code>synthetic_tapes.py</code>; the IBKR gateway (<code>IbGateway</code>) is in <code>gateways/ib_gateway/gateway.py</code>, with <code>transport.py</code> (the <code>IbTransport</code> interface), <code>client.py</code> and <code>errors.py</code>; the gateway table <code>GATEWAYS</code> and <code>get_gateway()</code> are in <code>gateways/__init__.py</code>.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Step</th><th>Code</th></tr></thead>
 <tbody>
@@ -673,7 +677,7 @@
 <tr><td>Resolve contract</td><td><code>Gateway.resolve_contract()</code>, <code>subscribe_tick()</code>, <code>unsubscribe_tick()</code>, <code>set_instrument_sessions()</code></td></tr>
 <tr><td>[ contracts by instrument ]</td><td>IBKR gateway state · Planned</td></tr>
 <tr><td>Append tick</td><td>IBKR gateway tick callback · Planned; <code>Gateway.last_tick_ts</code></td></tr>
-<tr><td>Fill on bar (simulated)</td><td><code>SimulationGateway.on_bar()</code>; <code>OrderFillingEngine.try_fill()</code></td></tr>
+<tr><td>Fill on bar (simulated)</td><td><code>SimulationGateway.start_replay()</code>, <code>match_bar()</code>; <code>OrderFillingEngine.resting_price()</code>; <code>EventBuffer.wait_idle()</code></td></tr>
 <tr><td>Translate status</td><td>IBKR gateway error handler · Planned; <code>Gateway.consume_resubscribe_request()</code></td></tr>
 <tr><td>Report account</td><td><code>Gateway.subscribe_account_update()</code>, <code>get_positions()</code></td></tr>
 <tr><td>Build history frame</td><td><code>Gateway.get_daily_history()</code>, <code>get_intraday_seed_bars()</code>, <code>roll_mismatch_dates()</code>; tape: <code>TapeSource</code>, <code>ParquetTape</code>, <code>SyntheticTape</code>, <code>check_tape_in_session()</code></td></tr>
@@ -708,7 +712,7 @@
 <tbody>
 <tr><td>1. Connection lifecycle</td><td><code>connect()</code>, <code>disconnect()</code>, <code>reconnect()</code>, <code>subscribe_order_update()</code></td></tr>
 <tr><td>2. Market data</td><td><code>subscribe_tick()</code>, <code>last_tick_ts</code>, <code>market_data_ready()</code>, <code>set_instrument_sessions()</code></td></tr>
-<tr><td>3. Placing orders</td><td><code>next_order_id()</code>, <code>place_order()</code>, <code>resolve_contract()</code>, <code>on_bar()</code></td></tr>
+<tr><td>3. Placing orders</td><td><code>next_order_id()</code>, <code>place_order()</code>, <code>resolve_contract()</code></td></tr>
 <tr><td>4. Cancelling</td><td><code>cancel_order()</code></td></tr>
 <tr><td>5. Queries</td><td><code>get_executions(since)</code>, <code>get_open_orders()</code>, <code>get_commissions()</code></td></tr>
 <tr><td>6. Heartbeat</td><td><code>heartbeat(timeout=3.0)</code></td></tr>
@@ -831,9 +835,6 @@ class Gateway(ABC):
     async def get_commissions(self) -&gt; dict[str, dict]:
         return {}
 
-    def on_bar(self, instrument: Instrument, bar: dict[str, Any]) -&gt; None:
-        """Behaviour 3: current bar from the Event Loop; drives simulated fills."""
-
     def intraday_seed_failure_is_fatal(self) -&gt; bool:
         return False
 
@@ -872,6 +873,11 @@ GATEWAYS: dict[str, type[Gateway]] = {}   # Behaviour 10: picked by name
 <p class="q">The simulated broker (<code>SimulationGateway</code>), on request, from a tape source (<a href="#f12">feature 12</a>). The runner only names the tape, the date and the session in config.</p>
 <p class="rej">Rejected: the runner slicing the tape and writing history files before start (a second history path beside the Gateway, and it must read strategies before they exist to know which columns to build).</p>
 <p class="when">agreed 2026-11-09 · 2026-11-07</p></div>
+
+<div class="decision" id="d8"><h3><span class="num">8</span>How does the simulated broker know the current bar?</h3>
+<p class="q">From its own tape. The simulated broker sends one bar at a time: it waits until the event buffer is idle, matches resting orders against the next bar, then sends that bar (<a href="#f6">feature 6</a>, <a href="#f12">feature 12</a>). The Gateway interface has no call that only one subclass uses.</p>
+<p class="rej">Rejected: the Event Loop showing each dispatched bar to the Gateway through <code>on_bar()</code>. That call did nothing in the IBKR gateway, so it put a replay-only path into the shared interface and into the Event Loop.</p>
+<p class="when">agreed 2026-11-10</p></div>
 </div>
 </section>
 </div>
