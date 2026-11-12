@@ -15,7 +15,7 @@ from alchemist.exchanges import exchange_profile
 from alchemist.logger import strategy_logger
 from alchemist.managers.order_manager import OrderManager
 from alchemist.registry import get_signal_dag
-from alchemist.stores import CalcStateStore, RoundTripStore
+from alchemist.stores import DailyStore
 from alchemist.strategy_builder.strategy_executions import make_execution
 from alchemist.strategy_builder.strategy_signal import StrategySignal, WarmupRequirements
 from alchemist.constants.strategy import REBUILD_YIELD_BUDGET_S, REPLAY_WINDOW
@@ -23,8 +23,8 @@ from alchemist.constants.strategy import REBUILD_YIELD_BUDGET_S, REPLAY_WINDOW
 
 @dataclass
 class Stores:
-    calc_state: CalcStateStore
-    round_trips: RoundTripStore
+    calc_state: DailyStore
+    round_trips: DailyStore
 
 
 class Strategy:

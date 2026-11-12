@@ -6,7 +6,7 @@ import pytest
 
 from alchemist.instruments import FDAX, MES
 from alchemist.registry import register_signal_dag
-from alchemist.stores import CalcStateStore, InMemoryCalcStateStore
+from alchemist.stores import FileDailyStore
 
 from strategy_helpers import (snapshot_rows, SESSION_OPEN, StubSignal, StubStrategy, fill_update, install_stub_signal, make_bar,
                               make_strategy, place_and_fill, settle)
@@ -141,7 +141,7 @@ async def test_scenario_flatten_hand_off_wanted():
 @pytest.mark.parametrize("case", ["normal", "corrupt", "quarantined"])
 async def test_scenario_restart_restore(case, tmp_path):
     StubSignal.session_state = {"atr": 20.0}
-    store = CalcStateStore(tmp_path, "bot")
+    store = FileDailyStore(tmp_path, "bot", "calc_state")
     saves = []
     original = store.save
     store.save = lambda *args: (saves.append(args), original(*args))[1]

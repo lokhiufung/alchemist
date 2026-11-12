@@ -6,7 +6,7 @@ from alchemist.config import ExecutionConfig
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import MES
 from alchemist.managers.order_manager import OrderManager
-from alchemist.stores import InMemoryRoundTripStore
+from alchemist.stores import InMemoryDailyStore
 from alchemist.strategy_builder.strategy_executions import make_execution
 
 DAY = (2026, 4, 15)
@@ -98,7 +98,7 @@ class Slot:
         self.om = OrderManager(self.gateway, "SIM", name)
         self.clock = ManualWatchTime(session_open_ts(instrument, session))
         self.open_ts = session_open_ts(instrument, session)
-        self.store = store if store is not None else InMemoryRoundTripStore()
+        self.store = store if store is not None else InMemoryDailyStore()
         self.name = name
         self.execution = make_execution(
             execution_config, self.signal, self.om, instrument=instrument, account_id="SIM", slot=name,

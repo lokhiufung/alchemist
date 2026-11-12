@@ -118,14 +118,14 @@ async def test_round_trip_close_flushes_trade_recorder():
     strategy.om.orders = {1: {"order_id": 1}, 2: {"order_id": 2}}
     harness.push(order_update(1), order_update(2), end_of_data())
     await harness.run()
-    assert harness.trade_recorder.flushes == 1 and harness.trade_recorder.updates == [1, 2]
+    assert harness.recorder.flushes == 1 and harness.recorder.updates == [1, 2]
 
 
 async def test_bars_are_recorded():
     harness = Harness([RecordingStrategy()])
     harness.push(bar_update(OPEN), bar_update(OPEN + 1), end_of_data())
     await harness.run()
-    assert harness.bar_recorder.bars == [OPEN, OPEN + 1]
+    assert harness.recorder.bars == [OPEN, OPEN + 1]
 
 
 async def test_safety_checked_in_every_pass():

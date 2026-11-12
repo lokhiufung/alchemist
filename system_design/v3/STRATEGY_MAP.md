@@ -491,7 +491,7 @@ Implementation detail and history. The skeleton and decisions still cite the old
 | Filter account update | `Strategy.on_position_update()`, `on_balance_update()` |
 | Rebuild when flat idle | `Strategy.warmup()`, `warmup_requirements()`, `rebuild_intraday_state()`, `deferring_bars()`, `reset_signal()`, `is_flat_idle()`, `on_aux_ready()` |
 | Hand flatten | `Strategy.request_flatten()` |
-| Persist session values | `Strategy.restore_signal_state()`; `CalcStateStore.save()`, `load()`; `RoundTripStore` |
+| Persist session values | `Strategy.restore_signal_state()`; `DailyStore.save()`, `load()` (`calc_state`, `round_trips`) |
 | Log snapshot | `Strategy.signal_snapshot()` |
 | Slot-state answers | `Strategy.is_processing_order()`, `quarantine()`, `release_quarantine()`, `is_quarantined()`, `consume_trade_closed()`, `get_submitted_orders()`, `get_open_orders()`, `get_cancelling_orders()` |
 

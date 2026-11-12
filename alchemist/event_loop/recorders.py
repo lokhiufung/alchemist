@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
@@ -65,13 +66,27 @@ def roll_up(path: Path) -> None:
     staging.unlink()
 
 
-class BarRecorder:
+class Recorder(ABC):
+    def record_bar(self, instrument: Instrument, bar: dict, session: str) -> None:
+        return None
+
+    def record_order_update(self, update: dict, strategy_key: str, order: dict) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
+    @abstractmethod
+    def finalize(self) -> None: ...
+
+
+class BarRecorder(Recorder):
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.handles: dict[Path, TextIO] = {}
         self.current: dict[str, Path] = {}
 
-    def record(self, instrument: Instrument, bar: dict, session: str) -> None:
+    def record_bar(self, instrument: Instrument, bar: dict, session: str) -> None:
         path = bar_path(self.root, instrument, session_day(instrument, session, bar["start_ts"]))
         previous = self.current.get(instrument.symbol)
         if previous is not None and previous != path:
@@ -102,14 +117,14 @@ def load_recorded_bars(root: Path, instrument: Instrument, session: str, at_ts: 
     return [{**row, "instrument": lookup_instrument(row["instrument"])} for row in read_bar_rows(path)]
 
 
-class TradeRecorder:
+class TradeRecorder(Recorder):
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.seen: dict[int, tuple[int, float]] = {}
         self.open_trades: dict[str, dict] = {}
         self.pending: list[dict] = []
 
-    def record_update(self, update: dict, strategy_key: str, order: dict) -> None:
+    def record_order_update(self, update: dict, strategy_key: str, order: dict) -> None:
         if update["status"] not in ("FILLED", "PARTIALLY_FILLED"):
             return
         order_id = update["order_id"]
@@ -144,7 +159,7 @@ class TradeRecorder:
                 "exit_ts": trade["exit_ts"], "commission": None})
             del self.open_trades[name]
 
-    def write_pending(self) -> None:
+    def flush(self) -> None:
         if not self.pending:
             return
         by_path: dict[Path, list[dict]] = {}
@@ -155,8 +170,5 @@ class TradeRecorder:
             write_parquet_rows(path, read_parquet_rows(path) + rows, ROUND_TRIP_SCHEMA)
         self.pending = []
 
-    async def flush(self) -> None:
-        self.write_pending()
-
     def finalize(self) -> None:
-        self.write_pending()
+        self.flush()

@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from alchemist.instruments import MES
-from alchemist.stores import InMemoryRoundTripStore
+from alchemist.stores import InMemoryDailyStore, round_trip_count
 
 from exec_helpers import ScriptedSignal, Slot, drive_to, make_bar, position, settle
 
@@ -27,7 +27,7 @@ async def test_scenario_bar_close_round_trip(cap):
         if index == 7:
             await slot.fill_last(110.0)
     assert slot.sides() == [("BUY", "MKT", 1), ("SELL", "MKT", 1)] and placed_at_freeze == [0]
-    assert ("release", 7) in signal.calls and slot.store.count("slot", "2026-04-15") == 1
+    assert ("release", 7) in signal.calls and round_trip_count(slot.store, "slot", "2026-04-15") == 1
     await slot.bar(8)
     assert len(slot.orders) == (2 if cap == 1 else 3)
     assert [c for c in signal.calls if c[0] == "step"] == [("step", i) for i in range(1, 9)]
@@ -72,7 +72,7 @@ async def test_scenario_ready_and_session_gate(session):
     assert slot.execution.state.value == "DONE"
     await slot.bar(NEXT_DAY + 10)
     assert slot.execution.state.value == "PROCESSING_ENTRY_ORDER"
-    assert slot.store.count("slot", "2026-04-15") == 1
+    assert round_trip_count(slot.store, "slot", "2026-04-15") == 1
 
 
 PHASES = [("WARMUP", False), ("WAITING_FOR_WORKING_HOURS", False), ("ENTRY_LOOP_ACTIVITY", False),
@@ -136,7 +136,7 @@ async def test_scenario_session_end_flatten(case):
     await slot.fill_last()
     working = await slot.om.place_order(MES, "SELL", 1, "LMT", limit_price=200.0)
     await slot.update(working["order_id"], "OPEN")
-    count_before = slot.store.count("slot", "2026-04-15")
+    count_before = round_trip_count(slot.store, "slot", "2026-04-15")
 
     slot.execution.request_flatten(position(1), "session_end")
     await settle()
@@ -155,7 +155,7 @@ async def test_scenario_session_end_flatten(case):
         slot.execution.request_flatten(position(0), "session_end")
         await slot.bar(2)
         assert slot.execution.state.value == "DONE"
-        assert slot.store.count("slot", "2026-04-15") == count_before
+        assert round_trip_count(slot.store, "slot", "2026-04-15") == count_before
         return
     await slot.update(flatten_id, "REJECTED")
     slot.execution.quarantine("boom")
@@ -194,9 +194,9 @@ async def test_scenario_quarantine(case, caplog):
 
 @pytest.mark.parametrize("case", ["same_day", "next_day", "no_store"])
 async def test_scenario_count_restart(case):
-    store = InMemoryRoundTripStore()
+    store = InMemoryDailyStore()
     if case != "no_store":
-        store.record("slot", "2026-04-15")
+        store.save("slot", "2026-04-15", {"count": 1})
     signal = ScriptedSignal(cap=1)
     signal.entries = set(range(0, 100_000))
     slot = Slot(signal, store=store)

@@ -2,6 +2,7 @@ from datetime import date, datetime, timezone
 
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import MES
+from alchemist.stores import round_trip_count
 
 from golden_tape import golden_session
 from exec_helpers import ScriptedSignal, Slot, settle
@@ -110,10 +111,10 @@ async def test_protected_sample(case, caplog):
         await slot.fill_last(100.0)
         slot.execution.request_flatten(position(0), "session_end")
         await settle()
-        assert slot.execution.state.value == "DONE" and slot.store.count("slot", "2026-04-15") == 0
+        assert slot.execution.state.value == "DONE" and round_trip_count(slot.store, "slot", "2026-04-15") == 0
         return
 
-    assert slot.store.count("slot", "2026-04-15") == 1
+    assert round_trip_count(slot.store, "slot", "2026-04-15") == 1
     assert slot.execution.state.value == "DONE"
     groups = {o["oca_group"] for o in slot.orders if o["oca_group"]}
     assert groups == {group}

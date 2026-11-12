@@ -12,6 +12,7 @@ from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
 from alchemist.logger import strategy_logger
 from alchemist.managers.order_manager import CLOSED, OrderManager, OrderState
+from alchemist.stores import DailyStore, round_trip_count
 
 
 EXECUTION_CLASSES: dict[str, type[StrategyExecution]] = {}
@@ -75,7 +76,7 @@ class StrategyExecution:
         return {}
 
     def __init__(self, signal, om: OrderManager, instrument: Instrument, account_id: str, slot: str,
-                 session: str, watch_time, roundtrip_store, config: ExecutionConfig | None = None) -> None:
+                 session: str, watch_time, roundtrip_store: DailyStore, config: ExecutionConfig | None = None) -> None:
         self.signal = signal
         self.om = om
         self.instrument = instrument
@@ -207,7 +208,7 @@ class StrategyExecution:
     def start_trading_day(self, day: date) -> None:
         self.trading_day = day
         self.flatten_final = False
-        self.round_trips = self.roundtrip_store.count(self.slot, day.isoformat())
+        self.round_trips = round_trip_count(self.roundtrip_store, self.slot, day.isoformat())
         if self.state in (Phase.WARMUP, Phase.WAITING_FOR_WORKING_HOURS, Phase.ENTRY_LOOP_ACTIVITY):
             if self.round_trips >= self.daily_cap:
                 self.set_phase(Phase.DONE)
@@ -321,7 +322,7 @@ class StrategyExecution:
         self.entry_order_id = None
         self.exit_failed_pending = False
         self.round_trips += 1
-        self.roundtrip_store.record(self.slot, self.trading_day.isoformat())
+        self.roundtrip_store.save(self.slot, self.trading_day.isoformat(), {"count": self.round_trips})
         self.signal.release_exit_inputs()
         self.trade_closed = True
         self.set_phase(Phase.DONE if self.round_trips >= self.daily_cap else Phase.ENTRY_LOOP_ACTIVITY)

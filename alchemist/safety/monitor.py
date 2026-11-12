@@ -16,6 +16,7 @@ from alchemist.instruments import Instrument
 from alchemist.messages import make_command
 from alchemist.safety.fsm_repair import repair_orders
 from alchemist.safety.freeze import FreezeDetector
+from alchemist.service import Service
 
 logger = logging.getLogger("safety")
 
@@ -91,7 +92,7 @@ class WatchState:
                                                "acked": False}
 
 
-class SafetyMonitor:
+class SafetyMonitor(Service):
     def __init__(self, inbound, outbound, exchange_profiles: dict, config: SafetyConfig,
                  system_time: Callable[[], float] = time.time, freeze: FreezeDetector | None = None) -> None:
         self.inbound = inbound

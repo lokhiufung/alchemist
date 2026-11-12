@@ -11,7 +11,7 @@ from alchemist.registry import get_strategy
 from alchemist.config import GatewayConfig, ReplayConfig, StrategyConfig
 from alchemist.event_loop.buffer import CommandBuffer
 from alchemist.gateways.simulation_gateway import SimulationGateway
-from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
+from alchemist.stores import FileDailyStore, InMemoryDailyStore
 from alchemist.strategy_builder.strategy import Stores
 
 from golden_tape import golden_session, golden_tape_path
@@ -71,7 +71,7 @@ async def test_golden_round_trip_books_position():
     gateway = SimulationGateway(type("B", (), {"push": lambda self, e: None})(), CommandBuffer(),
                                 GatewayConfig("simulation", replay=replay))
     config = StrategyConfig("macd_rsi_rth_long", "macd_rsi_rth_long", "SIM", (MES,), (MES,))
-    stores = Stores(InMemoryCalcStateStore(), InMemoryRoundTripStore())
+    stores = Stores(InMemoryDailyStore(), InMemoryDailyStore())
     strategy = strategy_class(config, OrderSink(), watch_time, stores)
     assert strategy.execution.aux_ready is True
 
@@ -275,9 +275,9 @@ async def test_flatten_closes_booked_position(size):
 
 @pytest.mark.parametrize("record", ["valid", "missing", "corrupt"])
 async def test_restore_session_values(record, tmp_path):
-    from alchemist.stores import CalcStateStore
+    from alchemist.stores import FileDailyStore, InMemoryDailyStore
     StubSignal.session_state = {"atr": 20.0}
-    store = CalcStateStore(tmp_path, "bot")
+    store = FileDailyStore(tmp_path, "bot", "calc_state")
     if record != "missing":
         first = make_strategy(calc_store=store)
         first.warmup({"daily": [1]})
@@ -289,7 +289,7 @@ async def test_restore_session_values(record, tmp_path):
 
 
 async def test_quarantined_slot_never_persists():
-    store = InMemoryCalcStateStore()
+    store = InMemoryDailyStore()
     StubSignal.session_state = {"atr": 20.0}
     strategy = make_strategy(calc_store=store)
     strategy.quarantine("boom")

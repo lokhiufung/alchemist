@@ -420,7 +420,7 @@
 <tr><td>Filter account update</td><td><code>Strategy.on_position_update()</code>, <code>on_balance_update()</code></td></tr>
 <tr><td>Rebuild when flat idle</td><td><code>Strategy.warmup()</code>, <code>warmup_requirements()</code>, <code>rebuild_intraday_state()</code>, <code>deferring_bars()</code>, <code>reset_signal()</code>, <code>is_flat_idle()</code>, <code>on_aux_ready()</code></td></tr>
 <tr><td>Hand flatten</td><td><code>Strategy.request_flatten()</code></td></tr>
-<tr><td>Persist session values</td><td><code>Strategy.restore_signal_state()</code>; <code>CalcStateStore.save()</code>, <code>load()</code>; <code>RoundTripStore</code></td></tr>
+<tr><td>Persist session values</td><td><code>Strategy.restore_signal_state()</code>; <code>DailyStore.save()</code>, <code>load()</code> (<code>calc_state</code>, <code>round_trips</code>)</td></tr>
 <tr><td>Log snapshot</td><td><code>Strategy.signal_snapshot()</code></td></tr>
 <tr><td>Slot-state answers</td><td><code>Strategy.is_processing_order()</code>, <code>quarantine()</code>, <code>release_quarantine()</code>, <code>is_quarantined()</code>, <code>consume_trade_closed()</code>, <code>get_submitted_orders()</code>, <code>get_open_orders()</code>, <code>get_cancelling_orders()</code></td></tr>
 </tbody></table></div>

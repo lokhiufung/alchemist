@@ -9,11 +9,12 @@ import time
 from pathlib import Path
 
 from alchemist.messages import Command, make_event
+from alchemist.service import Service
 
 logger = logging.getLogger("deploy")
 
 
-class DeploySocketServer:
+class DeploySocketServer(Service):
     def __init__(self, path: Path, inbound) -> None:
         self.path = Path(path)
         self.inbound = inbound

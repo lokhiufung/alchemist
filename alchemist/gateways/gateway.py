@@ -4,11 +4,12 @@ import asyncio
 import inspect
 import logging
 import time
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from datetime import date
 from typing import Any, Awaitable, Callable
 
 from alchemist.config import GatewayConfig
+from alchemist.service import Service
 from alchemist.constants.gateway import COMMAND_TYPES, ORDER_SENT_KEYS
 from alchemist.instruments import Instrument
 from alchemist.messages import Command, make_event, make_reply
@@ -29,7 +30,7 @@ def reconnect_delay(attempt: int, base_s: float, cap_s: float) -> float:
     return min(cap_s, base_s * 2 ** (attempt - 1))
 
 
-class Gateway(ABC):
+class Gateway(Service):
     """Gateway map: base of every broker gateway and of the simulated broker."""
 
     def __init__(self, inbound, outbound, config: GatewayConfig,

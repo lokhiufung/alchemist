@@ -1,43 +1,44 @@
-from alchemist.stores import CalcStateStore, InMemoryCalcStateStore, InMemoryRoundTripStore, RoundTripStore
+import pytest
+
+from alchemist.stores import FileDailyStore, InMemoryDailyStore, round_trip_count
 
 
-def test_round_trip_store_survives_reload(tmp_path):
-    RoundTripStore(tmp_path, "bot").record("s1", "2026-04-15")
-    RoundTripStore(tmp_path, "bot").record("s1", "2026-04-15")
-    assert RoundTripStore(tmp_path, "bot").count("s1", "2026-04-15") == 2
+@pytest.fixture(params=["file", "memory"])
+def store(request, tmp_path):
+    return FileDailyStore(tmp_path, "bot", "calc_state") if request.param == "file" else InMemoryDailyStore()
 
 
-def test_round_trip_count_resets_on_a_new_date(tmp_path):
-    store = RoundTripStore(tmp_path, "bot")
-    store.record("s1", "2026-04-15")
-    assert store.count("s1", "2026-04-16") == 0
+def test_saved_state_loads_on_the_same_date(store):
+    store.save("s1", "2026-04-15", {"atr": 20.0})
+    assert store.load("s1", "2026-04-15") == {"atr": 20.0}
 
 
-def test_calc_state_round_trip(tmp_path):
-    CalcStateStore(tmp_path, "bot").save("s1", "2026-04-15", {"atr": 20.0})
-    assert CalcStateStore(tmp_path, "bot").load("s1", "2026-04-15") == {"atr": 20.0}
+def test_missing_state_is_none(store):
+    assert store.load("s1", "2026-04-15") is None
 
 
-def test_calc_state_missing_is_none(tmp_path):
-    assert CalcStateStore(tmp_path, "bot").load("s1", "2026-04-15") is None
-
-
-def test_calc_state_stale_date_is_none(tmp_path):
-    store = CalcStateStore(tmp_path, "bot")
+def test_stale_date_is_none(store):
     store.save("s1", "2026-04-14", {"atr": 20.0})
     assert store.load("s1", "2026-04-15") is None
 
 
-def test_calc_state_corrupt_file_is_none(tmp_path):
-    store = CalcStateStore(tmp_path, "bot")
+def test_round_trip_count_defaults_to_zero_and_resets_on_a_new_date(store):
+    store.save("s1", "2026-04-15", {"count": 2})
+    assert (round_trip_count(store, "s1", "2026-04-15"), round_trip_count(store, "s1", "2026-04-16")) == (2, 0)
+
+
+def test_file_store_survives_reload(tmp_path):
+    FileDailyStore(tmp_path, "bot", "round_trips").save("s1", "2026-04-15", {"count": 2})
+    assert round_trip_count(FileDailyStore(tmp_path, "bot", "round_trips"), "s1", "2026-04-15") == 2
+
+
+def test_file_stores_with_different_names_do_not_collide(tmp_path):
+    FileDailyStore(tmp_path, "bot", "calc_state").save("s1", "2026-04-15", {"atr": 1.0})
+    assert FileDailyStore(tmp_path, "bot", "round_trips").load("s1", "2026-04-15") is None
+
+
+def test_corrupt_file_is_none(tmp_path):
+    store = FileDailyStore(tmp_path, "bot", "calc_state")
     store.save("s1", "2026-04-15", {"atr": 20.0})
-    next((tmp_path / "bot").glob("*")).write_text("{not json")
+    store.path("s1").write_text("{not json")
     assert store.load("s1", "2026-04-15") is None
-
-
-def test_in_memory_stores_follow_the_file_store_contract():
-    trips, calcs = InMemoryRoundTripStore(), InMemoryCalcStateStore()
-    trips.record("s1", "2026-04-15")
-    calcs.save("s1", "2026-04-15", {"atr": 1.0})
-    assert (trips.count("s1", "2026-04-15"), trips.count("s1", "2026-04-16")) == (1, 0)
-    assert calcs.load("s1", "2026-04-15") == {"atr": 1.0} and calcs.load("s1", "2026-04-16") is None

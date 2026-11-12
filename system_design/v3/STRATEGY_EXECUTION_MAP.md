@@ -728,7 +728,7 @@ All steps are in `strategy_builder/strategy_executions/strategy_execution.py`.
 | Processing-order answer | `StrategyExecution.is_processing_order()` |
 | Flatten | `StrategyExecution.request_flatten()`, `flatten_wanted()` |
 | Park in ERROR | `StrategyExecution.quarantine()`, `release_quarantine()`, `is_quarantined()` |
-| \[ round-trip count \] | `StrategyExecution` state; `stores.py` · `RoundTripStore` |
+| \[ round-trip count \] | `StrategyExecution` state; `stores.py` · `DailyStore` (`round_trips`) |
 | Build from the execution block | `make_execution()`, `EXECUTION_CLASSES`, `options_from_config()`, `ExecutionConfigError` |
 
 ### Skeleton code

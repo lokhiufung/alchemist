@@ -114,8 +114,8 @@
 <tr><td><strong>Runtime book</strong></td><td>The one registry of strategies the process runs and the per-instrument resources serving them; changed only between events.</td><td><code>event_loop.book.RuntimeBook</code></td><td>—</td></tr>
 <tr><td><strong>Reserve</strong></td><td>Setting up an instrument's resampler, bar buffer, contract and recording partition before any slot on it is committed.</td><td><code>RuntimeBook.reserve_instrument</code></td><td>—</td></tr>
 <tr><td><strong>Book operation / commit boundary</strong></td><td>A change to the runtime book, handed to the drain loop and run between events.</td><td><code>enqueue_book_op</code>, <code>RuntimeBook.commit</code></td><td>Commit a new strategy.</td></tr>
-<tr><td><strong>Hot-add / deploy request</strong></td><td>Adding one strategy to a running paper or live process, asked for over the runner's local socket.</td><td><code>DeployService</code>, <code>send_deploy_request</code></td><td><code>deploy_strategy.py --key KEY</code>.</td></tr>
-<tr><td><strong>Staging / candidate</strong></td><td>A strategy built and prepared by a deploy request but not yet committed.</td><td><code>DeployService.stage_strategy</code>, <code>Candidate</code></td><td>—</td></tr>
+<tr><td><strong>Hot-add / deploy request</strong></td><td>Adding one strategy to a running paper or live process, asked for over the runner's local socket.</td><td><code>DeployCoordinator</code>, <code>send_deploy_request</code></td><td><code>deploy_strategy.py --key KEY</code>.</td></tr>
+<tr><td><strong>Staging / candidate</strong></td><td>A strategy built and prepared by a deploy request but not yet committed.</td><td><code>DeployCoordinator.stage_strategy</code>, <code>Candidate</code></td><td>—</td></tr>
 <tr><td><strong>Runner</strong></td><td>Shared code that builds, starts and stops the components in a fixed order and owns the deploy socket. Not a component.</td><td><code>run_strategies.py</code>, <code>runtime.Runtime</code></td><td><code>Runtime.build(cfg, mode)</code></td></tr>
 <tr><td><strong>Deploy status</strong></td><td>One status line the deploy socket sends back for a deploy request; <code>registered</code> and <code>noop</code> are the successful final statuses.</td><td><code>DeployStatus</code></td><td><code>preparing</code>, <code>registered</code>, <code>rejected</code>.</td></tr>
 <tr><td><strong>Refusal reason</strong></td><td>Why a deploy request was rejected before anything was touched.</td><td><code>RefusalReason</code></td><td><code>session_open</code>, <code>after_process_exit</code>.</td></tr>
@@ -130,7 +130,7 @@
 <tr><td><strong>Gateway controller</strong></td><td>Restarts the broker gateway process, only inside a maintenance window.</td><td><code>safety.GatewayController</code></td><td>—</td></tr>
 <tr><td><strong>ShutdownCoordinator</strong></td><td>Session-end flatten, shutdown requests and the final flat check before exit.</td><td><code>event_loop.shutdown.ShutdownCoordinator</code></td><td>—</td></tr>
 <tr><td><strong>BarRecorder / TradeRecorder</strong></td><td>Write bars per instrument per session day / round trips per slot, in live and paper.</td><td><code>event_loop.recorders</code></td><td>—</td></tr>
-<tr><td><strong>CalcStateStore / RoundTripStore</strong></td><td>Keep session-fixed signal values / round trips per strategy key across a restart.</td><td><code>stores.CalcStateStore</code>, <code>stores.RoundTripStore</code></td><td>—</td></tr>
+<tr><td><strong>DailyStore</strong></td><td>Keeps one dict per strategy key and trading date across a restart. The runtime has two: <code>calc_state</code> (session-fixed signal values) and <code>round_trips</code> (the round-trip count).</td><td><code>stores.DailyStore</code>, <code>stores.FileDailyStore</code></td><td>—</td></tr>
 <tr><td><strong>Slot cost</strong></td><td>Time one strategy spends on one bar.</td><td>—</td><td>—</td></tr>
 <tr><td><strong>Queue wait</strong></td><td>Time an event waits in the buffer before its drain pass takes it.</td><td>—</td><td>—</td></tr>
 <tr><td><strong>Dispatch latency</strong></td><td>Time from a bar's closing event entering the buffer to the last strategy on that instrument being done.</td><td>—</td><td>—</td></tr>
@@ -166,7 +166,7 @@
 <tr><td><strong>Masking</strong></td><td>Not sending a bar-close market exit for a condition a working leg already covers.</td><td>—</td><td>—</td></tr>
 <tr><td><strong>Joining the group</strong></td><td>Sending a market exit carrying the trade's OCA group, so the broker either fills it and cancels the legs or refuses it.</td><td>—</td><td>—</td></tr>
 <tr><td><strong>Fallback</strong></td><td>A protected trade that lost a leg, judged at bar close from then on.</td><td>—</td><td>—</td></tr>
-<tr><td><strong>Round trip</strong></td><td>One entry and its exit, counted when the slot is flat again.</td><td><code>RoundTripStore</code></td><td>—</td></tr>
+<tr><td><strong>Round trip</strong></td><td>One entry and its exit, counted when the slot is flat again.</td><td><code>stores.round_trip_count</code></td><td>—</td></tr>
 <tr><td><strong>Daily cap</strong></td><td>The most round trips a slot may complete in one trading date.</td><td><code>SignalParams.max_trades_per_day</code></td><td>—</td></tr>
 <tr><td><strong>Flatten</strong></td><td>Cancel every order, wait until each is final, then one market order for any remaining position.</td><td><code>request_flatten</code>, <code>flatten_wanted</code></td><td>Session-end cutoff.</td></tr>
 <tr><td><strong>Order state</strong></td><td>The life of one order: SUBMITTED, OPEN, PARTIALLY_FILLED, CANCELLING, CANCEL_REJECTED, FILLED, CANCELLED, REJECTED.</td><td><code>managers.OrderState</code></td><td>—</td></tr>

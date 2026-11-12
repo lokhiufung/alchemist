@@ -22,7 +22,7 @@ from alchemist.instruments import ES, MES, NQ
 from alchemist.loader import load_strategies
 from alchemist.messages import make_event
 from alchemist.registry import get_strategy
-from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
+from alchemist.stores import InMemoryDailyStore
 from alchemist.strategy_builder.strategy import Stores
 
 from el_helpers import StubDeploy, StubRecorder, StubSafety
@@ -103,7 +103,7 @@ async def test_scenario_load_target_latency(strategies):
     instruments = [MES, ES, NQ]
     book, gateway = RuntimeBook(), OrderSinkGateway()
     requests = DirectRequests(gateway)
-    stores = Stores(InMemoryCalcStateStore(), InMemoryRoundTripStore())
+    stores = Stores(InMemoryDailyStore(), InMemoryDailyStore())
     strategy_class = get_strategy("macd_rsi_rth_long")
     for index in range(strategies):
         instrument = instruments[index % 3]

@@ -13,6 +13,7 @@ from alchemist.constants.event_loop import BAR_HISTORY
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
 from alchemist.event_loop.metrics import LatencyMetrics
+from alchemist.event_loop.recorders import Recorder
 from alchemist.event_loop.watch_time import WatchTime
 from alchemist.exchanges import exchange_profile
 from alchemist.instruments import Instrument
@@ -35,15 +36,14 @@ def handles(*event_types: str) -> Callable[[Handler], Handler]:
 
 class EventLoop:
     def __init__(self, event_buffer: EventBuffer, requests: Any, book: RuntimeBook, aux: Any,
-                 bar_recorder: Any, trade_recorder: Any, shutdown: Any, watch_time: WatchTime, deploy: Any,
+                 recorders: list[Recorder], shutdown: Any, watch_time: WatchTime, deploy: Any,
                  check_in: Callable[[], None], config: EventLoopConfig | None = None,
                  metrics: LatencyMetrics | None = None, wall: Callable[[], float] = time.time) -> None:
         self.event_buffer = event_buffer
         self.requests = requests
         self.book = book
         self.aux = aux
-        self.bar_recorder = bar_recorder
-        self.trade_recorder = trade_recorder
+        self.recorders = recorders
         self.shutdown = shutdown
         self.watch_time = watch_time
         self.deploy = deploy
@@ -88,8 +88,8 @@ class EventLoop:
         finally:
             drainer.cancel()
             await asyncio.gather(drainer, return_exceptions=True)
-        self.bar_recorder.finalize()
-        self.trade_recorder.finalize()
+        for recorder in self.recorders:
+            recorder.finalize()
 
     async def drain_forever(self) -> None:
         while True:
@@ -168,8 +168,9 @@ class EventLoop:
         self.aux.annotate(instrument, bar)
         history = self.book.bars.setdefault(instrument, deque(maxlen=BAR_HISTORY))
         history.append(bar)
-        self.bar_recorder.record(instrument, bar, self.book.sessions_by_instrument.get(
-            instrument, exchange_profile(instrument).data_session))
+        session = self.book.sessions_by_instrument.get(instrument, exchange_profile(instrument).data_session)
+        for recorder in self.recorders:
+            recorder.record_bar(instrument, bar, session)
         flattening = self.shutdown.flattening_names()
         members = [s for s in self.book.strategies_for(instrument) if s.name not in flattening]
         await self.fan_out(members, "on_bar", history, bar)
@@ -265,10 +266,12 @@ async def on_order_update(loop: EventLoop, data: dict) -> None:
     await loop.fan_out(targets, "on_order_update", data)
     owner = loop.order_owner(data["order_id"])
     if owner is not None:
-        loop.trade_recorder.record_update(data, owner[0].name, owner[1])
+        for recorder in loop.recorders:
+            recorder.record_order_update(data, owner[0].name, owner[1])
     for strategy in list(strategies):
         if strategy.consume_trade_closed():
-            await loop.trade_recorder.flush()
+            for recorder in loop.recorders:
+                recorder.flush()
 
 
 @handles("balance_update")

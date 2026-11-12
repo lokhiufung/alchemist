@@ -848,7 +848,7 @@ Each scenario drives the component only through its public interface, from a kno
 | `test_overnight_session_bars_not_split_at_midnight` | — | files per overnight session | 1 |
 | `test_round_trip_weighted_average_for_multi_fill_leg` | — | leg price | size-weighted mean, exact |
 | `test_recorded_bar_durable_before_finalize` | — | bars on disk after a crash before finalize | every bar emitted before the crash |
-| `test_bars_are_recorded` | — | `harness.bar_recorder.bars` | `= [OPEN, OPEN + 1]` |
+| `test_bars_are_recorded` | — | `harness.recorder.bars` | `= [OPEN, OPEN + 1]` |
 | `test_next_overnight_session_gets_its_own_file` | — | `len(files(tmp_path))` | `= 2` |
 | `test_open_position_is_not_written_until_closed` | — | `list((tmp_path / 'trades').glob('*.parquet'))` | `= []` |
 | `test_recorded_bars_load_back_for_a_mid_session_start` | — | `[b['close'] for b in loaded]; loaded[0]['instrument']; load_recorded_bars(tmp_path / 'mis…` | `= [100.0 + i for i in range(5)]; = MES; = []` |
@@ -959,9 +959,9 @@ Each box of the algorithm map and the code that carries it. The Event Loop is in
 | Fan out to strategies | `event_loop/loop.py` · `EventLoop.fan_out()`; `on_order_update` gives an event with a strategy key to that strategy only |
 | Change the book | `event_loop/book.py` · `RuntimeBook.admit()`, `commit()`, `release_instrument()`; `commit()` sends a member event to `RuntimeBook.member_listeners` |
 | Seed a strategy | `event_loop/seeder.py` · `Seeder`, `SharedFetch`, `Backoff`, `SeedState`; history requests through `Requests.request()` |
-| Deploy one strategy | `event_loop/deploy.py` · `DeployService.handle()`, `deploy()`; `on_deploy_request`; status lines as `deploy_result` commands; socket adapter `deploy_socket.py` · `DeploySocketServer` |
+| Deploy one strategy | `event_loop/deploy.py` · `DeployCoordinator.handle()`, `deploy()`; `on_deploy_request`; status lines as `deploy_result` commands; socket adapter `deploy_socket.py` · `DeploySocketServer` |
 | Flatten at cutoff | `event_loop/shutdown.py` · `ShutdownCoordinator.process_due()`, `flatten_on_bar()`, `finalize()` (reads the watch time); `on_os_signal` |
-| Record bars, trades | `event_loop/recorders.py` · `BarRecorder.record(instrument, bar, session)`, `TradeRecorder.record_update(update, strategy_key, order)` |
+| Record bars, trades | `event_loop/recorders.py` · `Recorder` (`record_bar`, `record_order_update`, `flush`, `finalize`); `BarRecorder`, `TradeRecorder`; the loop sends each event to every recorder in `recorders` |
 | \[ watch time \] | `event_loop/watch_time.py` · `WatchTime.observe()`, `now()`, `moment()`, `ready()` |
 | \[ two buffers \] | `event_loop/buffer.py` · `EventBuffer` (inbound), `CommandBuffer` (outbound), `add_tap()` |
 
@@ -981,7 +981,7 @@ The loop is one async function with helper classes around it.
 | `Seeder`, `SharedFetch`, `Backoff`, `SeedState` | One seed attempt and one retry per slot; one shared fetch per key; replay recorded bars mid-session. | 8, 18 |
 | `BarRecorder`, `TradeRecorder` | One file per instrument per session day; per-strategy round trips. | 10 |
 | `RuntimeBook` | The book and its commit boundary; changed only between events. | 15, 17 |
-| `DeployService` | Socket server, staging, admission, commit, cleanup. | 16 |
+| `DeployCoordinator` | Socket server, staging, admission, commit, cleanup. | 16 |
 
 **Full skeleton code (python)**
 

@@ -2,6 +2,7 @@ import logging
 
 import pytest
 
+from alchemist.stores import round_trip_count
 from alchemist.strategy_builder.strategy_executions import ExecutionConfigError, make_execution
 
 from exec_helpers import (PROTECTED_BLOCK, STOP_LOSS_BLOCK, Slot, enter_protected, protected_signal, protected_slot,
@@ -115,7 +116,7 @@ async def test_leg_fill_completes_one_round_trip(phase):
     orders_before = len(slot.orders)
     await slot.update(trade.legs["STP"], "FILLED", filled=1, avg=98.0)
     await slot.update(trade.legs["LMT"], "CANCELLED")
-    assert slot.store.count("slot", "2026-04-15") == 1 and len(slot.orders) == orders_before
+    assert round_trip_count(slot.store, "slot", "2026-04-15") == 1 and len(slot.orders) == orders_before
     assert slot.execution.consume_trade_closed() is True
 
 

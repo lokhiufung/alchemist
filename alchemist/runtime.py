@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 import alchemist.calculations  # noqa: F401  registers the built-in calculations
 from alchemist.config import Configuration
@@ -16,7 +15,7 @@ from alchemist.constants.runtime import NOT_FLAT_EXIT_CODE, SERVICE_LOGGERS, SOC
 from alchemist.deploy_socket import DeploySocketServer
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import CommandBuffer, EventBuffer
-from alchemist.event_loop.deploy import DeployService
+from alchemist.event_loop.deploy import DeployCoordinator
 from alchemist.event_loop.loop import EventLoop
 from alchemist.event_loop.recorders import BarRecorder, TradeRecorder, load_recorded_bars
 from alchemist.event_loop.seeder import Seeder
@@ -32,18 +31,13 @@ from alchemist.messages import Command, make_event
 from alchemist.registry import get_strategy
 from alchemist.requests import Requests
 from alchemist.safety.monitor import SafetyMonitor
-from alchemist.stores import CalcStateStore, RoundTripStore
+from alchemist.service import Service
+from alchemist.stores import FileDailyStore
 from alchemist.strategy_builder.strategy import Stores
 
 startup_logger = logging.getLogger("startup")
 shutdown_logger = logging.getLogger("shutdown")
 alert_logger = logging.getLogger("safety")
-
-
-@runtime_checkable
-class Service(Protocol):
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
 
 
 def service_logger(name: str, runner_logger: logging.Logger) -> logging.Logger:
@@ -80,7 +74,7 @@ def install_signal_handlers(loop: asyncio.AbstractEventLoop, inbound: EventBuffe
                                                                            time.time())))
 
 
-class EventLoopService:
+class EventLoopService(Service):
     def __init__(self, event_loop: EventLoop, requests: Requests) -> None:
         self.event_loop = event_loop
         self.requests = requests
@@ -97,7 +91,7 @@ class EventLoopService:
             await asyncio.gather(self.task, return_exceptions=True)
 
 
-class SlotsService:
+class SlotsService(Service):
     def __init__(self, book: RuntimeBook, slots: list, aux: AuxProvider, watch_time: WatchTime) -> None:
         self.book, self.slots, self.aux, self.watch_time = book, slots, aux, watch_time
 
@@ -147,7 +141,8 @@ class Runtime:
         book = RuntimeBook()
         root = config.system.log_path
         recordings, state = root / "recordings", root / "state"
-        stores = Stores(CalcStateStore(state, config.system.bot_id), RoundTripStore(state, config.system.bot_id))
+        stores = Stores(FileDailyStore(state, config.system.bot_id, "calc_state"),
+                        FileDailyStore(state, config.system.bot_id, "round_trips"))
         seeder = Seeder(requests, watch_time, config.event_loop, recorded_bars=partial(load_recorded_bars, recordings))
         book.attach(requests, seeder)
         sources = {name: build_aux_source(spec) for name, spec in config.aux_sources.items()}
@@ -169,9 +164,9 @@ class Runtime:
 
         slots = [build_slot(cfg) for cfg in config.strategies.values()]
         shutdown = ShutdownCoordinator(book, requests, watch_time, config.event_loop)
-        deploy = DeployService(config.path, config, book, requests, watch_time, build_from_config,
-                               lambda: shutdown.run_exit, lambda: loop.book_closed or shutdown.shutdown_requested)
-        loop = EventLoop(inbound, requests, book, aux, BarRecorder(recordings), TradeRecorder(recordings), shutdown,
+        deploy = DeployCoordinator(config.path, config, book, requests, watch_time, build_from_config,
+                                   lambda: shutdown.run_exit, lambda: loop.book_closed or shutdown.shutdown_requested)
+        loop = EventLoop(inbound, requests, book, aux, [BarRecorder(recordings), TradeRecorder(recordings)], shutdown,
                          watch_time, deploy, safety.check_in, config.event_loop)
         event_loop_service = EventLoopService(loop, requests)
         services = [("gateway", gateway), ("event_loop", event_loop_service), ("aux_data", aux),

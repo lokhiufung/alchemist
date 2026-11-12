@@ -32,7 +32,7 @@ def without_slot(config: Configuration, key: str) -> tuple:
             config.execution, config.replay, {k: v for k, v in config.strategies.items() if k != key})
 
 
-class DeployService:
+class DeployCoordinator:
     def __init__(self, config_path: Path, running_config: Configuration, book: RuntimeBook, requests, watch_time,
                  build_slot: Callable[[StrategyConfig], object], process_exit_at: Callable[[], datetime | None],
                  is_closed: Callable[[], bool]) -> None:

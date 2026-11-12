@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from alchemist.stores import InMemoryRoundTripStore
+from alchemist.stores import InMemoryDailyStore, round_trip_count
 from alchemist.strategy_builder.strategy_executions import ExecutionConfigError, StrategyExecution, make_execution
 
 from exec_helpers import ScriptedSignal, Slot, drive_to, make_bar, position, session_open_ts, settle
@@ -36,7 +36,7 @@ async def test_daily_cap(cap):
         await slot.bar(index)
         if slot.orders and slot.om.get_submitted_orders():
             await slot.fill_last()
-    assert slot.store.count("slot", "2026-04-15") == cap and len(slot.orders) == 2 * cap
+    assert round_trip_count(slot.store, "slot", "2026-04-15") == cap and len(slot.orders) == 2 * cap
 
 
 @pytest.mark.parametrize("ends_by", ["exit_fill", "entry_dies"])
@@ -126,9 +126,8 @@ async def test_daily_reset_at_overnight_session_roll():
 
 @pytest.mark.parametrize("persisted,phase", [(0, "PROCESSING_ENTRY_ORDER"), (1, "PROCESSING_ENTRY_ORDER"), (2, "DONE")])
 async def test_restart_restores_cap(persisted, phase):
-    store = InMemoryRoundTripStore()
-    for _ in range(persisted):
-        store.record("slot", "2026-04-15")
+    store = InMemoryDailyStore()
+    store.save("slot", "2026-04-15", {"count": persisted})
     signal = ScriptedSignal(cap=2)
     signal.entries = {1}
     slot = Slot(signal, store=store)
@@ -139,7 +138,7 @@ async def test_restart_restores_cap(persisted, phase):
 async def test_no_store_starts_from_zero():
     signal = ScriptedSignal(cap=1)
     signal.entries = {1}
-    slot = Slot(signal, store=InMemoryRoundTripStore())
+    slot = Slot(signal, store=InMemoryDailyStore())
     await slot.bar(1)
     assert len(slot.orders) == 1
 

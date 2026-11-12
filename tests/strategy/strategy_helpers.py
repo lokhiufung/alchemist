@@ -7,7 +7,7 @@ from alchemist.config import StrategyConfig
 from alchemist.instruments import FDAX, MES, NQ
 from alchemist.logger import fields_of
 from alchemist.registry import register_signal_dag
-from alchemist.stores import InMemoryCalcStateStore, InMemoryRoundTripStore
+from alchemist.stores import InMemoryDailyStore
 from alchemist.strategy_builder.strategy import Stores, Strategy
 
 SESSION_OPEN = datetime(2026, 4, 15, 13, 30, tzinfo=timezone.utc).timestamp()
@@ -157,7 +157,7 @@ def make_strategy(instrument=MES, execution=True, calc_store=None, snapshot_inte
     config = StrategyConfig(name, "stub", "ACC", (instrument,), (execution_instrument or instrument,),
                             snapshot_interval=snapshot_interval)
     watch_time = ManualWatchTime(SESSION_OPEN)
-    stores = Stores(calc_state=calc_store or InMemoryCalcStateStore(), round_trips=InMemoryRoundTripStore())
+    stores = Stores(calc_state=calc_store or InMemoryDailyStore(), round_trips=InMemoryDailyStore())
     strategy = strategy_class(config, FakeGateway(), watch_time, stores)
     if execution:
         stub = StubExecution()

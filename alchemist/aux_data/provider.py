@@ -9,6 +9,7 @@ from alchemist.config import AuxConfig
 from alchemist.constants.aux_data import AUX_POLL_S
 from alchemist.exchanges import ExchangeProfile, exchange_profile
 from alchemist.aux_data.sources import AuxSource
+from alchemist.service import Service
 from alchemist.instruments import Instrument
 
 logger = logging.getLogger("aux_data")
@@ -208,7 +209,7 @@ class AuxArmGroup:
             self.failed_to_seed = True
 
 
-class AuxProvider:
+class AuxProvider(Service):
     def __init__(self, sources: dict[str, AuxSource], watch_time, config: AuxConfig,
                  sleep=asyncio.sleep) -> None:
         self.sources = sources

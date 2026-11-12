@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-COLLABORATORS = "execution|gateway|clock|signal|safety|aux|book|seeder|om|shutdown|event_buffer|bar_recorder|trade_recorder"
+COLLABORATORS = "execution|gateway|clock|signal|safety|aux|book|seeder|om|shutdown|event_buffer|recorders"
 
 
 def test_no_component_checks_a_collaborator_for_none():

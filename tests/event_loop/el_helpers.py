@@ -6,6 +6,7 @@ from alchemist.config import EventLoopConfig
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import CommandBuffer, EventBuffer
 from alchemist.event_loop.loop import EventLoop
+from alchemist.event_loop.recorders import Recorder
 from alchemist.event_loop.resampler import Resampler
 from alchemist.event_loop.watch_time import WatchTime
 from alchemist.instruments import ES, MES
@@ -96,20 +97,20 @@ class StubAux:
         self.log.append(("aux", bar["start_ts"]))
 
 
-class StubRecorder:
+class StubRecorder(Recorder):
     def __init__(self) -> None:
         self.bars = []
         self.updates = []
         self.flushes = 0
         self.finalized = False
 
-    def record(self, instrument, bar, session):
+    def record_bar(self, instrument, bar, session):
         self.bars.append(bar["start_ts"])
 
-    def record_update(self, update, strategy_key, order):
+    def record_order_update(self, update, strategy_key, order):
         self.updates.append(update["order_id"])
 
-    async def flush(self):
+    def flush(self):
         self.flushes += 1
 
     def finalize(self):
@@ -193,12 +194,12 @@ class Harness:
         self.requests = Requests(self.outbound)
         self.book = RuntimeBook()
         self.aux = StubAux(self.log)
-        self.bar_recorder, self.trade_recorder = StubRecorder(), StubRecorder()
+        self.recorder = StubRecorder()
         self.safety = StubSafety()
         self.deploy = StubDeploy()
         self.shutdown = shutdown or StubShutdown()
-        self.loop = EventLoop(self.buffer, self.requests, self.book, self.aux, self.bar_recorder,
-                              self.trade_recorder, self.shutdown, self.watch_time, self.deploy, self.safety.check_in,
+        self.loop = EventLoop(self.buffer, self.requests, self.book, self.aux, [self.recorder],
+                              self.shutdown, self.watch_time, self.deploy, self.safety.check_in,
                               self.config)
         for strategy in strategies or []:
             self.add(strategy)

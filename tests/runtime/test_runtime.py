@@ -15,7 +15,8 @@ from alchemist.constants.mode import Mode
 from alchemist.event_loop.recorders import BarRecorder, TradeRecorder
 from alchemist.runtime import ADAPTERS, Runtime, log_deploy_fingerprint
 from alchemist.safety.monitor import SafetyMonitor
-from alchemist.stores import CalcStateStore, RoundTripStore
+from alchemist.service import Service
+from alchemist.stores import FileDailyStore
 from golden_tape import golden_tape_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,9 +70,9 @@ def test_every_mode_builds_the_same_core(mode, tmp_path):
     runtime = Runtime.build(config, mode)
     loop = runtime.event_loop_service.event_loop
     assert isinstance(runtime.safety, SafetyMonitor) and not hasattr(runtime, "clock")
-    assert isinstance(loop.bar_recorder, BarRecorder) and isinstance(loop.trade_recorder, TradeRecorder)
-    assert isinstance(runtime.slots[0].stores.calc_state, CalcStateStore)
-    assert isinstance(runtime.slots[0].stores.round_trips, RoundTripStore)
+    assert [type(r) for r in loop.recorders] == [BarRecorder, TradeRecorder]
+    assert isinstance(runtime.slots[0].stores.calc_state, FileDailyStore)
+    assert isinstance(runtime.slots[0].stores.round_trips, FileDailyStore)
     names = [name for name, _ in runtime.services]
     core = ["gateway", "event_loop", "aux_data", "slots", "safety"]
     assert names == (core if mode is Mode.REPLAY else core + ["deploy_socket"])
@@ -83,7 +84,7 @@ def test_mode_selects_only_the_edge_adapters(mode, socket, signals):
     assert (ADAPTERS[mode].deploy_socket, ADAPTERS[mode].signal_handlers) == (socket, signals)
 
 
-class RecordingService:
+class RecordingService(Service):
     def __init__(self, name, log, fail_on_start=False):
         self.name, self.log, self.fail_on_start = name, log, fail_on_start
 
@@ -166,7 +167,7 @@ def test_log_deploy_fingerprint_names_hash_bot_and_strategies(tmp_path, caplog):
     assert list(record.strategies) == ["macd_rsi_rth_long"]
 
 
-class LoopService:
+class LoopService(Service):
     def __init__(self, loop):
         self.event_loop = loop
         self.task = None
@@ -201,7 +202,7 @@ async def test_os_signal_event_flattens_then_exits():
     book.sessions_by_strategy["es"] = "NY_RTH"
     shutdown = ShutdownCoordinator(book, requests, watch_time, config)
     inbound = EventBuffer(config)
-    loop = EventLoop(inbound, requests, book, StubAux(), StubRecorder(), StubRecorder(), shutdown, watch_time,
+    loop = EventLoop(inbound, requests, book, StubAux(), [StubRecorder()], shutdown, watch_time,
                      StubDeploy(), StubSafety().check_in, config)
     loop_service = LoopService(loop)
     services = [("gateway", RecordingService("gateway", log)), ("event_loop", loop_service),

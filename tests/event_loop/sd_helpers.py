@@ -91,10 +91,10 @@ class Rig:
         self.book = RuntimeBook()
         self.gateway = gateway or ShutdownGateway()
         self.requests = DirectRequests(self.gateway)
-        self.bar_recorder, self.trade_recorder = StubRecorder(), StubRecorder()
+        self.recorder = StubRecorder()
         self.shutdown = ShutdownCoordinator(self.book, self.requests, self.watch_time, self.config)
-        self.loop = EventLoop(self.buffer, self.requests, self.book, StubAux(), self.bar_recorder,
-                              self.trade_recorder, self.shutdown, self.watch_time, StubDeploy(),
+        self.loop = EventLoop(self.buffer, self.requests, self.book, StubAux(), [self.recorder],
+                              self.shutdown, self.watch_time, StubDeploy(),
                               StubSafety().check_in, self.config)
         for strategy in strategies:
             self.book.strategies.append(strategy)

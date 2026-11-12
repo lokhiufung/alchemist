@@ -13,7 +13,7 @@ from alchemist.config import EventLoopConfig, load_config
 from alchemist.deploy_socket import DeploySocketServer
 from alchemist.event_loop.book import RuntimeBook
 from alchemist.event_loop.buffer import EventBuffer
-from alchemist.event_loop.deploy import DeployService, send_deploy_request
+from alchemist.event_loop.deploy import DeployCoordinator, send_deploy_request
 from alchemist.event_loop.seeder import Seeder
 from alchemist.instruments import ES, MES
 from alchemist.loader import StrategyLoadError
@@ -67,7 +67,7 @@ class Rig:
         self.exit_at = None
         self.built = []
         self.closed = False
-        self.service = DeployService(self.path, self.running_config, self.book, self.requests, self.watch_time,
+        self.service = DeployCoordinator(self.path, self.running_config, self.book, self.requests, self.watch_time,
                                      self.build, lambda: self.exit_at, lambda: self.closed)
 
     def build(self, strategy_config):

@@ -59,7 +59,7 @@ async def test_golden_bar_updates_fills_and_end_of_data(caplog, tmp_path):
     seeder = Seeder(requests, watch_time, config)
     book.attach(requests, seeder)
     strategy = TradingStrategy(requests, watch_time)
-    loop = EventLoop(buffer, requests, book, StubAux(), StubRecorder(), StubRecorder(),
+    loop = EventLoop(buffer, requests, book, StubAux(), [StubRecorder()],
                      ShutdownCoordinator(book, requests, watch_time, config), watch_time, StubDeploy(),
                      StubSafety().check_in, config)
     buffer.bind_loop(asyncio.get_running_loop())

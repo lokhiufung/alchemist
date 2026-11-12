@@ -770,7 +770,7 @@
 <tr><td><code>test_overnight_session_bars_not_split_at_midnight</code></td><td>—</td><td>files per overnight session</td><td>1</td></tr>
 <tr><td><code>test_round_trip_weighted_average_for_multi_fill_leg</code></td><td>—</td><td>leg price</td><td>size-weighted mean, exact</td></tr>
 <tr><td><code>test_recorded_bar_durable_before_finalize</code></td><td>—</td><td>bars on disk after a crash before finalize</td><td>every bar emitted before the crash</td></tr>
-<tr><td><code>test_bars_are_recorded</code></td><td>—</td><td><code>harness.bar_recorder.bars</code></td><td><code>= [OPEN, OPEN + 1]</code></td></tr>
+<tr><td><code>test_bars_are_recorded</code></td><td>—</td><td><code>harness.recorder.bars</code></td><td><code>= [OPEN, OPEN + 1]</code></td></tr>
 <tr><td><code>test_next_overnight_session_gets_its_own_file</code></td><td>—</td><td><code>len(files(tmp_path))</code></td><td><code>= 2</code></td></tr>
 <tr><td><code>test_open_position_is_not_written_until_closed</code></td><td>—</td><td><code>list((tmp_path / &#x27;trades&#x27;).glob(&#x27;*.jsonl&#x27;))</code></td><td><code>= []</code></td></tr>
 <tr><td><code>test_recorded_bars_load_back_for_a_mid_session_start</code></td><td>—</td><td><code>[b[&#x27;close&#x27;] for b in loaded]; loaded[0][&#x27;instrument&#x27;]; load_recorded_bars(tmp_path / &#x27;mis…</code></td><td><code>= [100.0 + i for i in range(5)]; = MES; = []</code></td></tr>
@@ -877,9 +877,9 @@
 <tr><td>Fan out to strategies</td><td><code>event_loop/loop.py</code> · <code>EventLoop.fan_out()</code>; <code>on_order_update</code> gives an event with a strategy key to that strategy only</td></tr>
 <tr><td>Change the book</td><td><code>event_loop/book.py</code> · <code>RuntimeBook.admit()</code>, <code>commit()</code>, <code>release_instrument()</code>; <code>commit()</code> sends a member event to <code>RuntimeBook.member_listeners</code></td></tr>
 <tr><td>Seed a strategy</td><td><code>event_loop/seeder.py</code> · <code>Seeder</code>, <code>SharedFetch</code>, <code>Backoff</code>, <code>SeedState</code>; history requests through <code>Requests.request()</code></td></tr>
-<tr><td>Deploy one strategy</td><td><code>event_loop/deploy.py</code> · <code>DeployService.handle()</code>, <code>deploy()</code>; <code>on_deploy_request</code>; status lines as <code>deploy_result</code> commands; socket adapter <code>deploy_socket.py</code> · <code>DeploySocketServer</code></td></tr>
+<tr><td>Deploy one strategy</td><td><code>event_loop/deploy.py</code> · <code>DeployCoordinator.handle()</code>, <code>deploy()</code>; <code>on_deploy_request</code>; status lines as <code>deploy_result</code> commands; socket adapter <code>deploy_socket.py</code> · <code>DeploySocketServer</code></td></tr>
 <tr><td>Flatten at cutoff</td><td><code>event_loop/shutdown.py</code> · <code>ShutdownCoordinator.process_due()</code>, <code>flatten_on_bar()</code>, <code>finalize()</code> (reads the watch time); <code>on_os_signal</code></td></tr>
-<tr><td>Record bars, trades</td><td><code>event_loop/recorders.py</code> · <code>BarRecorder.record(instrument, bar, session)</code>, <code>TradeRecorder.record_update(update, strategy_key, order)</code></td></tr>
+<tr><td>Record bars, trades</td><td><code>event_loop/recorders.py</code> · <code>Recorder</code> (<code>record_bar</code>, <code>record_order_update</code>, <code>flush</code>, <code>finalize</code>); <code>BarRecorder</code>, <code>TradeRecorder</code>; the loop sends each event to every recorder in <code>recorders</code></td></tr>
 <tr><td>[ watch time ]</td><td><code>event_loop/watch_time.py</code> · <code>WatchTime.observe()</code>, <code>now()</code>, <code>moment()</code>, <code>ready()</code></td></tr>
 <tr><td>[ two buffers ]</td><td><code>event_loop/buffer.py</code> · <code>EventBuffer</code> (inbound), <code>CommandBuffer</code> (outbound), <code>add_tap()</code></td></tr>
 </tbody></table></div>
@@ -900,7 +900,7 @@
 <tr><td><code>Seeder</code>, <code>SharedFetch</code>, <code>Backoff</code>, <code>SeedState</code></td><td>One seed attempt and one retry per slot; one shared fetch per key; replay recorded bars mid-session.</td><td>8, 18</td></tr>
 <tr><td><code>BarRecorder</code>, <code>TradeRecorder</code></td><td>One file per instrument per session day; per-strategy round trips.</td><td>10</td></tr>
 <tr><td><code>RuntimeBook</code></td><td>The book and its commit boundary; changed only between events.</td><td>15, 17</td></tr>
-<tr><td><code>DeployService</code></td><td>Socket server, staging, admission, commit, cleanup.</td><td>16</td></tr>
+<tr><td><code>DeployCoordinator</code></td><td>Socket server, staging, admission, commit, cleanup.</td><td>16</td></tr>
 </tbody></table></div>
 <details><summary>Full skeleton code<span class="count">python</span></summary>
 <pre><code>"""Skeleton contract for the Event Loop component (Alchemist v3)."""

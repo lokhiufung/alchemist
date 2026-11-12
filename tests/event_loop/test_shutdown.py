@@ -130,7 +130,7 @@ async def test_scenario_shutdown_flat(case, caplog):
     rig.shutdown.request_shutdown("signal")
     with caplog.at_level(logging.INFO):
         await rig.run()
-    assert len(rig.buffer) == 0 and rig.bar_recorder.finalized and rig.trade_recorder.finalized
+    assert len(rig.buffer) == 0 and rig.recorder.finalized
     if case == "readable":
         assert gateway.cancelled == [11]
         assert [(o["instrument"], o["side"], o["qty"], o["order_type"]) for o in gateway.placed] == [
@@ -172,7 +172,7 @@ async def test_end_of_data_leaves_no_queued_event():
     rig.push_second_bars(MES, at(MES, "NY_RTH", 10, 0, 0), 5)
     rig.buffer.push(end_of_data())
     await rig.run()
-    assert len(rig.buffer) == 0 and rig.bar_recorder.finalized and rig.trade_recorder.finalized
+    assert len(rig.buffer) == 0 and rig.recorder.finalized
 
 
 async def test_is_flat_reads_the_gateway_positions_of_configured_instruments():
